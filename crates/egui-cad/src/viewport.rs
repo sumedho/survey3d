@@ -485,7 +485,6 @@ fn axis_gizmo(
 
 /// Floating view controls (top-right of the viewport).
 fn nav_controls(ui: &mut egui::Ui, rect: Rect, state: &ViewportState, theme: &CadTheme) -> Option<NavAction> {
-    let mut action = None;
     let area = Rect::from_min_max(
         pos2(rect.right() - 220.0, rect.top() + 10.0),
         pos2(rect.right() - 10.0, rect.top() + 48.0),
@@ -495,48 +494,62 @@ fn nav_controls(ui: &mut egui::Ui, rect: Rect, state: &ViewportState, theme: &Ca
             .max_rect(area)
             .layout(egui::Layout::right_to_left(egui::Align::Min)),
         |ui| {
-            chrome::floating_frame(theme).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                let persp = state.camera.projection == Projection::Perspective;
-                if IconButton::new(icons::PERSPECTIVE, "Perspective")
-                    .description("Toggle perspective / orthographic projection")
-                    .selected(persp)
-                    .enabled(!state.plan_locked)
-                    .show(ui)
-                    .clicked()
-                {
-                    action = Some(NavAction::ToggleProjection);
-                }
-                let (icon, title) = if state.plan_locked {
-                    (icons::CUBE, "3D view")
-                } else {
-                    (icons::MAP_TRIFOLD, "Plan view")
-                };
-                if IconButton::new(icon, title)
-                    .description("Switch between locked plan and free 3D")
-                    .show(ui)
-                    .clicked()
-                {
-                    action = Some(NavAction::TogglePlan);
-                }
-                if IconButton::new(icons::CUBE_FOCUS, "Isometric")
-                    .description("Isometric view from the south-west")
-                    .show(ui)
-                    .clicked()
-                {
-                    action = Some(NavAction::Preset(ViewPreset::Isometric));
-                }
-                if IconButton::new(icons::FRAME_CORNERS, "Zoom extents")
-                    .description("Fit everything in view")
-                    .shortcut(Some("Home"))
-                    .show(ui)
-                    .clicked()
-                {
-                    action = Some(NavAction::ZoomExtents);
-                }
-            });
+            chrome::floating_frame(theme)
+                .show(ui, |ui| {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        view_controls(ui, state)
+                    })
+                    .inner
+                })
+                .inner
         },
-    );
+    )
+    .inner
+}
+
+/// View-control buttons (zoom extents, isometric, plan/3D, perspective) laid
+/// out in the current `ui`, e.g. a header toolbar. Presets are not applied;
+/// the caller handles the returned action.
+pub fn view_controls(ui: &mut egui::Ui, state: &ViewportState) -> Option<NavAction> {
+    let mut action = None;
+    ui.spacing_mut().item_spacing.x = 2.0;
+    if IconButton::new(icons::FRAME_CORNERS, "Zoom extents")
+        .description("Fit everything in view")
+        .shortcut(Some("Home"))
+        .show(ui)
+        .clicked()
+    {
+        action = Some(NavAction::ZoomExtents);
+    }
+    if IconButton::new(icons::CUBE_FOCUS, "Isometric")
+        .description("Isometric view from the south-west")
+        .show(ui)
+        .clicked()
+    {
+        action = Some(NavAction::Preset(ViewPreset::Isometric));
+    }
+    let (icon, title) = if state.plan_locked {
+        (icons::CUBE, "3D view")
+    } else {
+        (icons::MAP_TRIFOLD, "Plan view")
+    };
+    if IconButton::new(icon, title)
+        .description("Switch between locked plan and free 3D")
+        .show(ui)
+        .clicked()
+    {
+        action = Some(NavAction::TogglePlan);
+    }
+    let persp = state.camera.projection == Projection::Perspective;
+    if IconButton::new(icons::PERSPECTIVE, "Perspective")
+        .description("Toggle perspective / orthographic projection")
+        .selected(persp)
+        .enabled(!state.plan_locked)
+        .show(ui)
+        .clicked()
+    {
+        action = Some(NavAction::ToggleProjection);
+    }
     action
 }
 

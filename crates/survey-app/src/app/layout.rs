@@ -8,7 +8,7 @@ use egui_cad::chrome::{IconButton, palette_divider, search_button, toolbar_divid
 use egui_cad::hud::{HudLine, draw_cursor_hud};
 use egui_cad::labels::LabelPlacer;
 use egui_cad::selection::SelectionBox;
-use egui_cad::viewport::NavAction;
+use egui_cad::viewport::{NavAction, view_controls};
 
 use crate::platform::FileKind;
 use crate::scene_build::select_in_box;
@@ -41,6 +41,8 @@ enum Action {
     TogglePlan,
     ToggleProjection,
     ToggleGrid,
+    /// A request from the view controls in the header.
+    View(NavAction),
     Theme(ThemeMode),
     Tool(&'static str),
     /// An application command by name.
@@ -309,6 +311,10 @@ impl SurveyApp {
             {
                 action = Some(Action::Redo);
             }
+            toolbar_divider(ui);
+            if let Some(nav) = view_controls(ui, &self.viewport) {
+                action = Some(Action::View(nav));
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if IconButton::new(icons::GEAR, "Settings")
@@ -357,6 +363,7 @@ impl SurveyApp {
             Action::TogglePlan => self.toggle_plan(),
             Action::ToggleProjection => self.toggle_projection(),
             Action::ToggleGrid => self.settings.show_grid = !self.settings.show_grid,
+            Action::View(nav) => self.apply_nav(nav),
             Action::Theme(mode) => self.settings.theme = mode,
             Action::Tool(id) => self.set_tool(id),
             Action::Run(command) => {
@@ -370,6 +377,18 @@ impl SurveyApp {
                 self.run_app_command(ctx, "help");
             }
             Action::About => self.about_open = true,
+        }
+    }
+
+    fn apply_nav(&mut self, nav: NavAction) {
+        match nav {
+            NavAction::ZoomExtents => self.zoom_extents(),
+            NavAction::TogglePlan => self.toggle_plan(),
+            NavAction::ToggleProjection => self.toggle_projection(),
+            NavAction::Preset(p) => {
+                self.viewport.apply_preset(p);
+                self.command_line.info(p.label());
+            }
         }
     }
 
@@ -643,6 +662,7 @@ impl SurveyApp {
             .extra_bounds(extra)
             .axis_labels(labels)
             .length_unit(conv.linear_unit.metres_per_unit(), conv.linear_unit.suffix())
+            .nav_controls(false)
             .show(ui);
 
         self.pick = out.hover.map(|c| self.compute_pick(c, grid.as_ref()));
@@ -693,10 +713,9 @@ impl SurveyApp {
         }
         self.toasts.show(&painter, out.rect);
         match out.nav {
-            Some(NavAction::ZoomExtents) => self.zoom_extents(),
-            Some(NavAction::TogglePlan) => self.toggle_plan(),
-            Some(NavAction::ToggleProjection) => self.toggle_projection(),
+            // The viewport has already applied gizmo presets.
             Some(NavAction::Preset(p)) => self.command_line.info(p.label()),
+            Some(nav) => self.apply_nav(nav),
             None => {}
         }
 
