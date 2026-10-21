@@ -293,7 +293,21 @@ fn style_editor(ui: &mut egui::Ui, theme: &CadTheme, c: &mut FeatureCode) {
                     segmented(
                         ui,
                         &mut c.style.by_layer,
-                        &[(true, "By layer"), (false, "Feature colour")],
+                        &[(true, "Feature's layer"), (false, "Feature colour")],
+                    );
+                    ui.end_row();
+                    ui.label("");
+                    ui.label(
+                        RichText::new(if c.style.by_layer {
+                            format!(
+                                "Uses the colour of layer {} (or this colour until it exists)",
+                                c.layer
+                            )
+                        } else {
+                            "Always uses this colour, whatever layer the object is on".to_string()
+                        })
+                        .small()
+                        .color(theme.text_secondary),
                     );
                     ui.end_row();
                     ui.label("Lines");

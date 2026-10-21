@@ -64,7 +64,7 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
   vertical limits; traverse and closure results then show PASS or FAIL. None are set by default.
 * **Field-to-finish:** `codes` opens the feature code library (layers, colours, line or point features,
   control codes such as `ST`, `END`, `CL`, `PC`/`PT`; CSV import/export). Each code has a style: one of
-  30+ point symbols and its size, colour by layer or the feature's own, line style (solid, dashed,
+  30+ point symbols and its size, colour (the feature's layer colour, or its own), line style (solid, dashed,
   dotted, dash-dot) and weight, and optionally its own labels. Codes may be wildcards (`MH*`). Process
   linework joins coded points (`KB1`, `KB2`, `BLD CL` …) into strings on feature layers; running it again
   replaces them. View → Legend lists the codes in use with their symbols.

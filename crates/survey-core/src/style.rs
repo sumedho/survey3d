@@ -229,7 +229,8 @@ pub struct CodeStyle {
     pub symbol: Symbol,
     /// Symbol size in screen points.
     pub symbol_size: f32,
-    /// Draw in the layer's colour (otherwise the feature's own colour).
+    /// Draw in the colour of the feature's layer (by name; the feature's own
+    /// colour until that layer exists), otherwise always in the feature's colour.
     pub by_layer: bool,
     pub line_style: LineStyle,
     /// Line weight in screen points.

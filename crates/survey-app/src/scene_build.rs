@@ -47,22 +47,31 @@ impl SceneCache {
     }
 }
 
-/// Style of a code (from the feature library), cached per distinct code text.
+/// Style of a code (from the feature library) and the colour it draws in,
+/// cached per distinct code text.
 struct Styles<'a> {
+    doc: &'a Document,
     library: &'a FeatureLibrary,
-    cache: HashMap<&'a str, Option<(CodeStyle, [u8; 3])>>,
+    cache: HashMap<&'a str, Option<(CodeStyle, [u8; 4])>>,
 }
 
 impl<'a> Styles<'a> {
-    fn get(&mut self, code: &'a str) -> Option<(CodeStyle, [u8; 3])> {
+    fn get(&mut self, code: &'a str) -> Option<(CodeStyle, [u8; 4])> {
         if code.is_empty() {
             return None;
         }
-        let library = self.library;
-        *self
-            .cache
-            .entry(code)
-            .or_insert_with(|| library.feature_for(code).map(|f| (f.style, f.color)))
+        let (doc, library) = (self.doc, self.library);
+        *self.cache.entry(code).or_insert_with(|| {
+            library.feature_for(code).map(|f| {
+                let [r, g, b] = f.color;
+                // "By layer" is the feature's own layer, wherever the object currently sits.
+                let color = match doc.layer_by_name(&f.layer) {
+                    Some(layer) if f.style.by_layer => layer.color.0,
+                    _ => [r, g, b, 255],
+                };
+                (f.style, color)
+            })
+        })
     }
 }
 
@@ -70,6 +79,7 @@ fn build_scene(doc: &Document, selection: &Selection, theme: &CadTheme, revision
     let mut b = SceneBuilder::default();
     let selected = theme.selection.to_srgba_unmultiplied();
     let mut styles = Styles {
+        doc,
         library: &doc.meta().feature_codes,
         cache: HashMap::new(),
     };
@@ -90,8 +100,8 @@ fn build_scene(doc: &Document, selection: &Selection, theme: &CadTheme, revision
             selected
         } else {
             match style {
-                Some((s, [r, g, bl])) if !s.by_layer => layer_color([r, g, bl, 255], theme),
-                _ => layer_color(layer.color.0, theme),
+                Some((_, c)) => layer_color(c, theme),
+                None => layer_color(layer.color.0, theme),
             }
         };
         match entity {

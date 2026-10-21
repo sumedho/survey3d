@@ -24,7 +24,11 @@ pub struct LineworkSummary {
 
 impl LineworkSummary {
     pub fn describe(&self) -> String {
-        let mut s = format!("Linework: {} strings", self.lines);
+        let mut s = format!(
+            "Linework: {} {}",
+            self.lines,
+            if self.lines == 1 { "string" } else { "strings" }
+        );
         if self.replaced > 0 {
             s.push_str(&format!(" (replacing {})", self.replaced));
         }
