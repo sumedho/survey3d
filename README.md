@@ -20,12 +20,12 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
 
 | Crate | Purpose |
 |---|---|
-| `survey-core` | Pure maths: angles/bearings, configurable conventions (parse/format), geometry, COGO, typed point input |
+| `survey-core` | Pure maths: angles/bearings, conventions (parse/format), geometry, arcs (bulges), COGO, point input |
 | `survey-model` | `Document`, entities, layers, `Command`/`ChangeSet`, undo `History` with audit records, R-tree index |
-| `survey-io` | Interchange formats (CSV/TXT points with configurable columns) |
+| `survey-io` | Interchange formats: CSV/TXT points (configurable columns), DXF read/write |
 | `survey-store` | `.s3d` project files (SQLite): incremental saves, migrations, hash-chained append-only audit trail |
 | `cad-render` | wgpu renderer: f64 camera, relative-to-center chunks, reverse-Z, offscreen MSAA, egui paint callback |
-| `egui-cad` | Reusable CAD widgets: theme, viewport, snapping engine, command line, property grid, layer panel |
+| `egui-cad` | Reusable CAD widgets: theme, viewport, snapping, box selection, label placement, command line, panels |
 | `survey-app` | The application: tools, panels, dialogs, file handling |
 
 ## Using it
@@ -33,11 +33,16 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
 * **Navigate:** wheel/pinch zooms about the cursor, middle-drag (or Shift+right-drag) pans, right-drag orbits in 3D.
   The toolbar cube (or `plan` / `3d`) toggles the plan lock; returning to plan is always north-up.
   `persp` (or View menu) toggles perspective.
-* **Commands:** start typing anywhere — `point`, `pl` (polyline), `inv` (inverse), `ze`, `undo`, `help`.
+* **Commands:** start typing anywhere — `point`, `pl` (polyline), `arc`, `circle`, `inv` (inverse), `ze`,
+  `undo`, `help`.
+* **Selection:** click, Shift+click to add; drag left→right for a window (fully inside), right→left for a
+  crossing (touching).
 * **Point input:** pick with snapping, or type `E,N[,Z]`, `@dE,dN[,dZ]`, `@dist<bearing`, or an existing point name.
   Order, units and angle format follow the project conventions (Project → Conventions).
 * **Snapping & drafting:** Settings (gear) → Drafting holds snap modes, aperture, ortho/polar, grid and working
   elevation. Shortcuts: F3 snap, F8 ortho, F7 grid. Tab cycles overlapping candidates; typing
   `end`/`mid`/`int`/`per`/`nea`/`nod`/`gri` applies a one-shot snap. The status bar shows feedback only.
-* **Files:** Ctrl+S saves an `.s3d` (download on the web), File → Import points reads CSV/TXT.
+* **Files:** Ctrl+S saves an `.s3d` (download on the web); File → Import points (CSV/TXT), Import / Export
+  DXF. On the web, unsaved work is autosaved to browser storage and offered for recovery on the next visit.
+* **Labels:** Settings → Display (or `labels`) shows point names, codes and heights.
   Project → Audit trail shows every edit and verifies the hash chain.

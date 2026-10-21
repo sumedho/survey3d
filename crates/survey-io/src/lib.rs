@@ -5,6 +5,7 @@
 //! canonical units; the application turns them into document edits.
 
 pub mod csv_points;
+pub mod dxf;
 
 pub use csv_points::{CsvField, CsvLayout, CsvPointImporter, HeaderMode, export_points_csv};
 
@@ -34,8 +35,10 @@ pub enum IoError {
     NotText,
     #[error("layout must include easting and northing columns")]
     LayoutMissingCoordinates,
-    #[error("no points found{0}")]
+    #[error("nothing to import{0}")]
     NoPoints(String),
+    #[error("{0}")]
+    Invalid(String),
 }
 
 /// A format that yields survey points.

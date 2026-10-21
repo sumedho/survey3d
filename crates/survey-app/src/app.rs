@@ -18,7 +18,8 @@ use survey_core::point_input::PointInput;
 use survey_model::{ChangeSet, Color, Command, Entity, EntityId, Layer, LayerId};
 use survey_store::ProjectStore;
 
-use crate::platform::{FileEvent, Platform};
+use crate::interchange::{dxf_export, dxf_import};
+use crate::platform::{FileEvent, FileKind, Platform, export};
 use crate::project::{APP_VERSION, Project};
 use crate::scene_build::{DocSnapProvider, SceneCache, color32, hit_test};
 use crate::settings::AppSettings;
@@ -45,6 +46,9 @@ const APP_COMMANDS: &[(&str, &str)] = &[
     ("grid", "Toggle grid (F7)"),
     ("delete", "Delete selection (Del)"),
     ("import", "Import points from CSV/TXT"),
+    ("dxfin", "Import a DXF drawing"),
+    ("dxfout", "Export the project as DXF"),
+    ("labels", "Label settings"),
     ("save", "Save project (Ctrl+S)"),
     ("open", "Open project (Ctrl+O)"),
     ("new", "New project (Ctrl+N)"),
@@ -88,7 +92,38 @@ pub struct SurveyApp {
     shift_down: bool,
     /// Entity counts per layer, cached by document revision.
     layer_counts: (u64, std::collections::HashMap<LayerId, usize>),
+    /// A crash-recovery snapshot waiting for the user to accept or discard it.
+    #[cfg(target_arch = "wasm32")]
+    recovery: Option<Vec<u8>>,
+    #[cfg(target_arch = "wasm32")]
+    autosave: Autosave,
 }
+
+/// Camera state saved with each project so it reopens where it was left.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedView {
+    target: [f64; 3],
+    distance: f64,
+    yaw: f64,
+    pitch: f64,
+    plan_locked: bool,
+    perspective: bool,
+}
+
+/// Web crash-recovery snapshots of unsaved work.
+#[cfg(target_arch = "wasm32")]
+#[derive(Default)]
+struct Autosave {
+    /// `(document revision, pending audit entries)` last written.
+    written: Option<(u64, usize)>,
+    last_ms: f64,
+    /// Set once the startup recovery check has finished, so a fresh session
+    /// never overwrites a snapshot before the user has decided about it.
+    ready: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+const AUTOSAVE_INTERVAL_MS: f64 = 15_000.0;
 
 impl SurveyApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -133,12 +168,16 @@ impl SurveyApp {
         let mut viewport = ViewportState::new(1);
         viewport.camera.target = DVec3::ZERO;
 
+        let platform = Platform::default();
         let mut command_line = CommandLineState::default();
         let module_names: Vec<&str> = modules.iter().map(|m| m.name()).collect();
         command_line.info(format!(
             "survey3d {APP_VERSION} — modules: {} — type 'help' for commands.",
             module_names.join(", ")
         ));
+
+        #[cfg(target_arch = "wasm32")]
+        platform.check_recovery(&cc.egui_ctx);
 
         Self {
             settings,
@@ -152,7 +191,7 @@ impl SurveyApp {
             snap_override: None,
             command_line,
             completions,
-            platform: Platform::default(),
+            platform,
             pick: None,
             hovered_entity: None,
             csv_dialog: None,
@@ -164,6 +203,10 @@ impl SurveyApp {
             title: String::new(),
             shift_down: false,
             layer_counts: (0, Default::default()),
+            #[cfg(target_arch = "wasm32")]
+            recovery: None,
+            #[cfg(target_arch = "wasm32")]
+            autosave: Autosave::default(),
         }
     }
 
@@ -304,6 +347,12 @@ impl SurveyApp {
             return;
         }
 
+        // A plain distance (e.g. a circle radius) goes straight to the tool.
+        if self.active_tool.wants_distance() && self.project.doc.conventions().parse_length(text).is_ok() {
+            self.dispatch(ToolEvent::Text(text));
+            return;
+        }
+
         if self.active_tool.wants_point() {
             if let Some(mode) = SnapMode::from_code(text) {
                 self.snap_override = Some(mode);
@@ -379,7 +428,10 @@ impl SurveyApp {
             "ortho" => self.toggle_ortho(),
             "grid" => self.settings.show_grid = !self.settings.show_grid,
             "delete" | "erase" => self.delete_selection(),
-            "import" => self.platform.pick_csv(ctx),
+            "import" => self.platform.pick_file(ctx, FileKind::Points),
+            "dxfin" | "importdxf" => self.platform.pick_file(ctx, FileKind::Dxf),
+            "dxfout" | "exportdxf" => self.export_dxf(),
+            "labels" => self.settings_window.open_at_display(),
             "save" => self.save(ctx),
             "open" => self.request_discard(ctx, Discard::Open),
             "new" => self.request_discard(ctx, Discard::New),
@@ -422,7 +474,7 @@ impl SurveyApp {
                 }
                 Err(e) => self.command_line.error(format!("Could not create project: {e}")),
             },
-            Discard::Open => self.platform.pick_project(ctx),
+            Discard::Open => self.platform.pick_file(ctx, FileKind::Project),
             Discard::Quit => {
                 self.allowed_to_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -434,7 +486,81 @@ impl SurveyApp {
         self.project = project;
         self.scene_cache.invalidate();
         self.set_tool(SELECT_TOOL_ID);
-        self.zoom_extents();
+        if !self.restore_view() {
+            self.zoom_extents();
+        }
+    }
+
+    /// Restores the camera saved with the project; `false` if there is none.
+    fn restore_view(&mut self) -> bool {
+        let Some(view) = self
+            .project
+            .store
+            .read_view_state()
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str::<SavedView>(&json).ok())
+        else {
+            return false;
+        };
+        let vp = &mut self.viewport;
+        vp.set_plan_locked(view.plan_locked);
+        let cam = &mut vp.camera;
+        cam.target = DVec3::from_array(view.target);
+        cam.distance = view.distance;
+        cam.yaw = view.yaw;
+        cam.pitch = view.pitch;
+        cam.projection = if view.perspective && !view.plan_locked {
+            Projection::Perspective
+        } else {
+            Projection::Orthographic
+        };
+        true
+    }
+
+    /// Writes the camera into the project store (display state, not audited).
+    fn store_view(&self) {
+        let cam = &self.viewport.camera;
+        let view = SavedView {
+            target: cam.target.to_array(),
+            distance: cam.distance,
+            yaw: cam.yaw,
+            pitch: cam.pitch,
+            plan_locked: self.viewport.plan_locked,
+            perspective: cam.projection == Projection::Perspective,
+        };
+        if let Ok(json) = serde_json::to_string(&view)
+            && let Err(e) = self.project.store.write_view_state(&json)
+        {
+            log::warn!("could not store view: {e}");
+        }
+    }
+
+    fn export_dxf(&mut self) {
+        let text = survey_io::dxf::write_dxf(&dxf_export(&self.project.doc));
+        let stem = file_stem(&self.project.doc.meta().name);
+        match export(&self.platform, FileKind::Dxf, &stem, text.as_bytes()) {
+            Ok(Some(where_)) => self.command_line.info(format!("Exported DXF: {where_}")),
+            Ok(None) => {}
+            Err(e) => self.command_line.error(format!("DXF export failed: {e}")),
+        }
+    }
+
+    fn import_dxf(&mut self, name: &str, bytes: &[u8]) {
+        match survey_io::dxf::read_dxf(bytes) {
+            Ok(drawing) => {
+                let cmd = dxf_import(&self.project.doc, &drawing, name);
+                let n = cmd.len();
+                self.execute(Box::new(cmd));
+                self.command_line
+                    .info(format!("Imported {n} objects from {name}"));
+                for w in &drawing.warnings {
+                    self.command_line.warn(w.clone());
+                }
+                self.zoom_extents();
+            }
+            Err(e) => self.command_line.error(format!("Could not import {name}: {e}")),
+        }
     }
 
     fn open_store(&mut self, result: Result<ProjectStore, survey_store::StoreError>, name: String) {
@@ -454,6 +580,7 @@ impl SurveyApp {
         {
             let _ = ctx;
             if self.project.has_file() {
+                self.store_view();
                 match self.project.save() {
                     Ok(()) => self
                         .command_line
@@ -472,6 +599,7 @@ impl SurveyApp {
                 file_stem(&self.project.doc.meta().name),
                 survey_store::FILE_EXTENSION
             );
+            self.store_view();
             match self
                 .project
                 .save_to_bytes()
@@ -481,6 +609,11 @@ impl SurveyApp {
                 Ok(()) => {
                     self.project.display_name = name.clone();
                     self.command_line.info(format!("Downloaded {name}"));
+                    // The download is now the user's copy; drop the recovery snapshot.
+                    self.autosave.written = None;
+                    wasm_bindgen_futures::spawn_local(async {
+                        let _ = crate::platform::opfs::remove(crate::platform::opfs::AUTOSAVE).await;
+                    });
                 }
                 Err(e) => self.command_line.error(format!("Save failed: {e}")),
             }
@@ -490,7 +623,8 @@ impl SurveyApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn save_as(&mut self) {
         let default = file_stem(&self.project.doc.meta().name);
-        if let Some(path) = self.platform.pick_save_path(&default) {
+        if let Some(path) = self.platform.pick_save_path(FileKind::Project, &default) {
+            self.store_view();
             match self.project.save_as(&path) {
                 Ok(()) => self.command_line.info(format!("Saved {}", path.display())),
                 Err(e) => self.command_line.error(format!("Save failed: {e}")),
@@ -501,23 +635,63 @@ impl SurveyApp {
     fn handle_file_events(&mut self) {
         for event in self.platform.poll() {
             match event {
-                #[cfg(target_arch = "wasm32")]
-                FileEvent::ProjectBytes { name, bytes } => {
-                    self.open_store(ProjectStore::from_bytes(&bytes), name);
-                }
+                FileEvent::Picked { kind, name, bytes } => match kind {
+                    FileKind::Project => self.open_store(ProjectStore::from_bytes(&bytes), name),
+                    FileKind::Points => {
+                        self.csv_dialog = Some(CsvImportDialog::new(
+                            name,
+                            bytes,
+                            self.settings.csv_layout.clone(),
+                        ));
+                    }
+                    FileKind::Dxf => self.import_dxf(&name, &bytes),
+                },
                 #[cfg(not(target_arch = "wasm32"))]
                 FileEvent::ProjectPath(path) => {
                     let name = crate::platform::file_name(&path);
                     self.open_store(ProjectStore::open_file(&path), name);
                 }
-                FileEvent::CsvBytes { name, bytes } => {
-                    self.csv_dialog = Some(CsvImportDialog::new(
-                        name,
-                        bytes,
-                        self.settings.csv_layout.clone(),
-                    ));
+                #[cfg(target_arch = "wasm32")]
+                FileEvent::Recovery { bytes } => {
+                    self.recovery = bytes;
+                    self.autosave.ready = true;
                 }
             }
+        }
+    }
+
+    /// Periodically snapshots unsaved work to browser storage (web).
+    #[cfg(target_arch = "wasm32")]
+    fn autosave(&mut self, ctx: &egui::Context) {
+        let now = js_sys::Date::now();
+        let key = (
+            self.project.doc.revision(),
+            self.project.history.pending_audit().len(),
+        );
+        let due = now - self.autosave.last_ms >= AUTOSAVE_INTERVAL_MS;
+        // Only real edits (which always produce audit records) are worth recovering.
+        let edited = !self.project.history.pending_audit().is_empty();
+        let blocked = !self.autosave.ready || self.recovery.is_some();
+        if blocked || !edited || self.autosave.written == Some(key) || !due {
+            if edited {
+                ctx.request_repaint_after(std::time::Duration::from_secs(5));
+            }
+            return;
+        }
+        self.autosave.last_ms = now;
+        self.store_view();
+        match self.project.snapshot() {
+            Ok(bytes) => {
+                self.autosave.written = Some(key);
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Err(e) =
+                        crate::platform::opfs::write(crate::platform::opfs::AUTOSAVE, &bytes).await
+                    {
+                        log::warn!("autosave failed: {e:?}");
+                    }
+                });
+            }
+            Err(e) => log::warn!("autosave snapshot failed: {e}"),
         }
     }
 }
@@ -551,6 +725,8 @@ impl eframe::App for SurveyApp {
         }
         self.project.history.set_user(self.settings.user_name.clone());
         self.handle_file_events();
+        #[cfg(target_arch = "wasm32")]
+        self.autosave(&ctx);
         self.handle_close_request(&ctx);
         self.handle_shortcuts(&ctx);
         self.update_title(&ctx);

@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use crate::{Result, StoreError};
 
 /// Each entry upgrades the schema from version `index` to `index + 1`.
-const MIGRATIONS: &[&str] = &[
+pub(crate) const MIGRATIONS: &[&str] = &[
     // v1: initial schema.
     r#"
     CREATE TABLE project_meta (
@@ -76,6 +76,10 @@ const MIGRATIONS: &[&str] = &[
     CREATE TRIGGER audit_log_no_delete BEFORE DELETE ON audit_log
         BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
     INSERT INTO project_meta (key, value) VALUES ('format', 'survey3d');
+    "#,
+    // v2: arc segments (DXF-style bulge of the segment starting at each vertex).
+    r#"
+    ALTER TABLE string_vertices ADD COLUMN bulge REAL NOT NULL DEFAULT 0;
     "#,
 ];
 

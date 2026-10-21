@@ -6,9 +6,9 @@ use survey_core::conventions::LinearUnit;
 use survey_io::{
     CsvField, CsvLayout, CsvPointImporter, HeaderMode, ImportedPoint, PointImport, PointImporter,
 };
-use survey_model::{Color, Document, SurveyPoint};
+use survey_model::{Color, Document, Entity, SurveyPoint};
 
-use crate::import_command::{ImportPoints, TargetLayer};
+use crate::import_command::{ImportEntities, LayerRef};
 
 pub struct CsvImportDialog {
     file_name: String,
@@ -22,7 +22,7 @@ pub struct CsvImportDialog {
 pub enum CsvDialogResult {
     Open,
     Cancelled,
-    Import(Box<ImportPoints>, usize),
+    Import(Box<ImportEntities>, usize),
 }
 
 const DELIMITERS: [(Option<char>, &str); 5] = [
@@ -216,34 +216,37 @@ impl CsvImportDialog {
         result
     }
 
-    fn build_command(&self, doc: &Document, points: &[ImportedPoint]) -> ImportPoints {
+    fn build_command(&self, doc: &Document, points: &[ImportedPoint]) -> ImportEntities {
+        let label = format!("Import {} points from {}", points.len(), self.file_name);
+        let mut cmd = ImportEntities::new(label);
+        let layer = if self.new_layer {
+            cmd.add_layer(
+                self.new_layer_name.trim().to_string(),
+                Color::rgb(0x7d, 0xd3, 0xfc),
+                true,
+            )
+        } else {
+            LayerRef::Existing(doc.current_layer())
+        };
         let mut next: u64 = doc.next_point_name().parse().unwrap_or(1);
-        let points: Vec<SurveyPoint> = points
-            .iter()
-            .map(|p| SurveyPoint {
-                name: if p.name.is_empty() {
-                    next += 1;
-                    (next - 1).to_string()
-                } else {
-                    p.name.clone()
-                },
+        for p in points {
+            let name = if p.name.is_empty() {
+                next += 1;
+                (next - 1).to_string()
+            } else {
+                p.name.clone()
+            };
+            let point = SurveyPoint {
+                name,
                 position: glam::DVec3::new(p.easting, p.northing, p.height.unwrap_or(0.0)),
                 height_known: p.height.is_some(),
                 code: p.code.clone(),
                 description: p.description.clone(),
                 layer: doc.current_layer(),
-            })
-            .collect();
-        let target = if self.new_layer {
-            TargetLayer::New {
-                name: self.new_layer_name.trim().to_string(),
-                color: Color::rgb(0x7d, 0xd3, 0xfc),
-            }
-        } else {
-            TargetLayer::Existing(doc.current_layer())
-        };
-        let label = format!("Import {} points from {}", points.len(), self.file_name);
-        ImportPoints::new(label, target, points)
+            };
+            cmd.add(layer, Entity::Point(point));
+        }
+        cmd
     }
 }
 

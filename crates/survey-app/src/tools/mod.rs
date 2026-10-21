@@ -5,6 +5,8 @@
 //! emit [`Command`]s through [`ToolCtx`], which the app executes through the
 //! undo history (and therefore the audit trail).
 
+mod arc;
+mod circle;
 mod inverse;
 mod point;
 mod polyline;
@@ -27,6 +29,8 @@ pub enum ToolEvent<'a> {
     Point(Pick),
     /// Typed text that was not a point (tool options such as `close` or `undo`).
     Text(&'a str),
+    /// Entities chosen with a window/crossing box.
+    Region(Vec<EntityId>),
     /// Enter / right-click: finish the current operation.
     Finish,
     /// Escape.
@@ -100,6 +104,11 @@ pub trait Tool {
     fn wants_point(&self) -> bool {
         true
     }
+    /// Whether a typed plain number should be passed as text (e.g. a radius)
+    /// rather than looked up as a point name.
+    fn wants_distance(&self) -> bool {
+        false
+    }
     /// The last point entered, for relative input, ortho and perpendicular snaps.
     fn base_point(&self) -> Option<ResolvedPoint> {
         None
@@ -112,7 +121,8 @@ pub trait Tool {
 pub struct ToolDescriptor {
     pub id: &'static str,
     pub name: &'static str,
-    /// Command-line names; the first is canonical.
+    /// Command-line names; the first is canonical. Avoid single letters: they
+    /// would shadow tool options such as `c` (close) or `u` (undo).
     pub commands: &'static [&'static str],
     pub icon: &'static str,
     pub description: &'static str,
@@ -179,10 +189,26 @@ impl DomainModule for CoreModule {
         tools.register(ToolDescriptor {
             id: polyline::ID,
             name: "Polyline",
-            commands: &["polyline", "pl", "line", "l"],
+            commands: &["polyline", "pl", "line"],
             icon: icons::POLYGON,
             description: "Draw a polyline (string); Enter finishes, C closes, U undoes a vertex",
             create: || Box::<polyline::PolylineTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: arc::ID,
+            name: "Arc",
+            commands: &["arc", "ar"],
+            icon: icons::ARC,
+            description: "Arc through three points: start, a point on the arc, end",
+            create: || Box::<arc::ArcTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: circle::ID,
+            name: "Circle",
+            commands: &["circle", "ci"],
+            icon: icons::CIRCLE,
+            description: "Circle from its centre and a radius (pick or type)",
+            create: || Box::<circle::CircleTool>::default(),
         });
         tools.register(ToolDescriptor {
             id: inverse::ID,

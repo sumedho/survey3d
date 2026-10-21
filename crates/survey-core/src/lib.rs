@@ -6,6 +6,7 @@
 //! or formatting output — see [`conventions::Conventions`].
 
 pub mod angle;
+pub mod arc;
 pub mod cogo;
 pub mod conventions;
 pub mod error;

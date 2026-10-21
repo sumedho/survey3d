@@ -28,6 +28,7 @@ fn sample() -> (Document, History) {
     let line = Entity::Polyline(Polyline {
         name: "fence".into(),
         vertices: vec![DVec3::new(1.0, 2.0, 3.0), DVec3::new(4.0, 5.0, 6.0)],
+        bulges: vec![0.25, 0.0],
         closed: false,
         code: "FE".into(),
         layer: LayerId(1),
@@ -167,4 +168,63 @@ fn file_save_as_and_reopen() {
     assert!(reopened.verify_audit().expect("verify").is_valid());
     drop(reopened);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn snapshot_includes_unsaved_changes_without_saving() {
+    let (mut doc, mut history) = sample();
+    let mut store = ProjectStore::create_in_memory().expect("store");
+    save(&mut store, &mut doc, &mut history);
+    history.execute(
+        Box::new(ChangeSet::new("more").insert_entity(point("9", 9.0, None))),
+        &mut doc,
+    );
+    let bytes = store
+        .snapshot_bytes(&doc, history.pending_audit(), "test")
+        .expect("snapshot");
+    assert!(doc.is_dirty(), "snapshot must not clear dirty state");
+    assert!(
+        store
+            .load_document()
+            .expect("load")
+            .find_point_by_name("9")
+            .is_none()
+    );
+    let recovered = ProjectStore::from_bytes(&bytes).expect("open");
+    assert!(
+        recovered
+            .load_document()
+            .expect("load")
+            .find_point_by_name("9")
+            .is_some()
+    );
+    assert!(recovered.verify_audit().expect("verify").is_valid());
+}
+
+#[test]
+fn view_state_and_migration_from_v1() {
+    let store = ProjectStore::create_in_memory().expect("store");
+    assert_eq!(store.read_view_state().expect("read"), None);
+    store.write_view_state("{\"zoom\":1}").expect("write");
+    assert_eq!(
+        store.read_view_state().expect("read").as_deref(),
+        Some("{\"zoom\":1}")
+    );
+
+    // A v1 file (no bulge column) opens and is upgraded.
+    let conn = Connection::open_in_memory().expect("conn");
+    conn.execute_batch(schema::MIGRATIONS[0]).expect("v1");
+    conn.pragma_update(None, "user_version", 1).expect("version");
+    conn.execute_batch(
+        "INSERT INTO strings (id, name, closed, code, layer_id) VALUES (1, 'a', 0, '', 1);
+         INSERT INTO string_vertices (string_id, seq, e, n, z) VALUES (1, 0, 0, 0, 0), (1, 1, 1, 0, 0);",
+    )
+    .expect("data");
+    let bytes = conn.serialize(rusqlite::MAIN_DB).expect("ser").to_vec();
+    let upgraded = ProjectStore::from_bytes(&bytes).expect("migrates");
+    let doc = upgraded.load_document().expect("load");
+    match doc.entity(EntityId(1)) {
+        Some(Entity::Polyline(l)) => assert!(l.bulges.is_empty() && l.vertices.len() == 2),
+        other => panic!("{other:?}"),
+    }
 }

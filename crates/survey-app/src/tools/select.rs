@@ -32,6 +32,16 @@ impl Tool for SelectTool {
                 }
                 ToolOutcome::Continue
             }
+            ToolEvent::Region(ids) => {
+                if ctx.shift {
+                    for id in ids {
+                        ctx.selection.insert(id);
+                    }
+                } else {
+                    ctx.selection.set(ids);
+                }
+                ToolOutcome::Continue
+            }
             ToolEvent::Cancel => {
                 ctx.selection.clear();
                 ToolOutcome::Continue

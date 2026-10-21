@@ -111,6 +111,26 @@ Implemented as planned, with these deviations:
 Known follow-ups: scale bar always labels metres; point labels; window/crossing selection;
 web autosave (OPFS); remembering camera per project.
 
+## Phase 1 status (2026-10-21): complete
+
+- **Arcs** are DXF-style *bulges* on polyline segments (`survey_core::arc`): one representation for
+  cadastral boundaries, circles (two semicircles) and DXF interchange. Exact plan-view geometry: lengths,
+  areas, line–arc / arc–arc intersections; tessellated only for drawing and 3D apparent snaps.
+- **Tools:** Arc (3-point) and Circle (centre + picked/typed radius). Centre snap added (offered while
+  hovering an arc). Single-letter command aliases were removed so they never shadow tool options.
+- **Window / crossing selection** (`egui_cad::selection`): drag left→right = window, right→left = crossing.
+- **Point labels** (`egui_cad::labels`): name/code/height with collision culling; Settings → Display.
+- **DXF** (`survey_io::dxf`, dependency-free): reads POINT, LINE, LWPOLYLINE, POLYLINE/VERTEX (2D/3D), ARC,
+  CIRCLE, layers + colours (ACI / true colour), mirrored OCS; writes R12. Imports are one undoable,
+  audited `ImportEntities` command that also creates layers.
+- **Storage:** schema v2 (vertex bulges) via the migration system; per-project saved view; snapshot
+  bytes for recovery.
+- **Web autosave:** unsaved edits are snapshotted to OPFS every 15 s; the next session offers recovery.
+- Fixes: unit-aware scale bar; untouched new projects are no longer "unsaved".
+
+Known follow-ups: polyline tool arc segments (tangent/3-point within a polyline), editing vertices,
+DXF TEXT/INSERT, point names in DXF export (as text), native autosave.
+
 ## Roadmap
 
 - **Phase 0 — scaffold (done):** workspace; native + web builds; wgpu viewport (grid, axes, points, lines) with
@@ -118,7 +138,7 @@ web autosave (OPFS); remembering camera per project.
   properties, command line, status bar); Conventions system; Document (points, polylines, layers) with
   R-tree and undo/redo; **snapping**; tools: Select, Point, Line/Polyline, Inverse; CSV import;
   `.s3d` save/load with audit trail; core unit tests; clippy/fmt/wasm CI config.
-- **Phase 1 — CAD basics:** arcs, window/crossing selection, labels, property editing, DXF import/export, OPFS autosave.
+- **Phase 1 — CAD basics (done):** arcs, window/crossing selection, labels, property editing, DXF import/export, OPFS autosave.
 - **Phase 2 — COGO & field-to-finish:** radiation, intersections, offsets, traverse + Bowditch with misclosure
   report, feature code library and auto-linework.
 - **Phase 3 — surfaces:** TIN with breaklines, contours, volumes, sections, LandXML surfaces.

@@ -34,4 +34,8 @@ env_logger.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures.workspace = true
 js-sys.workspace = true
-web-sys = { workspace = true, features = ["Window", "Document", "Element", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url"] }
+web-sys = { workspace = true, features = [
+    "Window", "Document", "Element", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url",
+    "Navigator", "StorageManager", "File", "FileSystemDirectoryHandle", "FileSystemFileHandle",
+    "FileSystemGetFileOptions", "FileSystemWritableFileStream", "WritableStream",
+] }

@@ -4,7 +4,7 @@ use egui::RichText;
 use egui_cad::CadTheme;
 use egui_cad::property_grid::{PropertyGridUi, property_grid};
 use survey_core::Conventions;
-use survey_core::geom::{polygon_area_signed, polyline_length, polyline_length_2d};
+use survey_core::arc::{Arc, polyline_metrics};
 use survey_model::{ChangeSet, Command, Document, Entity, EntityId, LayerId, Selection};
 
 /// Shows the panel and returns any edits as commands.
@@ -146,24 +146,30 @@ fn single(ui: &mut egui::Ui, doc: &Document, id: EntityId) -> Option<Box<dyn Com
                     changed = true;
                 }
                 g.section("Geometry");
+                let (len2, len3, area) = polyline_metrics(&l.vertices, &l.bulges, l.closed);
+                let arcs: Vec<Arc> = l
+                    .segments()
+                    .filter_map(|(a, b, bulge)| Arc::from_bulge(a, b, bulge))
+                    .collect();
                 g.readonly_mono("Vertices", &l.vertices.len().to_string());
-                g.readonly_mono(
-                    "Length (plan)",
-                    &conv.format_length_with_unit(polyline_length_2d(&l.vertices, l.closed)),
-                );
-                g.readonly_mono(
-                    "Length (3D)",
-                    &conv.format_length_with_unit(polyline_length(&l.vertices, l.closed)),
-                );
-                if l.closed && l.vertices.len() >= 3 {
-                    let area = polygon_area_signed(&l.vertices).abs();
+                if !arcs.is_empty() {
+                    g.readonly_mono("Arc segments", &arcs.len().to_string());
+                    // One radius for a single arc or a circle (all arcs share a radius).
+                    if arcs.iter().all(|a| (a.radius - arcs[0].radius).abs() < 1e-9) {
+                        g.readonly_mono("Radius", &conv.format_length_with_unit(arcs[0].radius));
+                    }
+                }
+                g.readonly_mono("Length (plan)", &conv.format_length_with_unit(len2));
+                g.readonly_mono("Length (3D)", &conv.format_length_with_unit(len3));
+                let polygon = l.closed && (l.vertices.len() >= 3 || !arcs.is_empty());
+                if polygon {
                     let unit = conv.linear_unit.metres_per_unit();
                     g.readonly_mono(
                         "Area",
                         &format!(
                             "{:.*} {}²",
                             usize::from(conv.linear_decimals),
-                            area / (unit * unit),
+                            area.abs() / (unit * unit),
                             conv.linear_unit.suffix()
                         ),
                     );

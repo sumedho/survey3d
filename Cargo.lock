@@ -3245,6 +3245,7 @@ name = "survey-io"
 version = "0.1.0"
 dependencies = [
  "csv",
+ "glam",
  "serde",
  "survey-core",
  "thiserror 2.0.21",

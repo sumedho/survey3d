@@ -324,15 +324,20 @@ impl Camera {
 
     /// A pick volume around a pixel: a thin frustum `half_px` pixels wide.
     pub fn pick_frustum(&self, px: DVec2, half_px: f64) -> Frustum {
+        self.rect_frustum(px - DVec2::splat(half_px), px + DVec2::splat(half_px))
+    }
+
+    /// The volume seen through a screen rectangle (e.g. a selection window).
+    pub fn rect_frustum(&self, min: DVec2, max: DVec2) -> Frustum {
+        let (min, max) = (min.min(max), min.max(max).max(min.min(max) + DVec2::splat(1e-6)));
         let corners = [
-            DVec2::new(px.x - half_px, px.y - half_px),
-            DVec2::new(px.x + half_px, px.y - half_px),
-            DVec2::new(px.x + half_px, px.y + half_px),
-            DVec2::new(px.x - half_px, px.y + half_px),
+            DVec2::new(min.x, min.y),
+            DVec2::new(max.x, min.y),
+            DVec2::new(max.x, max.y),
+            DVec2::new(min.x, max.y),
         ]
         .map(|c| self.screen_ray(c));
-        let center = self.screen_ray(px);
-        let inside = center.at(1.0);
+        let inside = self.screen_ray((min + max) * 0.5).at(1.0);
         let mut planes = Vec::with_capacity(5);
         for i in 0..4 {
             let (a, b) = (corners[i], corners[(i + 1) % 4]);

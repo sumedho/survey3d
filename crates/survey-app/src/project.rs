@@ -14,6 +14,9 @@ pub struct Project {
     pub store: ProjectStore,
     /// File name shown in the title bar.
     pub display_name: String,
+    /// For a brand-new project: the document revision at creation. Until it
+    /// changes there is nothing worth saving, so the project is not "dirty".
+    pristine_revision: Option<u64>,
 }
 
 impl Project {
@@ -23,12 +26,14 @@ impl Project {
         meta.conventions = settings.default_conventions.clone();
         // Not an edit: initial settings of a brand-new project.
         doc.set_meta(meta);
+        let pristine_revision = Some(doc.revision());
         Ok(Self {
             doc,
             history: History::new(settings.user_name.clone()),
             selection: Selection::default(),
             store: ProjectStore::create_in_memory()?,
             display_name: "Untitled".into(),
+            pristine_revision,
         })
     }
 
@@ -43,12 +48,14 @@ impl Project {
             selection: Selection::default(),
             store,
             display_name,
+            pristine_revision: None,
         })
     }
 
     /// Unsaved edits exist (document changes or audit entries not yet written).
     pub fn is_dirty(&self) -> bool {
-        self.doc.is_dirty() || !self.history.pending_audit().is_empty()
+        let untouched = self.pristine_revision == Some(self.doc.revision());
+        (self.doc.is_dirty() && !untouched) || !self.history.pending_audit().is_empty()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -74,6 +81,13 @@ impl Project {
         self.store.save_as_file(path)?;
         self.display_name = crate::platform::file_name(path);
         Ok(())
+    }
+
+    /// The project including unsaved changes, without saving (crash recovery).
+    #[cfg(target_arch = "wasm32")]
+    pub fn snapshot(&self) -> Result<Vec<u8>, StoreError> {
+        self.store
+            .snapshot_bytes(&self.doc, self.history.pending_audit(), APP_VERSION)
     }
 
     /// Saves and returns the whole project file (web download).

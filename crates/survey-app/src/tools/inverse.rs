@@ -69,6 +69,7 @@ impl Tool for InverseTool {
                 ctx.log.error(format!("Unknown option '{other}'"));
                 ToolOutcome::Continue
             }
+            ToolEvent::Region(_) => ToolOutcome::Continue,
             ToolEvent::Finish | ToolEvent::Cancel => {
                 if self.from.take().is_some() {
                     ToolOutcome::Continue

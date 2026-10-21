@@ -3,6 +3,11 @@
 use std::collections::HashMap;
 
 use egui::{Color32, RichText, Stroke};
+use egui_cad::labels::LabelPlacer;
+use egui_cad::selection::SelectionBox;
+
+use crate::platform::FileKind;
+use crate::scene_build::select_in_box;
 use egui_cad::ThemeMode;
 
 use super::*;
@@ -16,6 +21,9 @@ enum Action {
     #[cfg(not(target_arch = "wasm32"))]
     SaveAs,
     Import,
+    ImportDxf,
+    ExportDxf,
+    Labels,
     #[cfg(not(target_arch = "wasm32"))]
     Quit,
     Undo,
@@ -35,6 +43,9 @@ enum Action {
     Help,
     About,
 }
+
+/// Horizontal gap between a point marker and its label (px).
+const LABEL_GAP: f32 = 7.0;
 
 /// Palette for new layers.
 const LAYER_COLORS: [Color; 8] = [
@@ -101,6 +112,8 @@ impl SurveyApp {
                 );
                 ui.separator();
                 item(ui, "Import points (CSV/TXT)…", None, Action::Import, &mut action);
+                item(ui, "Import DXF…", None, Action::ImportDxf, &mut action);
+                item(ui, "Export DXF…", None, Action::ExportDxf, &mut action);
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     ui.separator();
@@ -177,6 +190,7 @@ impl SurveyApp {
                     Action::DraftingSettings,
                     &mut action,
                 );
+                item(ui, "Labels…", None, Action::Labels, &mut action);
                 ui.separator();
                 item(
                     ui,
@@ -262,7 +276,10 @@ impl SurveyApp {
             Action::Save => self.save(ctx),
             #[cfg(not(target_arch = "wasm32"))]
             Action::SaveAs => self.save_as(),
-            Action::Import => self.platform.pick_csv(ctx),
+            Action::Import => self.platform.pick_file(ctx, FileKind::Points),
+            Action::ImportDxf => self.platform.pick_file(ctx, FileKind::Dxf),
+            Action::ExportDxf => self.export_dxf(),
+            Action::Labels => self.settings_window.open_at_display(),
             #[cfg(not(target_arch = "wasm32"))]
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::Undo => self.undo(),
@@ -305,12 +322,9 @@ impl SurveyApp {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let unsaved = self.project.is_dirty();
-                ui.label(
-                    RichText::new(if unsaved { "● unsaved" } else { "saved" })
-                        .small()
-                        .color(if unsaved { theme.warning } else { theme.text_dim }),
-                );
+                if self.project.is_dirty() {
+                    ui.label(RichText::new("● unsaved").small().color(theme.warning));
+                }
                 let sel = self.project.selection.len();
                 if sel > 0 {
                     ui.label(
@@ -525,6 +539,7 @@ impl SurveyApp {
             .anchor(anchor)
             .extra_bounds(extra)
             .axis_labels(labels)
+            .length_unit(conv.linear_unit.metres_per_unit(), conv.linear_unit.suffix())
             .show(ui);
 
         self.pick = out.hover.map(|c| self.compute_pick(c, grid.as_ref()));
@@ -542,7 +557,27 @@ impl SurveyApp {
         let mut preview = Preview::default();
         self.active_tool.preview(&conv, self.pick.as_ref(), &mut preview);
         let painter = ui.painter_at(out.rect);
+        if self.settings.labels.any() {
+            self.draw_labels(&painter, out.rect, &theme);
+        }
         self.draw_overlays(&painter, out.rect, &preview, out.hover, &theme);
+
+        // Window / crossing selection with the select tool.
+        if !self.active_tool.wants_point() {
+            if let Some((a, b)) = out.drag {
+                SelectionBox::from_drag(a, b).draw(&painter, out.rect, &theme);
+            }
+            if let Some((a, b)) = out.drag_released
+                && a.distance(b) > 3.0
+            {
+                let ids = select_in_box(
+                    &self.project.doc,
+                    &self.viewport.camera,
+                    &SelectionBox::from_drag(a, b),
+                );
+                self.dispatch(ToolEvent::Region(ids));
+            }
+        }
 
         if let Some(c) = out.clicked {
             let pick = self.compute_pick(c, grid.as_ref());
@@ -607,20 +642,10 @@ impl SurveyApp {
                     }
                 }
                 Some(Entity::Polyline(l)) => {
-                    let mut pts = l.vertices.clone();
-                    if l.closed
-                        && let Some(first) = l.vertices.first()
-                    {
-                        pts.push(*first);
+                    let stroke = Stroke::new(3.0, theme.hover.gamma_multiply(0.8));
+                    for part in l.tessellate(cam.world_per_pixel() * 0.5) {
+                        draw_world_polyline(painter, rect, cam, &part, stroke, false);
                     }
-                    draw_world_polyline(
-                        painter,
-                        rect,
-                        cam,
-                        &pts,
-                        Stroke::new(3.0, theme.hover.gamma_multiply(0.8)),
-                        false,
-                    );
                 }
                 None => {}
             }
@@ -663,9 +688,68 @@ impl SurveyApp {
         }
     }
 
+    /// Point labels (name / code / height), skipping any that would overlap.
+    fn draw_labels(&self, painter: &egui::Painter, rect: egui::Rect, theme: &CadTheme) {
+        let cam = &self.viewport.camera;
+        let doc = &self.project.doc;
+        let conv = doc.conventions();
+        let opts = &self.settings.labels;
+        let frustum = cam.rect_frustum(glam::DVec2::ZERO, cam.viewport);
+        let mut ids = Vec::new();
+        doc.query(&|b| frustum.intersects_aabb(b), &mut ids);
+        let mut placer = LabelPlacer::new(rect, 3000);
+        let font = egui::FontId::proportional(opts.size);
+        let small = egui::FontId::proportional((opts.size - 1.5).max(7.0));
+        for id in ids {
+            if placer.is_full() {
+                break;
+            }
+            let Some(Entity::Point(p)) = doc.entity(id) else {
+                continue;
+            };
+            if !doc.is_layer_visible(p.layer) {
+                continue;
+            }
+            let Some((s, _)) = cam.world_to_screen(p.position) else {
+                continue;
+            };
+            let anchor = to_screen(rect, s);
+            // Keep the marker clear; labels start beyond it (the placer pads by 2 px).
+            placer.reserve(egui::Rect::from_center_size(anchor, egui::vec2(6.0, 6.0)));
+
+            let mut job = egui::text::LayoutJob::default();
+            let mut line = |text: &str, font: &egui::FontId, color: Color32| {
+                if !job.text.is_empty() {
+                    job.append("\n", 0.0, egui::TextFormat::simple(font.clone(), color));
+                }
+                job.append(text, 0.0, egui::TextFormat::simple(font.clone(), color));
+            };
+            if opts.names && !p.name.is_empty() {
+                line(&p.name, &font, theme.text);
+            }
+            if opts.codes && !p.code.is_empty() {
+                line(&p.code, &small, theme.accent);
+            }
+            if opts.heights && p.height_known {
+                line(&conv.format_length(p.position.z), &small, theme.text_dim);
+            }
+            if job.text.is_empty() {
+                continue;
+            }
+            let galley = painter.layout_job(job);
+            let size = galley.size();
+            if let Some(r) = placer.place(anchor, egui::vec2(LABEL_GAP, -size.y * 0.5), size) {
+                painter.galley(r.min, galley, theme.text);
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ dialogs
 
     pub(super) fn dialogs(&mut self, ctx: &egui::Context) {
+        #[cfg(target_arch = "wasm32")]
+        self.recovery_prompt(ctx);
+
         if let Some(dialog) = &mut self.csv_dialog {
             match dialog.show(ctx, &self.project.doc) {
                 CsvDialogResult::Open => {}
@@ -746,6 +830,57 @@ impl SurveyApp {
 }
 
 /// Draws text in a small box near `pos`, kept inside `bounds`.
+#[cfg(target_arch = "wasm32")]
+impl SurveyApp {
+    /// Offers to restore unsaved work found in browser storage.
+    fn recovery_prompt(&mut self, ctx: &egui::Context) {
+        if self.recovery.is_none() {
+            return;
+        }
+        let mut choice = None;
+        egui::Modal::new(egui::Id::unique("recovery")).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.heading("Recover unsaved work?");
+            ui.label("survey3d found work from a previous session that was not saved.");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Recover").clicked() {
+                    choice = Some(true);
+                }
+                if ui
+                    .button(RichText::new("Discard").color(self.theme.error))
+                    .clicked()
+                {
+                    choice = Some(false);
+                }
+            });
+        });
+        let Some(recover) = choice else {
+            return;
+        };
+        let bytes = self.recovery.take().unwrap_or_default();
+        if recover {
+            let result = ProjectStore::from_bytes(&bytes)
+                .and_then(|store| Project::from_store(store, "Recovered".into(), &self.settings));
+            match result {
+                Ok(mut p) => {
+                    // Not saved anywhere the user controls yet.
+                    p.doc.mark_all_dirty();
+                    let n = p.doc.entity_count();
+                    self.replace_project(p);
+                    self.command_line
+                        .warn(format!("Recovered {n} objects — save to keep them (Ctrl+S)"));
+                }
+                Err(e) => self.command_line.error(format!("Recovery failed: {e}")),
+            }
+        } else {
+            wasm_bindgen_futures::spawn_local(async {
+                let _ = crate::platform::opfs::remove(crate::platform::opfs::AUTOSAVE).await;
+            });
+        }
+    }
+}
+
 fn label_box(painter: &egui::Painter, bounds: egui::Rect, pos: egui::Pos2, text: &str, theme: &CadTheme) {
     let galley = painter.layout_no_wrap(text.to_string(), egui::FontId::monospace(11.5), theme.text);
     let size = galley.size();

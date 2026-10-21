@@ -6,9 +6,14 @@
 //! codepoints are listed at <https://phosphoricons.com>.
 
 pub const ANGLE: &str = "\u{E7BC}";
+/// Arc tool (Phosphor `bezier-curve`).
+pub const ARC: &str = "\u{EB00}";
 pub const ARROWS_OUT_CARDINAL: &str = "\u{E0A4}";
 pub const ARROW_U_UP_LEFT: &str = "\u{E08A}";
 pub const ARROW_U_UP_RIGHT: &str = "\u{E08C}";
+pub const EXPORT: &str = "\u{EAF0}";
+pub const FILE_ARROW_UP: &str = "\u{E61E}";
+pub const TAG: &str = "\u{E478}";
 pub const CHECK: &str = "\u{E182}";
 pub const CIRCLE: &str = "\u{E18A}";
 pub const CLOCK_COUNTER_CLOCKWISE: &str = "\u{E1A0}";

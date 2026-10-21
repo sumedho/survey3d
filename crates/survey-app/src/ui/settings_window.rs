@@ -15,6 +15,7 @@ use crate::settings::AppSettings;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Drafting,
+    Display,
     Conventions,
     Coordinates,
     General,
@@ -33,6 +34,11 @@ impl SettingsWindow {
     pub fn open_at_drafting(&mut self) {
         self.open = true;
         self.tab = Some(Tab::Drafting);
+    }
+
+    pub fn open_at_display(&mut self) {
+        self.open = true;
+        self.tab = Some(Tab::Display);
     }
 
     pub fn open_at_conventions(&mut self) {
@@ -62,6 +68,7 @@ impl SettingsWindow {
                 ui.horizontal(|ui| {
                     for (t, label) in [
                         (Tab::Drafting, "Drafting"),
+                        (Tab::Display, "Display"),
                         (Tab::Conventions, "Conventions"),
                         (Tab::Coordinates, "Coordinates"),
                         (Tab::General, "General"),
@@ -73,6 +80,7 @@ impl SettingsWindow {
                 match *tab {
                     Tab::General => general(ui, settings),
                     Tab::Drafting => drafting(ui, settings),
+                    Tab::Display => display(ui, settings),
                     Tab::Conventions => {
                         let draft = self.conventions.get_or_insert_with(|| doc.conventions().clone());
                         conventions_editor(ui, draft);
@@ -130,21 +138,40 @@ impl SettingsWindow {
 }
 
 fn general(ui: &mut egui::Ui, settings: &mut AppSettings) {
-    egui::Grid::new("general_settings")
-        .num_columns(2)
-        .spacing([12.0, 6.0])
-        .show(ui, |ui| {
-            ui.label("User name");
-            ui.text_edit_singleline(&mut settings.user_name)
-                .on_hover_text("Recorded with every edit in the project audit trail");
-            ui.end_row();
-            ui.label("Theme");
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut settings.theme, ThemeMode::Dark, "Dark");
-                ui.selectable_value(&mut settings.theme, ThemeMode::Light, "Light");
-            });
-            ui.end_row();
-        });
+    ui.horizontal(|ui| {
+        ui.label("User name");
+        ui.text_edit_singleline(&mut settings.user_name)
+            .on_hover_text("Recorded with every edit in the project audit trail");
+    });
+}
+
+/// How things look: theme, grid and point labels.
+fn display(ui: &mut egui::Ui, settings: &mut AppSettings) {
+    section_header(ui, "Appearance");
+    ui.horizontal(|ui| {
+        ui.label("Theme");
+        ui.selectable_value(&mut settings.theme, ThemeMode::Dark, "Dark");
+        ui.selectable_value(&mut settings.theme, ThemeMode::Light, "Light");
+    });
+    ui.checkbox(&mut settings.show_grid, "Show grid (F7)");
+
+    ui.add_space(6.0);
+    section_header(ui, "Point labels");
+    let labels = &mut settings.labels;
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut labels.names, "Name");
+        ui.checkbox(&mut labels.codes, "Code");
+        ui.checkbox(&mut labels.heights, "Height");
+    });
+    ui.add_enabled(
+        labels.any(),
+        egui::Slider::new(&mut labels.size, 8.0..=18.0).text("text size"),
+    );
+    ui.label(
+        RichText::new("Overlapping labels are hidden automatically; zoom in to see more.")
+            .small()
+            .weak(),
+    );
 }
 
 /// Everything that affects picking and drawing in the viewport.
@@ -186,8 +213,7 @@ fn drafting(ui: &mut egui::Ui, settings: &mut AppSettings) {
     );
 
     ui.add_space(6.0);
-    section_header(ui, "Grid and working plane");
-    ui.checkbox(&mut settings.show_grid, "Show grid (F7)");
+    section_header(ui, "Working plane");
     ui.horizontal(|ui| {
         ui.add(
             egui::DragValue::new(&mut settings.working_z)

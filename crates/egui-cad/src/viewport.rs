@@ -95,6 +95,10 @@ pub struct ViewportOutput {
     pub secondary_clicked: bool,
     /// The camera changed this frame (pan/zoom/orbit).
     pub navigated: bool,
+    /// A primary-button drag in progress: `(start, current)` in viewport pixels.
+    pub drag: Option<(DVec2, DVec2)>,
+    /// A primary-button drag that ended this frame: `(start, end)`.
+    pub drag_released: Option<(DVec2, DVec2)>,
 }
 
 pub struct Viewport<'a> {
@@ -105,6 +109,8 @@ pub struct Viewport<'a> {
     anchor: Option<DVec3>,
     extra_bounds: Aabb3,
     axis_labels: [String; 3],
+    /// Metres per display unit and its suffix, for the scale bar.
+    length_unit: (f64, String),
 }
 
 impl<'a> Viewport<'a> {
@@ -117,6 +123,7 @@ impl<'a> Viewport<'a> {
             anchor: None,
             extra_bounds: Aabb3::EMPTY,
             axis_labels: ["X".into(), "Y".into(), "Z".into()],
+            length_unit: (1.0, "m".into()),
         }
     }
 
@@ -139,6 +146,12 @@ impl<'a> Viewport<'a> {
     /// Extra geometry (e.g. tool previews) that must not be clipped by near/far.
     pub fn extra_bounds(mut self, bounds: Aabb3) -> Self {
         self.extra_bounds = bounds;
+        self
+    }
+
+    /// Display unit for the scale bar (e.g. `(0.3048, "ft")`).
+    pub fn length_unit(mut self, metres_per_unit: f64, suffix: &str) -> Self {
+        self.length_unit = (metres_per_unit, suffix.to_string());
         self
     }
 
@@ -243,7 +256,7 @@ impl<'a> Viewport<'a> {
         let painter = ui.painter_at(rect);
         draw_axis_gizmo(&painter, rect, cam, &self.axis_labels, &theme);
         if cam.projection == Projection::Orthographic {
-            draw_scale_bar(&painter, rect, cam, &theme);
+            draw_scale_bar(&painter, rect, cam, &self.length_unit, &theme);
         }
 
         let clicked = response
@@ -251,6 +264,24 @@ impl<'a> Viewport<'a> {
             .then(|| response.interact_pointer_pos().map(to_local))
             .flatten();
         let secondary_clicked = response.clicked_by(egui::PointerButton::Secondary);
+
+        let drag_id = response.id.with("primary_drag_start");
+        let pointer = response.interact_pointer_pos().map(to_local);
+        if response.drag_started_by(egui::PointerButton::Primary)
+            && let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_local)
+        {
+            ui.data_mut(|d| d.insert_temp(drag_id, p));
+        }
+        let start: Option<DVec2> = ui.data(|d| d.get_temp(drag_id));
+        let drag = (response.dragged_by(egui::PointerButton::Primary))
+            .then(|| start.zip(pointer))
+            .flatten();
+        let drag_released = if response.drag_stopped_by(egui::PointerButton::Primary) {
+            ui.data_mut(|d| d.remove::<DVec2>(drag_id));
+            start.zip(pointer.or(hover))
+        } else {
+            None
+        };
         ViewportOutput {
             response,
             rect,
@@ -258,6 +289,8 @@ impl<'a> Viewport<'a> {
             clicked,
             secondary_clicked,
             navigated,
+            drag,
+            drag_released,
         }
     }
 }
@@ -306,20 +339,22 @@ fn draw_axis_gizmo(
     }
 }
 
-fn draw_scale_bar(painter: &egui::Painter, rect: Rect, cam: &Camera, theme: &CadTheme) {
-    let wpp = cam.world_per_pixel();
-    if !(wpp.is_finite() && wpp > 0.0) {
+fn draw_scale_bar(painter: &egui::Painter, rect: Rect, cam: &Camera, unit: &(f64, String), theme: &CadTheme) {
+    let (metres_per_unit, suffix) = (unit.0.max(1e-12), unit.1.as_str());
+    // Work in display units so bar lengths are round numbers of that unit.
+    let upp = cam.world_per_pixel() / metres_per_unit;
+    if !(upp.is_finite() && upp > 0.0) {
         return;
     }
     // Pick a 1/2/5 × 10^k length close to 120 px.
-    let target = wpp * 120.0;
+    let target = upp * 120.0;
     let pow = 10f64.powf(target.log10().floor());
     let length = [1.0, 2.0, 5.0, 10.0]
         .into_iter()
         .map(|m| m * pow)
         .min_by(|a, b| (a - target).abs().total_cmp(&(b - target).abs()))
         .unwrap_or(pow);
-    let px = (length / wpp) as f32;
+    let px = (length / upp) as f32;
     let right = rect.max.x - 16.0;
     let y = rect.max.y - 18.0;
     let left = right - px;
@@ -328,12 +363,13 @@ fn draw_scale_bar(painter: &egui::Painter, rect: Rect, cam: &Camera, theme: &Cad
     for x in [left, (left + right) * 0.5, right] {
         painter.line_segment([pos2(x, y - 4.0), pos2(x, y)], stroke);
     }
-    let text = if length >= 1000.0 {
+    let text = if suffix == "m" && length >= 1000.0 {
         format!("{} km", length / 1000.0)
-    } else if length >= 1.0 {
-        format!("{length} m")
-    } else {
+    } else if suffix == "m" && length < 1.0 {
         format!("{} mm", (length * 1000.0).round())
+    } else {
+        // Trim float noise such as 0.30000000000000004.
+        format!("{} {suffix}", (length * 1e6).round() / 1e6)
     };
     painter.text(
         pos2((left + right) * 0.5, y - 6.0),

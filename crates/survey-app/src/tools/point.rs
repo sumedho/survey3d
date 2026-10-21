@@ -51,6 +51,7 @@ impl Tool for PointTool {
                 });
                 ToolOutcome::Continue
             }
+            ToolEvent::Region(_) => ToolOutcome::Continue,
             ToolEvent::Finish | ToolEvent::Cancel => ToolOutcome::Done,
         }
     }

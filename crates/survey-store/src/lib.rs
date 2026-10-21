@@ -214,14 +214,14 @@ impl ProjectStore {
     fn load_polylines(&self) -> Result<Vec<(EntityId, Entity)>> {
         let mut vstmt = self
             .conn
-            .prepare("SELECT string_id, e, n, z FROM string_vertices ORDER BY string_id, seq")?;
-        let mut vertices: std::collections::HashMap<i64, Vec<DVec3>> = Default::default();
+            .prepare("SELECT string_id, e, n, z, bulge FROM string_vertices ORDER BY string_id, seq")?;
+        type Vertices = (Vec<DVec3>, Vec<f64>);
+        let mut vertices: std::collections::HashMap<i64, Vertices> = Default::default();
         let mut rows = vstmt.query([])?;
         while let Some(r) = rows.next()? {
-            vertices
-                .entry(r.get(0)?)
-                .or_default()
-                .push(DVec3::new(r.get(1)?, r.get(2)?, r.get(3)?));
+            let entry = vertices.entry(r.get(0)?).or_default();
+            entry.0.push(DVec3::new(r.get(1)?, r.get(2)?, r.get(3)?));
+            entry.1.push(r.get(4)?);
         }
         let mut stmt = self
             .conn
@@ -233,6 +233,7 @@ impl ProjectStore {
                 Entity::Polyline(Polyline {
                     name: r.get(1)?,
                     vertices: Vec::new(),
+                    bulges: Vec::new(),
                     closed: r.get(2)?,
                     code: r.get(3)?,
                     layer: LayerId(r.get(4)?),
@@ -242,7 +243,14 @@ impl ProjectStore {
         let mut out: Vec<(EntityId, Entity)> = rows.collect::<rusqlite::Result<_>>()?;
         for (id, e) in &mut out {
             if let Entity::Polyline(p) = e {
-                p.vertices = vertices.remove(&id.0).unwrap_or_default();
+                let (verts, bulges) = vertices.remove(&id.0).unwrap_or_default();
+                p.vertices = verts;
+                // All-straight polylines keep an empty bulge list.
+                p.bulges = if bulges.iter().any(|b| *b != 0.0) {
+                    bulges
+                } else {
+                    Vec::new()
+                };
             }
         }
         Ok(out)
@@ -254,20 +262,39 @@ impl ProjectStore {
     /// document's dirty set is cleared; on failure nothing is written.
     pub fn save(&mut self, doc: &mut Document, audit: &[AuditRecord], app_version: &str) -> Result<()> {
         let tx = self.conn.transaction()?;
-        let dirty = doc.dirty().clone();
-        if dirty.meta {
-            write_meta(&tx, doc.meta())?;
-        }
-        if !dirty.layers.is_empty() {
-            write_layers(&tx, doc)?;
-        }
-        for id in &dirty.entities {
-            write_entity(&tx, *id, doc.entity(*id))?;
-        }
-        append_audit(&tx, audit, app_version)?;
+        write_changes(&tx, doc, audit, app_version)?;
         tx.commit()?;
         doc.take_dirty();
         Ok(())
+    }
+
+    /// The project file as it *would* be after saving, without saving: unsaved
+    /// changes are applied to a copy. Used for crash-recovery snapshots.
+    pub fn snapshot_bytes(
+        &self,
+        doc: &Document,
+        audit: &[AuditRecord],
+        app_version: &str,
+    ) -> Result<Vec<u8>> {
+        let mut copy = Self::from_bytes(&self.to_bytes()?)?;
+        let tx = copy.conn.transaction()?;
+        write_changes(&tx, doc, audit, app_version)?;
+        tx.commit()?;
+        copy.to_bytes()
+    }
+
+    /// Stores view state (camera etc.) as opaque JSON. Display state, not audited.
+    pub fn write_view_state(&self, json: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO project_meta (key, value) VALUES ('view_state', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [json],
+        )?;
+        Ok(())
+    }
+
+    pub fn read_view_state(&self) -> Result<Option<String>> {
+        self.meta_value("view_state")
     }
 
     // ------------------------------------------------------------------ audit
@@ -371,6 +398,25 @@ fn entry_hash(
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+fn write_changes(
+    tx: &Transaction<'_>,
+    doc: &Document,
+    audit: &[AuditRecord],
+    app_version: &str,
+) -> Result<()> {
+    let dirty = doc.dirty();
+    if dirty.meta {
+        write_meta(tx, doc.meta())?;
+    }
+    if !dirty.layers.is_empty() {
+        write_layers(tx, doc)?;
+    }
+    for id in &dirty.entities {
+        write_entity(tx, *id, doc.entity(*id))?;
+    }
+    append_audit(tx, audit, app_version)
+}
+
 fn write_meta(tx: &Transaction<'_>, meta: &ProjectMeta) -> Result<()> {
     let mut put = tx.prepare_cached(
         "INSERT INTO project_meta (key, value) VALUES (?1, ?2)
@@ -440,10 +486,10 @@ fn write_entity(tx: &Transaction<'_>, id: EntityId, entity: Option<&Entity>) -> 
             )?
             .execute(params![id.0, l.name, l.closed, l.code, l.layer.0])?;
             let mut ins = tx.prepare_cached(
-                "INSERT INTO string_vertices (string_id, seq, e, n, z) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO string_vertices (string_id, seq, e, n, z, bulge) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
             for (seq, v) in l.vertices.iter().enumerate() {
-                ins.execute(params![id.0, seq as i64, v.x, v.y, v.z])?;
+                ins.execute(params![id.0, seq as i64, v.x, v.y, v.z, l.bulge(seq)])?;
             }
         }
     }

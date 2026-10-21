@@ -8,6 +8,7 @@
 use cad_render::{Camera, Frustum};
 use glam::{DVec2, DVec3};
 use serde::{Deserialize, Serialize};
+use survey_core::arc::Arc;
 use survey_core::geom::{closest_point_on_segment, closest_ray_segment, line_intersection_2d};
 
 /// Kinds of snap, in display order.
@@ -24,15 +25,18 @@ pub enum SnapMode {
     /// Closest point on a line.
     Nearest,
     Grid,
+    /// Centre of an arc or circle.
+    Centre,
 }
 
 impl SnapMode {
-    pub const ALL: [SnapMode; 7] = [
+    pub const ALL: [SnapMode; 8] = [
         SnapMode::Node,
         SnapMode::Endpoint,
         SnapMode::Midpoint,
         SnapMode::Intersection,
         SnapMode::Perpendicular,
+        SnapMode::Centre,
         SnapMode::Nearest,
         SnapMode::Grid,
     ];
@@ -46,6 +50,7 @@ impl SnapMode {
             SnapMode::Perpendicular => "Perpendicular",
             SnapMode::Nearest => "Nearest",
             SnapMode::Grid => "Grid",
+            SnapMode::Centre => "Centre",
         }
     }
 
@@ -59,11 +64,15 @@ impl SnapMode {
             SnapMode::Perpendicular => "per",
             SnapMode::Nearest => "nea",
             SnapMode::Grid => "gri",
+            SnapMode::Centre => "cen",
         }
     }
 
     pub fn from_code(code: &str) -> Option<SnapMode> {
         let code = code.trim().to_ascii_lowercase();
+        if code == "center" {
+            return Some(SnapMode::Centre);
+        }
         Self::ALL
             .into_iter()
             .find(|m| code.len() >= 3 && m.label().to_ascii_lowercase().starts_with(&code))
@@ -78,6 +87,7 @@ impl SnapMode {
             SnapMode::Intersection => 2,
             SnapMode::Midpoint => 3,
             SnapMode::Perpendicular => 4,
+            SnapMode::Centre => 4,
             SnapMode::Nearest => 5,
             SnapMode::Grid => 6,
         }
@@ -110,6 +120,7 @@ impl Default for SnapSettings {
             SnapMode::Midpoint,
             SnapMode::Intersection,
             SnapMode::Perpendicular,
+            SnapMode::Centre,
         ] {
             s.set(m, true);
         }
@@ -149,8 +160,27 @@ impl SnapSettings {
 /// Snappable geometry supplied by the application.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SnapGeom {
-    Point { p: DVec3, height_known: bool },
-    Segment { a: DVec3, b: DVec3 },
+    Point {
+        p: DVec3,
+        height_known: bool,
+    },
+    Segment {
+        a: DVec3,
+        b: DVec3,
+    },
+    /// Circular arc from `a` to `b` with a DXF-style bulge (see [`survey_core::arc`]).
+    Arc {
+        a: DVec3,
+        b: DVec3,
+        bulge: f64,
+    },
+}
+
+/// A curve considered for intersections.
+#[derive(Clone, Copy)]
+enum Curve {
+    Line(DVec3, DVec3),
+    Arc(Arc),
 }
 
 /// A piece of snappable geometry tagged with an application id (e.g. entity id).
@@ -197,8 +227,8 @@ pub struct Pick {
     pub snap: Option<SnapHit>,
 }
 
-/// Maximum segments considered for pairwise intersection tests.
-const MAX_INTERSECTION_SEGMENTS: usize = 64;
+/// Maximum curves considered for pairwise intersection tests.
+const MAX_INTERSECTION_CURVES: usize = 96;
 
 /// Stateful engine (remembers the Tab-cycle position).
 #[derive(Default)]
@@ -269,7 +299,11 @@ impl SnapEngine {
             }
         };
 
-        let mut segments: Vec<(DVec3, DVec3, u64)> = Vec::new();
+        let plan = cam.is_plan();
+        let cursor_world = free_point(q).point.truncate();
+        let mut curves: Vec<(Curve, u64)> = Vec::new();
+        // Centre snaps may lie outside the aperture, so they bypass `push`.
+        let mut centres: Vec<SnapHit> = Vec::new();
         for src in &self.sources {
             let tag = Some(src.tag);
             match src.geom {
@@ -292,23 +326,83 @@ impl SnapEngine {
                     }
                     if settings.is_on(SnapMode::Perpendicular)
                         && let Some(base) = q.base_point
-                        && let Some(foot) = perpendicular_foot(base, a, b, cam.is_plan())
+                        && let Some(foot) = perpendicular_foot(base, a, b, plan)
                     {
                         push(foot, SnapMode::Perpendicular, tag, true);
                     }
-                    if segments.len() < MAX_INTERSECTION_SEGMENTS {
-                        segments.push((a, b, src.tag));
+                    curves.push((Curve::Line(a, b), src.tag));
+                }
+                SnapGeom::Arc { a, b, bulge } => {
+                    let Some(arc) = Arc::from_bulge(a, b, bulge) else {
+                        continue;
+                    };
+                    if settings.is_on(SnapMode::Endpoint) {
+                        push(a, SnapMode::Endpoint, tag, true);
+                        push(b, SnapMode::Endpoint, tag, true);
+                    }
+                    if settings.is_on(SnapMode::Midpoint) {
+                        push(arc.midpoint(), SnapMode::Midpoint, tag, true);
+                    }
+                    if settings.is_on(SnapMode::Centre) {
+                        // Offered while hovering the arc itself (AutoCAD style) or its centre.
+                        let centre = arc.center3();
+                        let near_curve = arc
+                            .tessellate(arc.radius * 1e-3)
+                            .windows(2)
+                            .filter_map(|w| distance_to_segment_px(cam, q.cursor, w[0], w[1]))
+                            .any(|d| d <= aperture);
+                        if let Some((screen, _)) = cam.world_to_screen(centre)
+                            && (near_curve || screen.distance(q.cursor) <= aperture)
+                        {
+                            centres.push(SnapHit {
+                                point: centre,
+                                mode: SnapMode::Centre,
+                                screen,
+                                tag,
+                                height_known: true,
+                            });
+                        }
+                    }
+                    if settings.is_on(SnapMode::Nearest) {
+                        let p = if plan {
+                            arc.closest_point(cursor_world)
+                        } else {
+                            nearest_on_polyline(&arc.tessellate(arc.radius * 1e-4), ray.origin, ray.dir)
+                        };
+                        push(p, SnapMode::Nearest, tag, true);
+                    }
+                    if settings.is_on(SnapMode::Perpendicular)
+                        && let Some(base) = q.base_point
+                    {
+                        let d = base.truncate() - arc.center;
+                        if d.length_squared() > 0.0
+                            && let Some(t) = arc.param_of_angle(d.y.atan2(d.x))
+                        {
+                            push(arc.point_at(t), SnapMode::Perpendicular, tag, true);
+                        }
+                    }
+                    if plan {
+                        curves.push((Curve::Arc(arc), src.tag));
+                    } else {
+                        // Apparent intersections in 3D views use the tessellation.
+                        for w in arc.tessellate(arc.radius * 1e-4).windows(2) {
+                            curves.push((Curve::Line(w[0], w[1]), src.tag));
+                        }
                     }
                 }
             }
         }
 
         if settings.is_on(SnapMode::Intersection) {
-            for i in 0..segments.len() {
-                for j in (i + 1)..segments.len() {
-                    let (a, b, tag) = segments[i];
-                    let (c, d, _) = segments[j];
-                    if let Some(p) = intersect_segments(cam, a, b, c, d) {
+            curves.truncate(MAX_INTERSECTION_CURVES);
+            for i in 0..curves.len() {
+                for j in (i + 1)..curves.len() {
+                    let (c0, tag) = curves[i];
+                    let (c1, other) = curves[j];
+                    if tag == other && !plan {
+                        continue; // tessellated pieces of the same arc
+                    }
+                    for p in intersect_curves(cam, c0, c1) {
                         push(p, SnapMode::Intersection, Some(tag), true);
                     }
                 }
@@ -326,6 +420,7 @@ impl SnapEngine {
             push(g, SnapMode::Grid, None, free.height_known);
         }
 
+        out.extend(centres);
         out.sort_by(|x, y| {
             x.mode.priority().cmp(&y.mode.priority()).then(
                 x.screen
@@ -403,6 +498,40 @@ fn intersect_segments(cam: &Camera, a: DVec3, b: DVec3, c: DVec3, d: DVec3) -> O
     Some(a.lerp(b, s))
 }
 
+/// Intersections between two curves. Arcs only reach here in plan view, where
+/// everything is computed exactly in world XY (heights from the first curve).
+fn intersect_curves(cam: &Camera, c0: Curve, c1: Curve) -> Vec<DVec3> {
+    let on_segment = |u: f64| (-1e-9..=1.0 + 1e-9).contains(&u);
+    match (c0, c1) {
+        (Curve::Line(a, b), Curve::Line(c, d)) => intersect_segments(cam, a, b, c, d).into_iter().collect(),
+        (Curve::Arc(arc), Curve::Line(a, b)) => arc
+            .intersect_line(a.truncate(), b.truncate())
+            .into_iter()
+            .filter(|(u, _)| on_segment(*u))
+            .map(|(_, p)| p)
+            .collect(),
+        (Curve::Line(a, b), Curve::Arc(arc)) => arc
+            .intersect_line(a.truncate(), b.truncate())
+            .into_iter()
+            .filter(|(u, _)| on_segment(*u))
+            .map(|(u, _)| a.lerp(b, u))
+            .collect(),
+        (Curve::Arc(x), Curve::Arc(y)) => x.intersect_arc(&y),
+    }
+}
+
+/// Point on a polyline closest to a ray.
+fn nearest_on_polyline(points: &[DVec3], origin: DVec3, dir: DVec3) -> DVec3 {
+    points
+        .windows(2)
+        .map(|w| {
+            let (_, s, d) = closest_ray_segment(origin, dir, w[0], w[1]);
+            (d, w[0].lerp(w[1], s))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map_or(points[0], |(_, p)| p)
+}
+
 /// Nearest point on any segment, used for hover/selection hit testing.
 pub fn distance_to_segment_px(cam: &Camera, cursor: DVec2, a: DVec3, b: DVec3) -> Option<f64> {
     let (sa, _) = cam.world_to_screen(a)?;
@@ -457,6 +586,10 @@ pub fn draw_snap_glyph(painter: &egui::Painter, pos: egui::Pos2, mode: SnapMode,
             ];
             painter.add(egui::Shape::closed_line(pts, stroke));
         }
+        SnapMode::Centre => {
+            painter.circle_stroke(pos, s, stroke);
+            painter.circle_filled(pos, 2.0, color);
+        }
         SnapMode::Grid => {
             painter.line_segment([pos2(pos.x - s, pos.y), pos2(pos.x + s, pos.y)], stroke);
             painter.line_segment([pos2(pos.x, pos.y - s), pos2(pos.x, pos.y + s)], stroke);
@@ -477,6 +610,9 @@ mod tests {
                 let b = match s.geom {
                     SnapGeom::Point { p, .. } => Aabb3::from_point(p),
                     SnapGeom::Segment { a, b } => Aabb3::from_points([a, b]),
+                    SnapGeom::Arc { a, b, bulge } => Arc::from_bulge(a, b, bulge)
+                        .map(|arc| Aabb3::from_points(arc.tessellate(0.01)))
+                        .unwrap_or_else(|| Aabb3::from_points([a, b])),
                 };
                 if frustum.intersects_aabb(&b) {
                     out.push(*s);
@@ -627,10 +763,93 @@ mod tests {
         assert!(!pick.height_known, "unknown height is preserved");
     }
 
+    fn quarter_circle() -> Geometry {
+        // Anticlockwise quarter circle of radius 5 about base(), from east to north.
+        let b = base();
+        Geometry(vec![
+            SnapSource {
+                geom: SnapGeom::Arc {
+                    a: b + DVec3::new(5.0, 0.0, 0.0),
+                    b: b + DVec3::new(0.0, 5.0, 0.0),
+                    bulge: (std::f64::consts::FRAC_PI_2 / 4.0).tan(),
+                },
+                tag: 7,
+            },
+            SnapSource {
+                // Horizontal line crossing the arc at y = 3 → x = 4.
+                geom: SnapGeom::Segment {
+                    a: b + DVec3::new(0.0, 3.0, 0.0),
+                    b: b + DVec3::new(8.0, 3.0, 0.0),
+                },
+                tag: 8,
+            },
+        ])
+    }
+
+    #[test]
+    fn arc_snaps_are_exact_in_plan() {
+        let cam = plan_camera();
+        let geometry = quarter_circle();
+        let mut engine = SnapEngine::default();
+
+        let settings = SnapSettings::only(SnapMode::Intersection, 10.0);
+        let hit = engine
+            .pick(
+                &settings,
+                &query(&cam, base() + DVec3::new(4.0, 3.0, 0.0), None),
+                &geometry,
+            )
+            .snap
+            .expect("intersection");
+        assert!(
+            (hit.point - (base() + DVec3::new(4.0, 3.0, 0.0))).length() < 1e-9,
+            "{hit:?}"
+        );
+
+        let settings = SnapSettings::only(SnapMode::Midpoint, 10.0);
+        let r = 5.0 / 2f64.sqrt();
+        let hit = engine
+            .pick(
+                &settings,
+                &query(&cam, base() + DVec3::new(r, r, 0.0), None),
+                &geometry,
+            )
+            .snap
+            .expect("arc midpoint");
+        assert!((hit.point - (base() + DVec3::new(r, r, 0.0))).length() < 1e-9);
+
+        // Hovering the arc offers its centre even though the centre is far away.
+        let settings = SnapSettings::only(SnapMode::Centre, 10.0);
+        let hit = engine
+            .pick(
+                &settings,
+                &query(&cam, base() + DVec3::new(0.0, 5.0, 0.0), None),
+                &geometry,
+            )
+            .snap
+            .expect("centre");
+        assert!((hit.point - base()).length() < 1e-9);
+
+        // Perpendicular from outside the circle lands on the radial line.
+        let settings = SnapSettings::only(SnapMode::Perpendicular, 10.0);
+        let from = base() + DVec3::new(10.0, 10.0, 0.0);
+        let hit = engine
+            .pick(
+                &settings,
+                &query(&cam, base() + DVec3::new(r, r, 0.0), Some(from)),
+                &geometry,
+            )
+            .snap
+            .expect("perpendicular");
+        assert!((hit.point - (base() + DVec3::new(r, r, 0.0))).length() < 1e-9);
+    }
+
     #[test]
     fn mode_codes() {
         assert_eq!(SnapMode::from_code("END"), Some(SnapMode::Endpoint));
         assert_eq!(SnapMode::from_code("perp"), Some(SnapMode::Perpendicular));
         assert_eq!(SnapMode::from_code("en"), None);
+        assert_eq!(SnapMode::from_code("cen"), Some(SnapMode::Centre));
+        assert_eq!(SnapMode::from_code("center"), Some(SnapMode::Centre));
     }
 }

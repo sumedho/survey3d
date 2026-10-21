@@ -49,6 +49,7 @@ impl Tool for PolylineTool {
                 }
                 ToolOutcome::Continue
             }
+            ToolEvent::Region(_) => ToolOutcome::Continue,
             ToolEvent::Finish => {
                 self.commit(ctx, false);
                 ToolOutcome::Continue
@@ -88,6 +89,7 @@ impl PolylineTool {
         let line = Polyline {
             name: String::new(),
             vertices,
+            bulges: Vec::new(),
             closed,
             code: String::new(),
             layer: ctx.doc.current_layer(),

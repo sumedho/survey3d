@@ -4,6 +4,7 @@
 
 mod app;
 mod import_command;
+mod interchange;
 mod platform;
 mod project;
 mod scene_build;

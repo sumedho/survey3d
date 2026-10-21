@@ -5,15 +5,19 @@ use std::sync::Arc;
 use cad_render::scene::PointShape;
 use cad_render::{Camera, Frustum, Scene, SceneBuilder};
 use egui::Color32;
+use egui_cad::selection::SelectionBox;
 use egui_cad::snap::{SnapGeom, SnapProvider, SnapSource, distance_to_segment_px};
 use egui_cad::{CadTheme, ThemeMode};
 use glam::DVec2;
 use survey_core::Aabb3;
-use survey_core::geom::segments;
+use survey_core::arc::Arc as ArcSegment;
 use survey_model::{Document, Entity, EntityId, Selection};
 
 const POINT_SIZE: f32 = 7.0;
 const LINE_WIDTH: f32 = 1.5;
+/// Chord tolerance for drawing arcs (metres). Fine enough for survey-scale zooms;
+/// tessellation is capped per arc, so large radii stay cheap.
+const ARC_TOLERANCE: f64 = 0.001;
 
 /// Rebuilds the GPU scene only when the document, selection or theme change.
 #[derive(Default)]
@@ -68,8 +72,10 @@ fn build_scene(doc: &Document, selection: &Selection, theme: &CadTheme, revision
             }
             Entity::Polyline(l) => {
                 let width = if is_selected { LINE_WIDTH + 1.5 } else { LINE_WIDTH };
-                for (a, c) in segments(&l.vertices, l.closed) {
-                    b.add_line(a, c, color, width);
+                for part in l.tessellate(ARC_TOLERANCE) {
+                    for w in part.windows(2) {
+                        b.add_line(w[0], w[1], color, width);
+                    }
                 }
             }
         }
@@ -118,12 +124,16 @@ impl SnapProvider for DocSnapProvider<'_> {
                     tag,
                 }),
                 Entity::Polyline(l) => {
-                    for (a, b) in segments(&l.vertices, l.closed) {
-                        if frustum.intersects_aabb(&Aabb3::from_points([a, b])) {
-                            out.push(SnapSource {
-                                geom: SnapGeom::Segment { a, b },
-                                tag,
-                            });
+                    for (a, b, bulge) in l.segments() {
+                        let (geom, bounds) = match ArcSegment::from_bulge(a, b, bulge) {
+                            Some(arc) => (
+                                SnapGeom::Arc { a, b, bulge },
+                                Aabb3::from_points(arc.tessellate(arc.radius * 0.01)),
+                            ),
+                            None => (SnapGeom::Segment { a, b }, Aabb3::from_points([a, b])),
+                        };
+                        if frustum.intersects_aabb(&bounds) {
+                            out.push(SnapSource { geom, tag });
                         }
                     }
                 }
@@ -146,8 +156,11 @@ pub fn hit_test(doc: &Document, cam: &Camera, cursor: DVec2, aperture_px: f64) -
             Some(Entity::Point(p)) => cam
                 .world_to_screen(p.position)
                 .map(|(s, _)| s.distance(cursor) - 1.0),
-            Some(Entity::Polyline(l)) => segments(&l.vertices, l.closed)
-                .filter_map(|(a, b)| distance_to_segment_px(cam, cursor, a, b))
+            Some(Entity::Polyline(l)) => l
+                .tessellate(cam.world_per_pixel() * 0.5)
+                .iter()
+                .flat_map(|part| part.windows(2))
+                .filter_map(|w| distance_to_segment_px(cam, cursor, w[0], w[1]))
                 .reduce(f64::min),
             None => None,
         };
@@ -159,4 +172,21 @@ pub fn hit_test(doc: &Document, cam: &Camera, cursor: DVec2, aperture_px: f64) -
         }
     }
     best.map(|(_, id)| id)
+}
+
+/// Editable entities chosen by a window/crossing box.
+pub fn select_in_box(doc: &Document, cam: &Camera, sel: &SelectionBox) -> Vec<EntityId> {
+    let frustum = cam.rect_frustum(sel.min, sel.max);
+    let mut ids = Vec::new();
+    doc.query(&|b| frustum.intersects_aabb(b), &mut ids);
+    let tolerance = cam.world_per_pixel() * 0.5;
+    ids.retain(|id| {
+        doc.is_entity_editable(*id)
+            && match doc.entity(*id) {
+                Some(Entity::Point(p)) => sel.selects(cam, &[vec![p.position]]),
+                Some(Entity::Polyline(l)) => sel.selects(cam, &l.tessellate(tolerance)),
+                None => false,
+            }
+    });
+    ids
 }
