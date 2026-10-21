@@ -37,7 +37,7 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
   `point`, `pl` (polyline), `arc`, `circle`, `inv` (inverse), `ze`, `undo`, `help`. With dynamic input
   (F12) the prompt, live measurement and typed input follow the cursor.
 * **Views:** click the orientation gizmo (bottom-left) for plan, elevations (axis ends) or isometric
-  (background); the floating pill (top-right) has zoom extents, isometric, plan/3D and perspective.
+  (background); the header toolbar has zoom extents, isometric, plan/3D and perspective.
 * **Selection:** click, Shift+click to add; drag left→right for a window (fully inside), right→left for a
   crossing (touching).
 * **Editing:** selected objects show grips — click one, then pick (or type) the new position. Vertex grips
@@ -48,11 +48,26 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
   three-point arc) and `l` back to lines.
 * **COGO:** `rad` (radiation: station, backsight, then `angle, distance[, dZ]`), `bb` / `bd` / `dd`
   (bearing/distance intersections), `chainage` (report chainage & offset along a polyline, or set out by
-  `chainage[, offset]`), `traverse` (angles or bearings, misclosures, Bowditch/Transit), `list` (legs of
-  selected polylines). Results collect in View → Reports (copy or save as text).
+  `chainage[, offset]`), `along` (points at distance and offset along a line), `divide` (n parts or
+  `@interval` along a polyline), `fillet`, `average` (mean of selected points with their spread), `area`
+  (selected polylines or picked corners), `list` (legs of selected polylines). Results collect in
+  View → Reports (copy or save as text).
+* **Traverse:** `traverse` — angles right/left, deflections or bearings; horizontal or slope distances
+  (zenith, instrument and target heights); scale factor; open, loop or link; Bowditch/Transit; a
+  field-book report. Traverses are saved with the project by name and recompute from their control.
+* **Closures & parcels:** `closure` checks a figure typed as courses (lines and arcs) or taken from a
+  selected polyline — misclosure, precision, area — and solves any two blank values. `subdivide` cuts a
+  given area off a parcel parallel to an edge or swung about a point.
+* **Resection:** `resection` fixes a station from directions and/or distances to known points (least
+  squares with residuals when redundant). `calc` solves curves (any two elements) and triangles.
+* **Accuracy:** Project → Accuracy limits sets your own angular, linear (1:N and an allowance) and
+  vertical limits; traverse and closure results then show PASS or FAIL. None are set by default.
 * **Field-to-finish:** `codes` opens the feature code library (layers, colours, line or point features,
-  control codes such as `ST`, `END`, `CL`, `PC`/`PT`; CSV import/export). Process linework joins coded
-  points (`KB1`, `KB2`, `BLD CL` …) into strings on feature layers; running it again replaces them.
+  control codes such as `ST`, `END`, `CL`, `PC`/`PT`; CSV import/export). Each code has a style: one of
+  30+ point symbols and its size, colour by layer or the feature's own, line style (solid, dashed,
+  dotted, dash-dot) and weight, and optionally its own labels. Codes may be wildcards (`MH*`). Process
+  linework joins coded points (`KB1`, `KB2`, `BLD CL` …) into strings on feature layers; running it again
+  replaces them. View → Legend lists the codes in use with their symbols.
 * **Points table:** `points` (View → Points table) — filter, sort, double-click a cell to edit, click to select.
 * **Point input:** pick with snapping, or type `E,N[,Z]`, `@dE,dN[,dZ]`, `@dist<bearing`, or an existing point name.
   Order, units and angle format follow the project conventions (Project → Conventions).

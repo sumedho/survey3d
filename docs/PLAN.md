@@ -154,6 +154,29 @@ Known follow-ups: traverse observations are not yet stored in the project (only 
 scale factors / combined scale factor for traverse distances (Phase 5 projections); mirror/scale/trim/
 extend; drag-to-move grips; coordinate CSV export from the points table.
 
+## Phase 2.5 status (2026-10-22): complete
+
+- **2.5a** `survey_core::closure` (figure closure, two-unknown solutions incl. ambiguous cases, arcs by
+  chord) and `survey_core::accuracy` (optional user limits, stored as `project_meta.tolerances`); Closure
+  window; Settings → Accuracy.
+- **2.5b** traverse directions (right / left / deflection / bearing), slope + zenith + HI/HT, scale
+  factor, angle counts, field-book report with checks; `TraverseRecord` saved in
+  `project_meta.traverses` and resolved by point name.
+- **2.5c** `survey_core::subdivide` (parallel and swing cuts by bisection on clipped area),
+  `survey_core::resection` (weighted Gauss–Newton from many starts, orientation, residuals, σ₀);
+  Area tool, Subdivide and Resection windows.
+- **2.5d** `survey_core::solvers` (curve from any two elements, triangle SSS/SAS/ASA/AAS/SSA), fillet,
+  divide, point along line, averaging; COGO calculator window.
+- **2.5e** `survey_core::style`: 31 symbols defined as primitives, evaluated as SDFs in the point shader
+  from a uniform symbol table (WebGL2-safe) and drawn with the same primitives in egui; line patterns
+  in the line shader with distance carried along polylines. `FeatureCode.style` (symbol, size, by layer
+  / own colour, line style, weight, label override), wildcard codes (`*`, `?`; plain codes win, then the
+  most specific pattern), CSV code sheets gain style columns (old sheets still load), legend window.
+  Tools that take codes (point, radiate) claim library codes before command names (`CP` vs `cp`).
+
+Follow-ups: DXF export of symbols as blocks and of line types; symbol size in world units (plan scale);
+attributes per code; traverse observations from raw data files; a light-canvas legend preview.
+
 ## Phase 2.5 plan (2026-10-22): more COGO, accuracy and code styling
 
 Research (Trimble Access / TBC feature libraries and COGO, Carlson code tables and COGO, Civil 3D
@@ -214,7 +237,7 @@ guidance (Material dark theme, WCAG):
 - **Phase 2 — COGO & field-to-finish (done):** editing (grips, move/copy/rotate/offset, explode/join),
   radiation, intersections, chainage/offset, traverse + Bowditch/Transit with misclosure report, feature
   code library and auto-linework, points table, reports.
-- **Phase 2.5 — COGO, accuracy, code styling (in progress):** closures, traverse upgrade, area,
+- **Phase 2.5 — COGO, accuracy, code styling (done):** closures, traverse upgrade, area,
   resection, solvers, code symbols and line styles.
 - **Phase 3 — surfaces:** TIN with breaklines, contours, volumes, sections, LandXML surfaces.
 - **Phase 4 — domain modules:** cadastral (parcels, closures, areas, plan annotation, LandXML/ePlan);

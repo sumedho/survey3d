@@ -9,17 +9,10 @@ use std::collections::HashMap;
 use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
 use survey_core::Aabb3;
+use survey_core::style::{LineStyle, Symbol};
 
 /// Default chunk edge length in metres. f32 offsets within 2 km keep ~0.1 mm precision.
 pub const DEFAULT_CHUNK_SIZE: f64 = 2048.0;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u32)]
-pub enum PointShape {
-    Circle = 0,
-    Square = 1,
-    Cross = 2,
-}
 
 /// GPU instance for a screen-space point marker.
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -29,7 +22,8 @@ pub struct PointInstance {
     pub size_px: f32,
     /// RGBA8, straight alpha.
     pub color: [u8; 4],
-    pub shape: u32,
+    /// [`Symbol::id`].
+    pub symbol: u32,
 }
 
 /// GPU instance for a screen-space-width line segment.
@@ -40,6 +34,10 @@ pub struct LineInstance {
     pub width_px: f32,
     pub b: [f32; 3],
     pub color: [u8; 4],
+    /// Distance along the polyline (world units) at `a`, so dash patterns run on across vertices.
+    pub start: f32,
+    /// [`LineStyle::id`].
+    pub pattern: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -107,7 +105,7 @@ impl SceneBuilder {
         &mut self.chunks[i]
     }
 
-    pub fn add_point(&mut self, p: DVec3, color: [u8; 4], size_px: f32, shape: PointShape) {
+    pub fn add_point(&mut self, p: DVec3, color: [u8; 4], size_px: f32, symbol: Symbol) {
         self.bounds.extend(p);
         let chunk = self.chunk_for(p);
         let offset = (p - chunk.origin).as_vec3().to_array();
@@ -115,11 +113,24 @@ impl SceneBuilder {
             offset,
             size_px,
             color,
-            shape: shape as u32,
+            symbol: symbol.id(),
         });
     }
 
     pub fn add_line(&mut self, a: DVec3, b: DVec3, color: [u8; 4], width_px: f32) {
+        self.add_styled_line(a, b, color, width_px, LineStyle::Solid, 0.0);
+    }
+
+    /// A segment of a styled line; `start` is the distance along the line at `a`.
+    pub fn add_styled_line(
+        &mut self,
+        a: DVec3,
+        b: DVec3,
+        color: [u8; 4],
+        width_px: f32,
+        style: LineStyle,
+        start: f64,
+    ) {
         self.bounds.extend(a);
         self.bounds.extend(b);
         let chunk = self.chunk_for((a + b) * 0.5);
@@ -129,6 +140,8 @@ impl SceneBuilder {
             width_px,
             b: (b - origin).as_vec3().to_array(),
             color,
+            start: start as f32,
+            pattern: style.id(),
         });
     }
 
@@ -149,7 +162,7 @@ mod tests {
     fn offsets_are_small_at_large_coordinates() {
         let mut b = SceneBuilder::default();
         let p = DVec3::new(512_345.678_9, 6_912_345.678_9, 101.234_5);
-        b.add_point(p, [255; 4], 6.0, PointShape::Circle);
+        b.add_point(p, [255; 4], 6.0, Symbol::Dot);
         b.add_line(p, p + DVec3::new(1.0, 0.0, 0.0), [255; 4], 2.0);
         let scene = b.build(1);
         assert_eq!(scene.point_count(), 1);

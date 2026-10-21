@@ -21,9 +21,12 @@ use glam::DVec3;
 use serde::{Deserialize, Serialize};
 
 use crate::arc::Arc;
+use crate::style::{CodeStyle, Symbol};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FeatureCode {
+    /// The code, or a pattern with `*` (any run of characters) and `?` (one
+    /// character), e.g. `MH*`, matched when no plain code fits.
     pub code: String,
     pub description: String,
     /// Layer for the points and lines of this feature.
@@ -32,6 +35,52 @@ pub struct FeatureCode {
     pub color: [u8; 3],
     /// Whether points with this code are joined into strings.
     pub linework: bool,
+    /// How the feature's points and lines are drawn.
+    #[serde(default)]
+    pub style: CodeStyle,
+}
+
+impl FeatureCode {
+    pub fn new(code: &str, description: &str, layer: &str, color: [u8; 3], linework: bool) -> Self {
+        Self {
+            code: code.into(),
+            description: description.into(),
+            layer: layer.into(),
+            color,
+            linework,
+            style: CodeStyle::default(),
+        }
+    }
+
+    /// Whether the code is a wildcard pattern.
+    pub fn is_pattern(&self) -> bool {
+        self.code.contains(['*', '?'])
+    }
+}
+
+/// Case-insensitive glob match with `*` and `?`.
+pub fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().flat_map(char::to_lowercase).collect();
+    let t: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    let (mut pi, mut ti) = (0, 0);
+    let (mut star, mut mark) = (None, 0);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ti;
+            pi += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|c| *c == '*')
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -103,24 +152,63 @@ pub fn is_generated_name(name: &str, code: &str) -> bool {
 impl FeatureLibrary {
     /// A small, generic starting set (edit freely).
     pub fn example() -> Self {
-        let code = |code: &str, description: &str, layer: &str, color: [u8; 3], linework: bool| FeatureCode {
-            code: code.into(),
-            description: description.into(),
-            layer: layer.into(),
-            color,
-            linework,
-        };
+        let code =
+            |code: &str, description: &str, layer: &str, color: [u8; 3], linework: bool, symbol: Symbol| {
+                let mut f = FeatureCode::new(code, description, layer, color, linework);
+                f.style.symbol = symbol;
+                f
+            };
+        let mut fence = code("FNC", "Fence", "FENCES", [251, 191, 36], true, Symbol::Post);
+        fence.style.line_style = crate::style::LineStyle::DashDot;
+        let mut top = code("TB", "Top of bank", "BANKS", [74, 222, 128], true, Symbol::Dot);
+        top.style.line_style = crate::style::LineStyle::Dashed;
         Self {
             codes: vec![
-                code("CP", "Control point", "CONTROL", [244, 114, 182], false),
-                code("BLD", "Building", "BUILDINGS", [167, 139, 250], true),
-                code("FNC", "Fence", "FENCES", [251, 191, 36], true),
-                code("KB", "Kerb", "KERBS", [125, 211, 252], true),
-                code("EP", "Edge of pavement", "ROADS", [148, 163, 184], true),
-                code("TB", "Top of bank", "BANKS", [74, 222, 128], true),
-                code("BB", "Bottom of bank", "BANKS", [45, 212, 191], true),
-                code("TR", "Tree", "VEGETATION", [34, 197, 94], false),
-                code("NS", "Natural surface", "SURFACE", [203, 213, 225], false),
+                code(
+                    "CP",
+                    "Control point",
+                    "CONTROL",
+                    [244, 114, 182],
+                    false,
+                    Symbol::CircleCross,
+                ),
+                code(
+                    "BLD",
+                    "Building",
+                    "BUILDINGS",
+                    [167, 139, 250],
+                    true,
+                    Symbol::Square,
+                ),
+                fence,
+                code("KB", "Kerb", "KERBS", [125, 211, 252], true, Symbol::Dot),
+                code(
+                    "EP",
+                    "Edge of pavement",
+                    "ROADS",
+                    [148, 163, 184],
+                    true,
+                    Symbol::Dot,
+                ),
+                top,
+                code("BB", "Bottom of bank", "BANKS", [45, 212, 191], true, Symbol::Dot),
+                code("TR", "Tree", "VEGETATION", [34, 197, 94], false, Symbol::Tree),
+                code(
+                    "MH*",
+                    "Manhole",
+                    "SERVICES",
+                    [248, 113, 113],
+                    false,
+                    Symbol::CircleX,
+                ),
+                code(
+                    "NS",
+                    "Natural surface",
+                    "SURFACE",
+                    [203, 213, 225],
+                    false,
+                    Symbol::Cross,
+                ),
             ],
             controls: ControlCodes::default(),
         }
@@ -134,12 +222,30 @@ impl FeatureLibrary {
             .enumerate()
             .filter(|(_, f)| {
                 !f.code.is_empty()
+                    && !f.is_pattern()
                     && token.len() >= f.code.len()
                     && token[..f.code.len()].eq_ignore_ascii_case(&f.code)
                     && token[f.code.len()..].bytes().all(|b| b.is_ascii_digit())
             })
             .max_by_key(|(_, f)| f.code.len())
             .map(|(i, f)| (i, token[f.code.len()..].to_string()))
+            .or_else(|| self.match_pattern(token).map(|i| (i, String::new())))
+    }
+
+    /// The most specific wildcard code matching `token` (most literal characters).
+    fn match_pattern(&self, token: &str) -> Option<usize> {
+        self.codes
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.is_pattern() && glob_match(&f.code, token))
+            .max_by_key(|(_, f)| f.code.chars().filter(|c| !matches!(c, '*' | '?')).count())
+            .map(|(i, _)| i)
+    }
+
+    /// The feature a point or line code belongs to (by its first token), for styling.
+    pub fn feature_for(&self, raw: &str) -> Option<&FeatureCode> {
+        let first = raw.split_whitespace().next()?;
+        self.match_feature(first).map(|(i, _)| &self.codes[i])
     }
 
     pub fn find(&self, code: &str) -> Option<&FeatureCode> {
@@ -374,5 +480,30 @@ mod tests {
         let arc = Arc::from_bulge(l.vertices[1], l.vertices[2], l.bulges[1]).expect("arc");
         assert!((arc.radius - 10.0).abs() < 1e-9);
         assert_eq!(l.bulges[0], 0.0);
+    }
+
+    #[test]
+    fn wildcard_codes() {
+        assert!(glob_match("MH*", "mh12a"));
+        assert!(glob_match("T?EE", "TREE"));
+        assert!(glob_match("*", ""));
+        assert!(!glob_match("MH*", "SMH1"));
+        assert!(glob_match("*PIT*", "SWPIT2"));
+        let lib = FeatureLibrary::example();
+        // Plain codes (with string numbers) win; patterns catch the rest.
+        assert_eq!(lib.feature_for("KB2 ST").map(|f| f.code.as_str()), Some("KB"));
+        assert_eq!(lib.feature_for("MH12 lid").map(|f| f.code.as_str()), Some("MH*"));
+        assert!(lib.feature_for("XYZ").is_none());
+        // The more specific pattern wins.
+        let mut lib = lib;
+        lib.codes.push(FeatureCode::new(
+            "MHS*",
+            "Sewer manhole",
+            "SEWER",
+            [1, 2, 3],
+            false,
+        ));
+        assert_eq!(lib.feature_for("MHS4").map(|f| f.code.as_str()), Some("MHS*"));
+        assert_eq!(lib.parse("MH7").map(|p| p.string), Some(String::new()));
     }
 }

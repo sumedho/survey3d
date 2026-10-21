@@ -18,6 +18,7 @@ pub mod offset;
 pub mod point_input;
 pub mod resection;
 pub mod solvers;
+pub mod style;
 pub mod subdivide;
 pub mod traverse;
 

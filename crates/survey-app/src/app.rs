@@ -35,6 +35,7 @@ use crate::ui::calculator::{CalcTab, CalculatorWindow};
 use crate::ui::closure_window::{ClosureAction, ClosureWindow};
 use crate::ui::csv_import::{CsvDialogResult, CsvImportDialog};
 use crate::ui::feature_codes::{CodesAction, FeatureCodesWindow};
+use crate::ui::legend::LegendWindow;
 use crate::ui::points_table::{PointsAction, PointsWindow};
 use crate::ui::properties::properties_panel;
 use crate::ui::reports::{ReportAction, ReportsWindow};
@@ -181,6 +182,12 @@ const APP_COMMANDS: &[AppCommand] = &[
     ),
     cmd("average", "Average selected points", "COGO", icons::DOTS_NINE),
     cmd(
+        "legend",
+        "Legend (feature code symbols and line styles)",
+        "View",
+        icons::SWATCHES,
+    ),
+    cmd(
         "accuracy",
         "Accuracy limits (misclosure checks)",
         "Project",
@@ -249,6 +256,7 @@ pub struct SurveyApp {
     traverse_window: TraverseWindow,
     closure_window: ClosureWindow,
     calculator: CalculatorWindow,
+    legend: LegendWindow,
     subdivide_window: SubdivideWindow,
     resection_window: ResectionWindow,
     codes_window: FeatureCodesWindow,
@@ -373,6 +381,7 @@ impl SurveyApp {
             traverse_window: TraverseWindow::default(),
             closure_window: ClosureWindow::default(),
             calculator: CalculatorWindow::default(),
+            legend: LegendWindow::default(),
             subdivide_window: SubdivideWindow::default(),
             resection_window: ResectionWindow::default(),
             codes_window: FeatureCodesWindow::default(),
@@ -805,6 +814,12 @@ impl SurveyApp {
             }
         }
 
+        // A feature code wins over a command of the same name while coding points.
+        if self.active_tool.takes_codes() && self.project.doc.meta().feature_codes.feature_for(text).is_some()
+        {
+            self.dispatch(ToolEvent::Text(text));
+            return;
+        }
         if let Some(desc) = self.tools.find_command(text) {
             let id = desc.id;
             self.set_tool(id);
@@ -911,6 +926,7 @@ impl SurveyApp {
             "calc" | "calculator" | "curve" => self.calculator.open_at(CalcTab::Curve),
             "triangle" => self.calculator.open_at(CalcTab::Triangle),
             "average" | "avg" => self.average_selection(),
+            "legend" => self.legend.open = true,
             "accuracy" | "tolerances" => self.settings_window.open_at_accuracy(),
             "codes" | "featurecodes" => self.codes_window.open(),
             "linework" | "f2f" => {

@@ -13,6 +13,7 @@ use egui_cad::viewport::{NavAction, view_controls};
 use crate::platform::FileKind;
 use crate::scene_build::select_in_box;
 use egui_cad::ThemeMode;
+use survey_core::style::LabelSet;
 
 use super::*;
 
@@ -207,6 +208,7 @@ impl SurveyApp {
                 item(ui, "Labels…", None, Action::Labels, &mut action);
                 item(ui, "Points table", None, Action::Points, &mut action);
                 item(ui, "Reports", None, Action::Reports, &mut action);
+                item(ui, "Legend", None, Action::Run("legend"), &mut action);
                 ui.separator();
                 item(
                     ui,
@@ -691,7 +693,15 @@ impl SurveyApp {
         let mut preview = Preview::default();
         self.active_tool.preview(&conv, self.pick.as_ref(), &mut preview);
         let painter = ui.painter_at(out.rect);
-        if self.settings.labels.any() {
+        let code_labels = self
+            .project
+            .doc
+            .meta()
+            .feature_codes
+            .codes
+            .iter()
+            .any(|c| c.style.labels.is_some());
+        if self.settings.labels.any() || code_labels {
             self.draw_labels(&painter, out.rect, &theme);
         }
         self.draw_overlays(&painter, out.rect, &preview, out.hover, &theme);
@@ -948,6 +958,14 @@ impl SurveyApp {
         let mut placer = LabelPlacer::new(rect, 3000);
         let font = egui::FontId::proportional(opts.size);
         let small = egui::FontId::proportional((opts.size - 1.5).max(7.0));
+        let library = &doc.meta().feature_codes;
+        let global = LabelSet {
+            name: opts.names,
+            code: opts.codes,
+            height: opts.heights,
+            description: false,
+        };
+        let mut code_labels: HashMap<&str, LabelSet> = HashMap::new();
         for id in ids {
             if placer.is_full() {
                 break;
@@ -965,6 +983,13 @@ impl SurveyApp {
             // Keep the marker clear; labels start beyond it (the placer pads by 2 px).
             placer.reserve(egui::Rect::from_center_size(anchor, egui::vec2(6.0, 6.0)));
 
+            // A feature code's own label choice overrides the global settings.
+            let set = *code_labels.entry(p.code.as_str()).or_insert_with(|| {
+                library
+                    .feature_for(&p.code)
+                    .and_then(|f| f.style.labels)
+                    .unwrap_or(global)
+            });
             let mut job = egui::text::LayoutJob::default();
             let mut line = |text: &str, font: &egui::FontId, color: Color32| {
                 if !job.text.is_empty() {
@@ -972,14 +997,17 @@ impl SurveyApp {
                 }
                 job.append(text, 0.0, egui::TextFormat::simple(font.clone(), color));
             };
-            if opts.names && !p.name.is_empty() {
+            if set.name && !p.name.is_empty() {
                 line(&p.name, &font, theme.text);
             }
-            if opts.codes && !p.code.is_empty() {
+            if set.code && !p.code.is_empty() {
                 line(&p.code, &small, theme.accent);
             }
-            if opts.heights && p.height_known {
+            if set.height && p.height_known {
                 line(&conv.format_length(p.position.z), &small, theme.text_secondary);
+            }
+            if set.description && !p.description.is_empty() {
+                line(&p.description, &small, theme.text_secondary);
             }
             if job.text.is_empty() {
                 continue;
@@ -1069,6 +1097,7 @@ impl SurveyApp {
             Some(SubdivideAction::Report(title, text)) => self.reports.add(title, text),
             None => {}
         }
+        self.legend.show(ctx, &self.project.doc);
         if let Some((title, text)) = self.calculator.show(ctx, self.project.doc.conventions()) {
             self.reports.add(title, text);
         }

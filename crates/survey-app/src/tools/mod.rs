@@ -126,6 +126,11 @@ pub trait Tool {
     fn claims_text(&self, _conv: &Conventions, _text: &str) -> bool {
         false
     }
+    /// Whether typed text can set a point code. Text matching a feature-library
+    /// code then goes to the tool even when it is also a command name (`CP`).
+    fn takes_codes(&self) -> bool {
+        false
+    }
     /// The last point entered, for relative input, ortho and perpendicular snaps.
     fn base_point(&self) -> Option<ResolvedPoint> {
         None

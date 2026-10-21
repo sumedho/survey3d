@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use cad_render::scene::PointShape;
+use std::collections::HashMap;
+
 use cad_render::{Camera, Frustum, Scene, SceneBuilder};
 use egui::Color32;
 use egui_cad::selection::SelectionBox;
@@ -11,6 +12,8 @@ use egui_cad::{CadTheme, ThemeMode};
 use glam::DVec2;
 use survey_core::Aabb3;
 use survey_core::arc::Arc as ArcSegment;
+use survey_core::field_to_finish::FeatureLibrary;
+use survey_core::style::{CodeStyle, Symbol};
 use survey_model::{Document, Entity, EntityId, Selection};
 
 const POINT_SIZE: f32 = 7.0;
@@ -44,9 +47,32 @@ impl SceneCache {
     }
 }
 
+/// Style of a code (from the feature library), cached per distinct code text.
+struct Styles<'a> {
+    library: &'a FeatureLibrary,
+    cache: HashMap<&'a str, Option<(CodeStyle, [u8; 3])>>,
+}
+
+impl<'a> Styles<'a> {
+    fn get(&mut self, code: &'a str) -> Option<(CodeStyle, [u8; 3])> {
+        if code.is_empty() {
+            return None;
+        }
+        let library = self.library;
+        *self
+            .cache
+            .entry(code)
+            .or_insert_with(|| library.feature_for(code).map(|f| (f.style, f.color)))
+    }
+}
+
 fn build_scene(doc: &Document, selection: &Selection, theme: &CadTheme, revision: u64) -> Scene {
     let mut b = SceneBuilder::default();
     let selected = theme.selection.to_srgba_unmultiplied();
+    let mut styles = Styles {
+        library: &doc.meta().feature_codes,
+        cache: HashMap::new(),
+    };
     for (id, entity) in doc.entities() {
         let Some(layer) = doc.layer(entity.layer()) else {
             continue;
@@ -55,26 +81,41 @@ fn build_scene(doc: &Document, selection: &Selection, theme: &CadTheme, revision
             continue;
         }
         let is_selected = selection.contains(id);
+        let code = match entity {
+            Entity::Point(p) => p.code.as_str(),
+            Entity::Polyline(l) => l.code.as_str(),
+        };
+        let style = styles.get(code);
         let color = if is_selected {
             selected
         } else {
-            layer_color(layer.color.0, theme)
+            match style {
+                Some((s, [r, g, bl])) if !s.by_layer => layer_color([r, g, bl, 255], theme),
+                _ => layer_color(layer.color.0, theme),
+            }
         };
         match entity {
             Entity::Point(p) => {
-                let shape = if p.height_known {
-                    PointShape::Circle
-                } else {
-                    PointShape::Square
+                // Uncoded points: a dot when the height is known, a square when not.
+                let (symbol, size) = match style {
+                    Some((s, _)) => (s.symbol, s.symbol_size),
+                    None if p.height_known => (Symbol::Dot, POINT_SIZE),
+                    None => (Symbol::Square, POINT_SIZE),
                 };
-                let size = if is_selected { POINT_SIZE + 3.0 } else { POINT_SIZE };
-                b.add_point(p.position, color, size, shape);
+                let size = if is_selected { size + 3.0 } else { size };
+                b.add_point(p.position, color, size, symbol);
             }
             Entity::Polyline(l) => {
-                let width = if is_selected { LINE_WIDTH + 1.5 } else { LINE_WIDTH };
+                let (line_style, weight) = style.map_or((Default::default(), LINE_WIDTH), |(s, _)| {
+                    (s.line_style, s.line_weight)
+                });
+                let width = if is_selected { weight + 1.5 } else { weight };
+                // Distance along the polyline, so dash patterns run on across vertices.
+                let mut along = 0.0;
                 for part in l.tessellate(ARC_TOLERANCE) {
                     for w in part.windows(2) {
-                        b.add_line(w[0], w[1], color, width);
+                        b.add_styled_line(w[0], w[1], color, width, line_style, along);
+                        along += w[0].distance(w[1]);
                     }
                 }
             }

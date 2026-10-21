@@ -22,6 +22,7 @@ pub mod parsed_edit;
 pub mod property_grid;
 pub mod selection;
 pub mod snap;
+pub mod symbols;
 pub mod theme;
 pub mod toasts;
 pub mod viewport;

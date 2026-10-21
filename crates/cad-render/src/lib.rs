@@ -16,4 +16,4 @@ pub use egui_wgpu;
 
 pub use camera::{Camera, Frustum, Projection, Ray};
 pub use renderer::{GridSettings, ViewportCallback, ViewportFrame, install};
-pub use scene::{PointShape, Scene, SceneBuilder};
+pub use scene::{Scene, SceneBuilder};

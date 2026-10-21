@@ -19,6 +19,35 @@ use crate::scene::{LineInstance, PointInstance, Scene};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// Capacity of the symbol table (must match `SymbolTable` in `scene.wgsl`).
+const MAX_SYMBOLS: usize = 64;
+const MAX_PRIM_VEC4S: usize = 256;
+const MAX_PATTERNS: usize = 4;
+
+/// Point symbols and line patterns from [`survey_core::style`], as one uniform block.
+fn symbol_table() -> Vec<u8> {
+    let (ranges, prims) = survey_core::style::gpu::table();
+    assert!(
+        ranges.len() <= MAX_SYMBOLS && prims.len() <= MAX_PRIM_VEC4S,
+        "symbol table too large"
+    );
+    let mut r = vec![[0u32; 4]; MAX_SYMBOLS];
+    r[..ranges.len()].copy_from_slice(&ranges);
+    let mut p = vec![[0f32; 4]; MAX_PRIM_VEC4S];
+    p[..prims.len()].copy_from_slice(&prims);
+    let mut pat = [[0f32; 4]; MAX_PATTERNS];
+    for style in survey_core::style::LineStyle::ALL {
+        for (i, v) in style.pattern().iter().take(4).enumerate() {
+            pat[style.id() as usize][i] = *v;
+        }
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(bytemuck::cast_slice(&r));
+    out.extend_from_slice(bytemuck::cast_slice(&p));
+    out.extend_from_slice(bytemuck::cast_slice(&pat));
+    out
+}
+
 /// Per-draw uniforms. Stored at a dynamic offset per chunk.
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C)]
@@ -124,6 +153,7 @@ struct Pipelines {
 struct Resources {
     pipelines: Pipelines,
     uniform_layout: wgpu::BindGroupLayout,
+    symbols: wgpu::Buffer,
     blit_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     color_format: wgpu::TextureFormat,
@@ -171,18 +201,36 @@ impl Resources {
         let align = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         let uniform_stride = uniform_size.div_ceil(align) * align;
 
+        let table = symbol_table();
+        let symbols = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cad_render_symbols"),
+            contents: &table,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
         let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cad_render_uniforms"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: NonZeroU64::new(uniform_size),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: NonZeroU64::new(uniform_size),
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(table.len() as u64),
+                    },
+                    count: None,
+                },
+            ],
         });
         let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cad_render_blit"),
@@ -223,6 +271,7 @@ impl Resources {
         Self {
             pipelines,
             uniform_layout,
+            symbols,
             blit_layout,
             sampler,
             color_format,
@@ -308,7 +357,7 @@ impl ViewResources {
             ],
         });
         let (uniform_buffer, uniform_bind_group) =
-            create_uniforms(&res.uniform_layout, res.uniform_stride, device, 16);
+            create_uniforms(&res.uniform_layout, &res.symbols, res.uniform_stride, device, 16);
         Self {
             size,
             msaa_view,
@@ -353,6 +402,7 @@ fn instance_buffer<T: Pod>(device: &wgpu::Device, label: &str, data: &[T]) -> Op
 
 fn create_uniforms(
     layout: &wgpu::BindGroupLayout,
+    symbols: &wgpu::Buffer,
     stride: u64,
     device: &wgpu::Device,
     slots: usize,
@@ -366,14 +416,20 @@ fn create_uniforms(
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("cad_render_uniforms"),
         layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &buffer,
-                offset: 0,
-                size: NonZeroU64::new(std::mem::size_of::<Uniforms>() as u64),
-            }),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: NonZeroU64::new(std::mem::size_of::<Uniforms>() as u64),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: symbols.as_entire_binding(),
+            },
+        ],
     });
     (buffer, bind_group)
 }
@@ -451,8 +507,9 @@ impl Pipelines {
         };
 
         let point_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32, 2 => Unorm8x4, 3 => Uint32];
-        let line_attrs =
-            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32, 2 => Float32x3, 3 => Unorm8x4];
+        let line_attrs = wgpu::vertex_attr_array![
+            0 => Float32x3, 1 => Float32, 2 => Float32x3, 3 => Unorm8x4, 4 => Float32, 5 => Uint32
+        ];
         let point = scene_pipeline(
             "cad_render_points",
             "vs_point",
@@ -562,6 +619,7 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
             pipelines,
             views,
             uniform_layout,
+            symbols,
             ..
         } = res;
         let Some(view) = views.get_mut(&self.view_id) else {
@@ -570,7 +628,7 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
         view.upload_scene(device, &frame.scene);
         if view.uniform_slots < needed_slots {
             let slots = needed_slots.next_power_of_two();
-            let (buffer, bind_group) = create_uniforms(uniform_layout, stride, device, slots);
+            let (buffer, bind_group) = create_uniforms(uniform_layout, symbols, stride, device, slots);
             view.uniform_buffer = buffer;
             view.uniform_bind_group = bind_group;
             view.uniform_slots = slots;

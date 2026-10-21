@@ -143,6 +143,10 @@ impl Tool for RadiateTool {
         }
     }
 
+    fn takes_codes(&self) -> bool {
+        true
+    }
+
     fn base_point(&self) -> Option<ResolvedPoint> {
         self.station
     }

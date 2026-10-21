@@ -32,6 +32,10 @@ impl Tool for PointTool {
         self.last
     }
 
+    fn takes_codes(&self) -> bool {
+        true
+    }
+
     fn on_event(&mut self, ctx: &mut ToolCtx<'_>, event: ToolEvent<'_>) -> ToolOutcome {
         match event {
             ToolEvent::Point(pick) => {
