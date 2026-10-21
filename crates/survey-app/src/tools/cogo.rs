@@ -18,7 +18,7 @@ pub const RADIATE_ID: &str = "radiate";
 pub const CHAINAGE_ID: &str = "chainage";
 
 /// Whether typed text looks like numbers (an observation or value), not a code or option.
-fn is_numeric(text: &str) -> bool {
+pub(super) fn is_numeric(text: &str) -> bool {
     text.trim()
         .chars()
         .next()
@@ -26,7 +26,7 @@ fn is_numeric(text: &str) -> bool {
 }
 
 /// Splits on commas, or on whitespace when there are none.
-fn fields(text: &str) -> Vec<&str> {
+pub(super) fn fields(text: &str) -> Vec<&str> {
     if text.contains(',') {
         text.split(',').map(str::trim).collect()
     } else {
@@ -35,7 +35,13 @@ fn fields(text: &str) -> Vec<&str> {
 }
 
 /// A new point on the current layer.
-fn new_point(ctx: &ToolCtx<'_>, name: String, position: DVec3, height_known: bool, code: &str) -> Entity {
+pub(super) fn new_point(
+    ctx: &ToolCtx<'_>,
+    name: String,
+    position: DVec3,
+    height_known: bool,
+    code: &str,
+) -> Entity {
     Entity::Point(SurveyPoint {
         name,
         position: if height_known {

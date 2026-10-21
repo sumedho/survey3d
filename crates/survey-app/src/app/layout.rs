@@ -239,6 +239,8 @@ impl SurveyApp {
                     ("Closure…", "closure"),
                     ("Subdivide area…", "subdivide"),
                     ("Resection…", "resection"),
+                    ("COGO calculator…", "calc"),
+                    ("Average points", "average"),
                     ("Feature codes…", "codes"),
                     ("Process linework", "linework"),
                     ("List selection", "list"),
@@ -1066,6 +1068,9 @@ impl SurveyApp {
             }
             Some(SubdivideAction::Report(title, text)) => self.reports.add(title, text),
             None => {}
+        }
+        if let Some((title, text)) = self.calculator.show(ctx, self.project.doc.conventions()) {
+            self.reports.add(title, text);
         }
         match self.resection_window.show(ctx, &self.project.doc) {
             Some(ResectionAction::Create(cmd, summary)) => {

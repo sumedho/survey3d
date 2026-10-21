@@ -1,6 +1,7 @@
 //! Application panels and dialogs.
 
 pub mod audit_window;
+pub mod calculator;
 pub mod closure_window;
 pub mod csv_import;
 pub mod feature_codes;

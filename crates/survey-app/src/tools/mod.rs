@@ -9,6 +9,7 @@ mod arc;
 mod area;
 mod circle;
 mod cogo;
+mod construct;
 pub mod grips;
 mod inverse;
 mod modify;
@@ -302,6 +303,16 @@ impl DomainModule for CoreModule {
             create: || Box::<offset::OffsetTool>::default(),
         });
         tools.register(ToolDescriptor {
+            id: construct::FILLET_ID,
+            name: "Fillet",
+            commands: &["fillet", "fil"],
+            icon: icons::CIRCLE_HALF,
+            palette: true,
+            group: ToolGroup::Modify,
+            description: "Round polyline corners with an arc of a given radius",
+            create: || Box::<construct::FilletTool>::default(),
+        });
+        tools.register(ToolDescriptor {
             id: cogo::RADIATE_ID,
             name: "Radiate",
             commands: &["radiate", "rad"],
@@ -361,6 +372,26 @@ impl DomainModule for CoreModule {
             group: ToolGroup::Cogo,
             description: "Chainage/offset of points along a polyline, or set out points by chainage",
             create: || Box::<cogo::ChainageTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: construct::DIVIDE_ID,
+            name: "Divide",
+            commands: &["divide", "div"],
+            icon: icons::DIVIDE,
+            palette: false,
+            group: ToolGroup::Cogo,
+            description: "Points dividing a polyline into equal parts or at an interval",
+            create: || Box::<construct::DivideTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: construct::ALONG_ID,
+            name: "Point along line",
+            commands: &["along", "pal"],
+            icon: icons::LINE_SEGMENT,
+            palette: false,
+            group: ToolGroup::Cogo,
+            description: "Points at a distance (and offset) along a line between two points",
+            create: || Box::<construct::AlongTool>::default(),
         });
         tools.register(ToolDescriptor {
             id: inverse::ID,

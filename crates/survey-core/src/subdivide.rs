@@ -14,15 +14,15 @@ use crate::angle::Bearing;
 
 #[derive(Clone, Debug, PartialEq, Error)]
 pub enum SubdivideError {
-    #[error("the parcel needs at least three corners")]
+    #[error("The parcel needs at least three corners")]
     TooFew,
-    #[error("the parcel has no area")]
+    #[error("The parcel has no area")]
     NoArea,
-    #[error("the area to cut off must be between zero and the parcel's area")]
+    #[error("The area to cut off must be between zero and the parcel's area")]
     AreaOutOfRange,
-    #[error("edge {0} does not exist or has no length")]
+    #[error("Edge {0} does not exist or has no length")]
     BadEdge(usize),
-    #[error("no line through the hinge point cuts off that area")]
+    #[error("No line through the hinge point cuts off that area")]
     NoSolution,
 }
 

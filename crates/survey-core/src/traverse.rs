@@ -149,13 +149,13 @@ pub struct Traverse {
 
 #[derive(Clone, Debug, PartialEq, Error)]
 pub enum TraverseError {
-    #[error("the traverse has no legs")]
+    #[error("The traverse has no legs")]
     NoLegs,
-    #[error("angle observations need a backsight bearing at the start")]
+    #[error("Angle observations need a backsight bearing at the start")]
     NoBacksight,
-    #[error("leg {0} has no length")]
+    #[error("Leg {0} has no length")]
     ZeroDistance(usize),
-    #[error("the scale factor must be positive")]
+    #[error("The scale factor must be positive")]
     BadScale,
 }
 

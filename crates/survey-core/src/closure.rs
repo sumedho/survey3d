@@ -99,17 +99,17 @@ impl Course {
 
 #[derive(Clone, Debug, PartialEq, Error)]
 pub enum ClosureError {
-    #[error("a figure needs at least two courses")]
+    #[error("A figure needs at least two courses")]
     TooFew,
     #[error("{0} values are blank: leave none blank to check a closure, or exactly two to solve them")]
     Unknowns(usize),
-    #[error("course {0}: the distance must be positive")]
+    #[error("Course {0}: the distance must be positive")]
     BadDistance(usize),
-    #[error("course {0}: the radius must be positive")]
+    #[error("Course {0}: the radius must be positive")]
     BadRadius(usize),
-    #[error("course {0}: the chord is longer than the arc's diameter")]
+    #[error("Course {0}: the chord is longer than the arc's diameter")]
     ChordTooLong(usize),
-    #[error("no solution: the known courses cannot be closed with these unknowns")]
+    #[error("No solution: the known courses cannot be closed with these unknowns")]
     NoSolution,
 }
 

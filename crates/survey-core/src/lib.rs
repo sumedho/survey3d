@@ -17,6 +17,7 @@ pub mod geom;
 pub mod offset;
 pub mod point_input;
 pub mod resection;
+pub mod solvers;
 pub mod subdivide;
 pub mod traverse;
 

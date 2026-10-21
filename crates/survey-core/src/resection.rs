@@ -44,15 +44,15 @@ impl Default for Weights {
 
 #[derive(Clone, Debug, PartialEq, Error)]
 pub enum ResectionError {
-    #[error("not enough observations: {0}")]
+    #[error("Not enough observations: {0}")]
     NotEnough(&'static str),
-    #[error("the known points must be distinct")]
+    #[error("The known points must be distinct")]
     DuplicateTargets,
     #[error(
-        "the geometry is too weak to fix the station (e.g. it lies on the circle through the known points)"
+        "The geometry is too weak to fix the station (e.g. it lies on the circle through the known points)"
     )]
     WeakGeometry,
-    #[error("no solution found")]
+    #[error("No solution found")]
     NoSolution,
 }
 

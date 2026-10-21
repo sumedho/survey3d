@@ -31,6 +31,7 @@ use crate::tools::{
     CoreModule, DomainModule, Preview, SELECT_TOOL_ID, Tool, ToolCtx, ToolEvent, ToolOutcome, ToolRegistry,
 };
 use crate::ui::audit_window::AuditWindow;
+use crate::ui::calculator::{CalcTab, CalculatorWindow};
 use crate::ui::closure_window::{ClosureAction, ClosureWindow};
 use crate::ui::csv_import::{CsvDialogResult, CsvImportDialog};
 use crate::ui::feature_codes::{CodesAction, FeatureCodesWindow};
@@ -173,6 +174,13 @@ const APP_COMMANDS: &[AppCommand] = &[
     ),
     cmd("resection", "Resection / free station", "COGO", icons::ARROWS_IN),
     cmd(
+        "calc",
+        "COGO calculator (curve & triangle solutions)",
+        "COGO",
+        icons::CALCULATOR,
+    ),
+    cmd("average", "Average selected points", "COGO", icons::DOTS_NINE),
+    cmd(
         "accuracy",
         "Accuracy limits (misclosure checks)",
         "Project",
@@ -240,6 +248,7 @@ pub struct SurveyApp {
     audit_window: AuditWindow,
     traverse_window: TraverseWindow,
     closure_window: ClosureWindow,
+    calculator: CalculatorWindow,
     subdivide_window: SubdivideWindow,
     resection_window: ResectionWindow,
     codes_window: FeatureCodesWindow,
@@ -363,6 +372,7 @@ impl SurveyApp {
             audit_window: AuditWindow::default(),
             traverse_window: TraverseWindow::default(),
             closure_window: ClosureWindow::default(),
+            calculator: CalculatorWindow::default(),
             subdivide_window: SubdivideWindow::default(),
             resection_window: ResectionWindow::default(),
             codes_window: FeatureCodesWindow::default(),
@@ -533,6 +543,62 @@ impl SurveyApp {
         let n = self.project.selection.len();
         self.reports
             .add(format!("Listing ({})", crate::tools::objects(n)), text);
+    }
+
+    /// Creates the mean of the selected points and reports their spread.
+    fn average_selection(&mut self) {
+        let doc = &self.project.doc;
+        let points: Vec<(DVec3, bool)> = self
+            .project
+            .selection
+            .ids()
+            .iter()
+            .filter_map(|id| match doc.entity(*id) {
+                Some(Entity::Point(p)) => Some((p.position, p.height_known)),
+                _ => None,
+            })
+            .collect();
+        if points.len() < 2 {
+            self.command_line.warn("Select two or more points to average");
+            return;
+        }
+        let Some(avg) = survey_core::cogo::average(&points) else {
+            return;
+        };
+        let conv = doc.conventions();
+        let name = doc.next_point_name();
+        let len = |v: f64| conv.format_length(v);
+        let (ea, nb) = conv.horizontal_labels();
+        let mut spread = format!(
+            "spread {} plan (sd {ea} {} {nb} {})",
+            len(avg.max_plan),
+            len(avg.sd.x),
+            len(avg.sd.y)
+        );
+        if avg.height_known {
+            spread.push_str(&format!(
+                ", {} height (sd {})",
+                len(avg.max_height),
+                len(avg.sd.z)
+            ));
+        }
+        let summary = format!(
+            "Average of {} points → {name}: {}; {spread}",
+            points.len(),
+            conv.format_coord(avg.position, avg.height_known)
+        );
+        let point = survey_model::SurveyPoint {
+            name: name.clone(),
+            position: avg.position,
+            height_known: avg.height_known,
+            code: "AVG".into(),
+            description: format!("Average of {} points", points.len()),
+            layer: doc.current_layer(),
+        };
+        self.execute(Box::new(
+            ChangeSet::new(format!("Average point {name}")).insert_entity(Entity::Point(point)),
+        ));
+        self.command_line.result(summary);
     }
 
     /// Stores `library` in the project if it differs (one undoable change).
@@ -842,6 +908,9 @@ impl SurveyApp {
                 }
             }
             "resection" | "resect" | "freestation" => self.resection_window.open = true,
+            "calc" | "calculator" | "curve" => self.calculator.open_at(CalcTab::Curve),
+            "triangle" => self.calculator.open_at(CalcTab::Triangle),
+            "average" | "avg" => self.average_selection(),
             "accuracy" | "tolerances" => self.settings_window.open_at_accuracy(),
             "codes" | "featurecodes" => self.codes_window.open(),
             "linework" | "f2f" => {

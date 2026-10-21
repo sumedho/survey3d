@@ -187,6 +187,92 @@ pub fn point_at_station(
     None
 }
 
+// ---------------------------------------------------------------- averaging
+
+/// The mean of repeated observations of one point, with their spread.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Average {
+    /// Mean plan position; the height is the mean of the known heights (0 if none).
+    pub position: DVec3,
+    pub height_known: bool,
+    /// Largest plan distance of an observation from the mean.
+    pub max_plan: f64,
+    /// Largest height difference from the mean (known heights only).
+    pub max_height: f64,
+    /// Sample standard deviations of easting, northing and height.
+    pub sd: DVec3,
+}
+
+/// Averages points given as `(position, height known)`; `None` when empty.
+pub fn average(points: &[(DVec3, bool)]) -> Option<Average> {
+    let first = points.first()?.0;
+    let n = points.len() as f64;
+    let plan: DVec2 = points.iter().map(|(p, _)| (*p - first).truncate()).sum::<DVec2>() / n;
+    let heights: Vec<f64> = points.iter().filter(|(_, k)| *k).map(|(p, _)| p.z).collect();
+    let z = (!heights.is_empty()).then(|| heights.iter().sum::<f64>() / heights.len() as f64);
+    let mean = first + plan.extend(0.0);
+    let sd = |values: &mut dyn Iterator<Item = f64>, count: usize| {
+        if count < 2 {
+            0.0
+        } else {
+            (values.map(|v| v * v).sum::<f64>() / (count - 1) as f64).sqrt()
+        }
+    };
+    let rel: Vec<DVec2> = points.iter().map(|(p, _)| (*p - mean).truncate()).collect();
+    Some(Average {
+        position: mean.truncate().extend(z.unwrap_or(0.0)),
+        height_known: z.is_some(),
+        max_plan: rel.iter().map(|r| r.length()).fold(0.0, f64::max),
+        max_height: z.map_or(0.0, |z| heights.iter().map(|h| (h - z).abs()).fold(0.0, f64::max)),
+        sd: DVec3::new(
+            sd(&mut rel.iter().map(|r| r.x), rel.len()),
+            sd(&mut rel.iter().map(|r| r.y), rel.len()),
+            z.map_or(0.0, |z| sd(&mut heights.iter().map(|h| h - z), heights.len())),
+        ),
+    })
+}
+
+// ---------------------------------------------------------------- fillet
+
+/// A circular fillet replacing the corner between two straight lines.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fillet {
+    /// Tangent point on the incoming line.
+    pub start: DVec2,
+    /// Tangent point on the outgoing line.
+    pub end: DVec2,
+    /// Bulge of the arc from `start` to `end` (positive anticlockwise).
+    pub bulge: f64,
+    /// Distance from the corner to each tangent point.
+    pub tangent: f64,
+}
+
+/// Fillet of `radius` at `corner` between the lines `prev → corner → next`
+/// (plan); `None` when the lines are straight on or turn back, or a line is too
+/// short for the tangent length.
+pub fn fillet(prev: DVec2, corner: DVec2, next: DVec2, radius: f64) -> Option<Fillet> {
+    let (a, b) = (corner - prev, next - corner);
+    let (la, lb) = (a.length(), b.length());
+    if radius <= 0.0 || la <= 0.0 || lb <= 0.0 {
+        return None;
+    }
+    let (ua, ub) = (a / la, b / lb);
+    let deflection = ua.perp_dot(ub).atan2(ua.dot(ub));
+    if deflection.abs() < 1e-9 || deflection.abs() > std::f64::consts::PI - 1e-9 {
+        return None;
+    }
+    let tangent = radius * (deflection.abs() / 2.0).tan();
+    if tangent > la * (1.0 + 1e-12) || tangent > lb * (1.0 + 1e-12) {
+        return None;
+    }
+    Some(Fillet {
+        start: corner - ua * tangent,
+        end: corner + ub * tangent,
+        bulge: (deflection / 4.0).tan(),
+        tangent,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +353,38 @@ mod tests {
         assert!(point_at_station(&verts, &bulges, false, 10.0 + arc_len + 1.0, 0.0).is_none());
         let end = point_at_station(&verts, &bulges, false, 10.0 + arc_len, 0.0).expect("end");
         assert!((end - verts[2]).length() < 1e-9);
+    }
+
+    #[test]
+    fn fillet_corner() {
+        let o = DVec2::new(400_000.0, 6_000_000.0);
+        // East then north: a left turn of 90°; radius 5 → tangent 5.
+        let f = fillet(o, o + DVec2::new(20.0, 0.0), o + DVec2::new(20.0, 20.0), 5.0).expect("fillet");
+        assert!((f.tangent - 5.0).abs() < 1e-12);
+        assert!((f.start - (o + DVec2::new(15.0, 0.0))).length() < 1e-9);
+        assert!((f.end - (o + DVec2::new(20.0, 5.0))).length() < 1e-9);
+        assert!((f.bulge - (std::f64::consts::PI / 8.0).tan()).abs() < 1e-12);
+        let arc = Arc::from_bulge(f.start.extend(0.0), f.end.extend(0.0), f.bulge).expect("arc");
+        assert!((arc.radius - 5.0).abs() < 1e-9);
+        // Too large for the lines, or no corner at all.
+        assert!(fillet(o, o + DVec2::new(20.0, 0.0), o + DVec2::new(20.0, 20.0), 25.0).is_none());
+        assert!(fillet(o, o + DVec2::X, o + DVec2::new(2.0, 0.0), 1.0).is_none());
+    }
+
+    #[test]
+    fn averaging() {
+        let o = DVec3::new(600_000.0, 7_000_000.0, 0.0);
+        let pts = [
+            (o + DVec3::new(0.010, 0.0, 10.0), true),
+            (o + DVec3::new(-0.010, 0.0, 10.02), true),
+            (o + DVec3::new(0.0, 0.006, 0.0), false),
+        ];
+        let a = average(&pts).expect("points");
+        assert!((a.position - (o + DVec3::new(0.0, 0.002, 10.01))).length() < 1e-9);
+        assert!(a.height_known);
+        assert!((a.max_plan - 0.010_198_039).abs() < 1e-6);
+        assert!((a.max_height - 0.01).abs() < 1e-9);
+        assert!(a.sd.x > 0.0 && a.sd.z > 0.0);
+        assert!(average(&[]).is_none());
     }
 }
