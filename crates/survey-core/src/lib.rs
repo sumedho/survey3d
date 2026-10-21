@@ -13,6 +13,7 @@ pub mod error;
 pub mod geom;
 pub mod offset;
 pub mod point_input;
+pub mod traverse;
 
 pub use angle::{Angle, Bearing, Dms, Quadrant};
 pub use conventions::Conventions;

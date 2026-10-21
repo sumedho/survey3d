@@ -10,6 +10,8 @@ pub enum FileKind {
     Project,
     Points,
     Dxf,
+    /// Plain-text reports.
+    Report,
 }
 
 impl FileKind {
@@ -18,6 +20,7 @@ impl FileKind {
             FileKind::Project => ("survey3d project", &[survey_store::FILE_EXTENSION]),
             FileKind::Points => ("Point files", &["csv", "txt", "pnt", "xyz"]),
             FileKind::Dxf => ("DXF drawing", &["dxf"]),
+            FileKind::Report => ("Text report", &["txt"]),
         }
     }
 }

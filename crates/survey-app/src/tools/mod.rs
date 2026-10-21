@@ -24,6 +24,7 @@ use survey_core::point_input::ResolvedPoint;
 use survey_core::{Conventions, DVec2};
 use survey_model::{Command, Document, EntityId, Selection};
 
+pub use modify::objects;
 pub use select::SELECT_TOOL_ID;
 
 /// Input delivered to the active tool.

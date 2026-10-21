@@ -33,7 +33,9 @@ use crate::tools::{
 use crate::ui::audit_window::AuditWindow;
 use crate::ui::csv_import::{CsvDialogResult, CsvImportDialog};
 use crate::ui::properties::properties_panel;
+use crate::ui::reports::{ReportAction, ReportsWindow};
 use crate::ui::settings_window::SettingsWindow;
+use crate::ui::traverse_window::{TraverseAction, TraverseWindow};
 
 const SETTINGS_KEY: &str = "survey3d.settings";
 
@@ -150,6 +152,14 @@ const APP_COMMANDS: &[AppCommand] = &[
     cmd("import", "Import points (CSV/TXT)", "File", icons::FILE_CSV),
     cmd("dxfin", "Import DXF", "File", icons::FILE_ARROW_UP),
     cmd("dxfout", "Export DXF", "File", icons::EXPORT),
+    cmd("traverse", "Traverse (reduce & adjust)", "COGO", icons::STEPS),
+    cmd(
+        "list",
+        "List selection (bearings, distances, coordinates)",
+        "COGO",
+        icons::LIST_BULLETS,
+    ),
+    cmd("reports", "Reports", "Project", icons::FILE_TEXT),
     cmd("audit", "Audit trail", "Project", icons::SHIELD_CHECK),
     cmd("conventions", "Conventions", "Project", icons::RULER),
     cmd("drafting", "Drafting settings", "Settings", icons::MAGNET),
@@ -191,6 +201,8 @@ pub struct SurveyApp {
     toasts: Toasts,
     settings_window: SettingsWindow,
     audit_window: AuditWindow,
+    traverse_window: TraverseWindow,
+    reports: ReportsWindow,
     about_open: bool,
     confirm_discard: Option<Discard>,
     allowed_to_close: bool,
@@ -307,6 +319,8 @@ impl SurveyApp {
             toasts: Toasts::default(),
             settings_window: SettingsWindow::default(),
             audit_window: AuditWindow::default(),
+            traverse_window: TraverseWindow::default(),
+            reports: ReportsWindow::default(),
             about_open: false,
             confirm_discard: None,
             allowed_to_close: false,
@@ -440,6 +454,38 @@ impl SurveyApp {
             cs.push_update_entity(id, Entity::Polyline(l));
         }
         self.execute(Box::new(cs));
+    }
+
+    /// Adds a report describing the selection: polyline legs (bearing, distance,
+    /// arcs) and point coordinates.
+    fn list_selection(&mut self) {
+        let doc = &self.project.doc;
+        let conv = doc.conventions();
+        if self.project.selection.is_empty() {
+            self.command_line.warn("Select objects to list first");
+            return;
+        }
+        let mut text = String::new();
+        for id in self.project.selection.ids() {
+            match doc.entity(*id) {
+                Some(Entity::Point(p)) => {
+                    text.push_str(&format!(
+                        "POINT {:<10} {}  {}  {}\n",
+                        p.name,
+                        conv.format_coord(p.position, p.height_known),
+                        p.code,
+                        p.description
+                    ));
+                }
+                Some(Entity::Polyline(l)) => {
+                    text.push_str(&crate::listing::polyline_listing(l, conv));
+                }
+                None => {}
+            }
+        }
+        let n = self.project.selection.len();
+        self.reports
+            .add(format!("Listing ({})", crate::tools::objects(n)), text);
     }
 
     fn set_tool(&mut self, id: &str) {
@@ -674,6 +720,9 @@ impl SurveyApp {
             "open" => self.request_discard(ctx, Discard::Open),
             "new" => self.request_discard(ctx, Discard::New),
             "audit" => self.audit_window.open = true,
+            "traverse" | "trav" => self.traverse_window.open = true,
+            "reports" => self.reports.open = true,
+            "list" | "li" => self.list_selection(),
             "settings" | "options" => self.settings_window.open = true,
             "drafting" | "dsettings" => self.settings_window.open_at_drafting(),
             "conventions" => self.settings_window.open_at_conventions(),
@@ -921,6 +970,8 @@ impl SurveyApp {
                         ));
                     }
                     FileKind::Dxf => self.import_dxf(&name, &bytes),
+                    // Reports are only saved, never opened.
+                    FileKind::Report => {}
                 },
                 #[cfg(not(target_arch = "wasm32"))]
                 FileEvent::ProjectPath(path) => {

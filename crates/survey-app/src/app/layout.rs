@@ -975,6 +975,27 @@ impl SurveyApp {
             self.execute(cmd);
         }
         self.audit_window.show(ctx, &self.project);
+        match self.traverse_window.show(ctx, &self.project.doc) {
+            Some(TraverseAction::Create(cmd, summary)) => {
+                self.execute(cmd);
+                self.command_line.result(summary.clone());
+                self.toasts.success(summary);
+            }
+            Some(TraverseAction::Report(title, text)) => self.reports.add(title, text),
+            None => {}
+        }
+        if let Some(ReportAction::Export(title, text)) = self.reports.show(ctx) {
+            match export(
+                &self.platform,
+                FileKind::Report,
+                &file_stem(&title),
+                text.as_bytes(),
+            ) {
+                Ok(Some(where_)) => self.command_line.info(format!("Saved report: {where_}")),
+                Ok(None) => {}
+                Err(e) => self.command_line.error(format!("Could not save report: {e}")),
+            }
+        }
 
         if self.about_open {
             egui::Window::new("About survey3d")
