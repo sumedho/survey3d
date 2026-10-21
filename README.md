@@ -50,3 +50,7 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
 * **Labels & appearance:** Settings → Display (or `labels`): point names, codes and heights; dark/light
   theme, accent colour and density.
   Project → Audit trail shows every edit and verifies the hash chain.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Bundled fonts are under their own licences (see `crates/egui-cad/assets`).

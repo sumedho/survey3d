@@ -3,3 +3,15 @@
 *.s3d-wal
 *.s3d-shm
 .DS_Store
+
+# rustfmt backups
+**/*.rs.bk
+
+# MSVC debug info
+*.pdb
+
+# cargo mutants
+**/mutants.out*/
+
+# rustc ICE dumps
+rustc-ice-*.txt
