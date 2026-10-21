@@ -1,9 +1,11 @@
 //! Traverse reduction and adjustment.
 //!
 //! A traverse starts at a known station with a known backsight bearing and runs
-//! through legs observed either as horizontal angles (turned clockwise from the
-//! backsight) or as bearings, with horizontal distances and optional height
-//! differences. When it closes on a known point the linear misclosure is
+//! through legs observed as horizontal angles (turned clockwise or anticlockwise
+//! from the backsight, or deflections from the prolonged back line) or as
+//! bearings, with horizontal or slope distances (zenith angle, instrument and
+//! target heights) and optional height differences. Distances can be scaled
+//! (e.g. ground to grid). When it closes on a known point the linear misclosure is
 //! reported and distributed by the Bowditch (compass) or Transit rule; when a
 //! closing angle onto a known bearing is observed, the angular misclosure is
 //! reported and can be distributed equally among the angles first.
@@ -17,6 +19,7 @@ use glam::{DVec2, DVec3};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::accuracy::{Check, Tolerances};
 use crate::angle::{Angle, Bearing};
 use crate::conventions::Conventions;
 
@@ -25,8 +28,24 @@ use crate::conventions::Conventions;
 pub enum Direction {
     /// Horizontal angle turned clockwise from the backsight at the leg's start.
     Angle(Angle),
+    /// Horizontal angle turned anticlockwise from the backsight.
+    AngleLeft(Angle),
+    /// Deflection from the prolonged back line: positive right, negative left.
+    Deflection(Angle),
     /// Bearing of the leg.
     Bearing(Bearing),
+}
+
+impl Direction {
+    /// The equivalent clockwise angle from the backsight; `None` for bearings.
+    pub fn angle_right(self) -> Option<Angle> {
+        match self {
+            Direction::Angle(a) => Some(a),
+            Direction::AngleLeft(a) => Some(-a),
+            Direction::Deflection(d) => Some(Angle::from_degrees(180.0) + d),
+            Direction::Bearing(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -34,10 +53,47 @@ pub struct Leg {
     /// Name of the station at the end of the leg.
     pub to: String,
     pub direction: Direction,
-    /// Horizontal distance.
+    /// Horizontal distance, or slope distance when a zenith angle is given.
     pub distance: f64,
-    /// Height difference from the leg's start to its end.
+    /// Zenith angle of a slope distance (90° is level).
+    #[serde(default)]
+    pub zenith: Option<Angle>,
+    /// Height difference from the leg's start to its end (ignored with a zenith angle).
     pub dz: Option<f64>,
+    /// Instrument height at the leg's start (used with a zenith angle).
+    #[serde(default)]
+    pub instrument_height: f64,
+    /// Target height at the leg's end (used with a zenith angle).
+    #[serde(default)]
+    pub target_height: f64,
+}
+
+impl Leg {
+    pub fn new(to: impl Into<String>, direction: Direction, distance: f64) -> Self {
+        Self {
+            to: to.into(),
+            direction,
+            distance,
+            zenith: None,
+            dz: None,
+            instrument_height: 0.0,
+            target_height: 0.0,
+        }
+    }
+
+    /// Horizontal distance (before scaling) and ground height difference.
+    pub fn reduce(&self) -> (f64, Option<f64>) {
+        match self.zenith {
+            Some(z) => {
+                let (s, c) = z.radians().sin_cos();
+                (
+                    self.distance * s,
+                    Some(self.distance * c + self.instrument_height - self.target_height),
+                )
+            }
+            None => (self.distance, self.dz),
+        }
+    }
 }
 
 /// Known control the traverse closes on.
@@ -87,6 +143,8 @@ pub struct Traverse {
     pub adjustment: Adjustment,
     /// Distribute the angular misclosure equally among the observed angles.
     pub adjust_angles: bool,
+    /// Applied to every horizontal distance (e.g. a combined ground-to-grid factor).
+    pub scale_factor: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Error)]
@@ -97,6 +155,8 @@ pub enum TraverseError {
     NoBacksight,
     #[error("leg {0} has no length")]
     ZeroDistance(usize),
+    #[error("the scale factor must be positive")]
+    BadScale,
 }
 
 /// One computed station.
@@ -105,7 +165,10 @@ pub struct Station {
     pub name: String,
     /// (Angle-adjusted) bearing of the leg arriving at this station.
     pub bearing: Bearing,
+    /// Reduced horizontal distance (scaled).
     pub distance: f64,
+    /// Ground height difference of the arriving leg, when known.
+    pub dz: Option<f64>,
     /// Coordinates before linear adjustment.
     pub unadjusted: DVec2,
     /// Final coordinates (height is 0 when unknown).
@@ -120,6 +183,8 @@ pub struct TraverseResult {
     pub length: f64,
     /// Computed minus known closing bearing (before angle adjustment).
     pub angular_misclosure: Option<Angle>,
+    /// Number of observed angles, including the closing angle.
+    pub angles: usize,
     /// Number of angles the angular misclosure was distributed over (0 = not adjusted).
     pub angles_adjusted: usize,
     /// Computed minus known closing position (after angle adjustment, before linear adjustment).
@@ -142,13 +207,24 @@ pub fn compute(t: &Traverse) -> Result<TraverseResult, TraverseError> {
     if t.legs.is_empty() {
         return Err(TraverseError::NoLegs);
     }
-    if let Some(i) = t.legs.iter().position(|l| l.distance <= 0.0) {
+    if !t.scale_factor.is_finite() || t.scale_factor <= 0.0 {
+        return Err(TraverseError::BadScale);
+    }
+    let reduced: Vec<(f64, Option<f64>)> = t
+        .legs
+        .iter()
+        .map(|l| {
+            let (h, dz) = l.reduce();
+            (h * t.scale_factor, dz)
+        })
+        .collect();
+    if let Some(i) = reduced.iter().position(|(h, _)| *h <= 0.0) {
         return Err(TraverseError::ZeroDistance(i + 1));
     }
     let angles = t
         .legs
         .iter()
-        .filter(|l| matches!(l.direction, Direction::Angle(_)))
+        .filter(|l| l.direction.angle_right().is_some())
         .count();
     if angles > 0 && t.backsight.is_none() {
         return Err(TraverseError::NoBacksight);
@@ -160,9 +236,10 @@ pub fn compute(t: &Traverse) -> Result<TraverseResult, TraverseError> {
         let mut back = t.backsight.unwrap_or_default();
         let mut out = Vec::with_capacity(t.legs.len());
         for leg in &t.legs {
-            let b = match leg.direction {
-                Direction::Angle(a) => Bearing::new(back.angle() + a + Angle::from_radians(correction)),
-                Direction::Bearing(b) => b,
+            let b = match (leg.direction, leg.direction.angle_right()) {
+                (Direction::Bearing(b), _) => b,
+                (_, Some(a)) => Bearing::new(back.angle() + a + Angle::from_radians(correction)),
+                (_, None) => unreachable!("only bearings have no angle"),
             };
             out.push(b);
             back = b.reverse();
@@ -173,7 +250,8 @@ pub fn compute(t: &Traverse) -> Result<TraverseResult, TraverseError> {
     let (mut legs_brg, last_back) = bearings(0.0);
     let mut angular_misclosure = None;
     let mut angles_adjusted = 0;
-    if let Some((known, observed)) = t.closing.and_then(|c| c.angle_check) {
+    let closing_angle = t.closing.and_then(|c| c.angle_check);
+    if let Some((known, observed)) = closing_angle {
         let computed = Bearing::new(last_back.angle() + observed);
         let mis = (computed.angle() - known.angle()).normalized_signed();
         angular_misclosure = Some(mis);
@@ -192,10 +270,10 @@ pub fn compute(t: &Traverse) -> Result<TraverseResult, TraverseError> {
     let mut cum = Vec::with_capacity(t.legs.len());
     let (mut cum_e, mut cum_n) = (Vec::new(), Vec::new());
     let (mut sum_e, mut sum_n) = (0.0, 0.0);
-    for (leg, b) in t.legs.iter().zip(&legs_brg) {
-        let d = b.unit_vector() * leg.distance;
+    for ((h, _), b) in reduced.iter().zip(&legs_brg) {
+        let d = b.unit_vector() * *h;
         p += d;
-        length += leg.distance;
+        length += h;
         sum_e += d.x.abs();
         sum_n += d.y.abs();
         rel.push(p);
@@ -222,11 +300,11 @@ pub fn compute(t: &Traverse) -> Result<TraverseResult, TraverseError> {
     };
 
     // Heights: only when the start height and every dZ are known.
-    let heights_known = t.start_height_known && t.legs.iter().all(|l| l.dz.is_some());
+    let heights_known = t.start_height_known && reduced.iter().all(|(_, dz)| dz.is_some());
     let mut z = t.start.z;
     let mut zs = Vec::with_capacity(t.legs.len());
-    for leg in &t.legs {
-        z += leg.dz.unwrap_or(0.0);
+    for (_, dz) in &reduced {
+        z += dz.unwrap_or(0.0);
         zs.push(z);
     }
     let vertical_misclosure = match t.closing.and_then(|c| c.height) {
@@ -248,7 +326,8 @@ pub fn compute(t: &Traverse) -> Result<TraverseResult, TraverseError> {
         .map(|(i, leg)| Station {
             name: leg.to.clone(),
             bearing: legs_brg[i],
-            distance: leg.distance,
+            distance: reduced[i].0,
+            dz: reduced[i].1,
             unadjusted: origin + rel[i],
             position: (origin + rel[i] + corrections[i]).extend(if heights_known { zs[i] } else { 0.0 }),
             height_known: heights_known,
@@ -259,6 +338,7 @@ pub fn compute(t: &Traverse) -> Result<TraverseResult, TraverseError> {
         stations,
         length,
         angular_misclosure,
+        angles: angles + usize::from(closing_angle.is_some()),
         angles_adjusted,
         linear_misclosure,
         vertical_misclosure,
@@ -266,28 +346,72 @@ pub fn compute(t: &Traverse) -> Result<TraverseResult, TraverseError> {
     })
 }
 
-/// A plain-text report of a computed traverse.
-pub fn report(t: &Traverse, r: &TraverseResult, conv: &Conventions) -> String {
+/// A plain-text field-book style report: observations, reduced legs, stations,
+/// misclosures and checks against the accuracy limits.
+pub fn report(t: &Traverse, r: &TraverseResult, tolerances: &Tolerances, conv: &Conventions) -> String {
     let mut s = String::new();
     let len = |m: f64| conv.format_length(m);
+    let pass = |c: Check| if c.pass { "PASS" } else { "FAIL" };
     let _ = writeln!(s, "TRAVERSE from {}", t.start_name);
     let _ = writeln!(s, "Start  {}", conv.format_coord(t.start, t.start_height_known));
     if let Some(bs) = t.backsight {
         let _ = writeln!(s, "Backsight bearing  {}", conv.format_bearing(bs));
     }
+    if t.scale_factor != 1.0 {
+        let _ = writeln!(s, "Scale factor       {:.8}", t.scale_factor);
+    }
     let _ = writeln!(s);
+    let _ = writeln!(s, "OBSERVATIONS");
     let _ = writeln!(
         s,
-        "{:<10} {:>16} {:>12}   Coordinates",
-        "Station", "Bearing", "Distance"
+        "{:<10} {:<6} {:>16} {:>12} {:>14} {:>8} {:>8}",
+        "To", "Type", "Direction", "Distance", "Zenith", "HI", "HT"
+    );
+    for leg in &t.legs {
+        let (kind, value) = match leg.direction {
+            Direction::Angle(a) => ("AR", conv.format_angle(a)),
+            Direction::AngleLeft(a) => ("AL", conv.format_angle(a)),
+            Direction::Deflection(d) => (
+                if d.radians() < 0.0 { "DL" } else { "DR" },
+                conv.format_angle(Angle::from_radians(d.radians().abs())),
+            ),
+            Direction::Bearing(b) => ("BRG", conv.format_bearing(b)),
+        };
+        let (zenith, hi, ht) = match leg.zenith {
+            Some(z) => (
+                conv.format_angle(z),
+                len(leg.instrument_height),
+                len(leg.target_height),
+            ),
+            None => (String::new(), String::new(), String::new()),
+        };
+        let _ = writeln!(
+            s,
+            "{:<10} {:<6} {:>16} {:>12} {:>14} {:>8} {:>8}",
+            leg.to,
+            kind,
+            value,
+            len(leg.distance),
+            zenith,
+            hi,
+            ht
+        );
+    }
+    let _ = writeln!(s);
+    let _ = writeln!(s, "STATIONS");
+    let _ = writeln!(
+        s,
+        "{:<10} {:>16} {:>12} {:>9}   Coordinates",
+        "Station", "Bearing", "Hz dist", "dZ"
     );
     for st in &r.stations {
         let _ = writeln!(
             s,
-            "{:<10} {:>16} {:>12}   {}",
+            "{:<10} {:>16} {:>12} {:>9}   {}",
             st.name,
             conv.format_bearing(st.bearing),
             len(st.distance),
+            st.dz.map(len).unwrap_or_default(),
             conv.format_coord(st.position, st.height_known)
         );
     }
@@ -298,7 +422,20 @@ pub fn report(t: &Traverse, r: &TraverseResult, conv: &Conventions) -> String {
         conv.format_length_with_unit(r.length)
     );
     if let Some(a) = r.angular_misclosure {
-        let _ = writeln!(s, "Angular misclosure  {}", conv.format_angle(a));
+        let _ = writeln!(
+            s,
+            "Angular misclosure  {}  ({} angles)",
+            conv.format_angle(a),
+            r.angles
+        );
+        if let Some(c) = tolerances.check_angular(a, r.angles) {
+            let _ = writeln!(
+                s,
+                "  allowed           {}  {}",
+                conv.format_angle(Angle::from_radians(c.allowed)),
+                pass(c)
+            );
+        }
         if r.angles_adjusted > 0 {
             let _ = writeln!(
                 s,
@@ -329,6 +466,14 @@ pub fn report(t: &Traverse, r: &TraverseResult, conv: &Conventions) -> String {
                     let _ = writeln!(s, "Precision           closes exactly");
                 }
             }
+            if let Some(c) = tolerances.check_linear(m.length(), r.length) {
+                let _ = writeln!(
+                    s,
+                    "  allowed           {}  {}",
+                    conv.format_length_with_unit(c.allowed),
+                    pass(c)
+                );
+            }
             let _ = writeln!(s, "Adjustment          {}", r.adjustment.label());
         }
         None => {
@@ -337,8 +482,59 @@ pub fn report(t: &Traverse, r: &TraverseResult, conv: &Conventions) -> String {
     }
     if let Some(v) = r.vertical_misclosure {
         let _ = writeln!(s, "Vertical misclosure {}", conv.format_length_with_unit(v));
+        if let Some(c) = tolerances.check_vertical(v, r.length) {
+            let _ = writeln!(
+                s,
+                "  allowed           {}  {}",
+                conv.format_length_with_unit(c.allowed),
+                pass(c)
+            );
+        }
     }
     s
+}
+
+// ---------------------------------------------------------------- stored traverses
+
+/// A direction reference: a point by name or a fixed bearing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Reference {
+    Point(String),
+    Bearing(Bearing),
+}
+
+/// A traverse as entered, saved with the project. Stations are referred to by
+/// name, so recomputing picks up any change to the control points.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TraverseRecord {
+    pub name: String,
+    pub start: String,
+    pub backsight: Option<Reference>,
+    pub legs: Vec<Leg>,
+    pub close_on: Option<String>,
+    pub closing_reference: Option<Reference>,
+    pub closing_angle: Option<Angle>,
+    pub adjustment: Adjustment,
+    pub adjust_angles: bool,
+    pub scale_factor: f64,
+}
+
+impl Default for TraverseRecord {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            start: String::new(),
+            backsight: None,
+            legs: Vec::new(),
+            close_on: None,
+            closing_reference: None,
+            closing_angle: None,
+            adjustment: Adjustment::Bowditch,
+            adjust_angles: true,
+            scale_factor: 1.0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -346,12 +542,7 @@ mod tests {
     use super::*;
 
     fn leg(to: &str, direction: Direction, distance: f64) -> Leg {
-        Leg {
-            to: to.into(),
-            direction,
-            distance,
-            dz: None,
-        }
+        Leg::new(to, direction, distance)
     }
 
     /// A 100 m square loop A → B (east) → C → D → A turning right at every corner,
@@ -380,6 +571,7 @@ mod tests {
             }),
             adjustment: Adjustment::Bowditch,
             adjust_angles: true,
+            scale_factor: 1.0,
         }
     }
 
@@ -441,27 +633,24 @@ mod tests {
             backsight: None,
             legs: vec![
                 Leg {
-                    to: "2".into(),
-                    direction: Direction::Bearing(Bearing::from_degrees(0.0)),
-                    distance: 50.0,
                     dz: Some(1.5),
+                    ..leg("2", Direction::Bearing(Bearing::from_degrees(0.0)), 50.0)
                 },
                 Leg {
-                    to: "3".into(),
-                    direction: Direction::Bearing(Bearing::from_degrees(90.0)),
-                    distance: 30.0,
                     dz: Some(-0.5),
+                    ..leg("3", Direction::Bearing(Bearing::from_degrees(90.0)), 30.0)
                 },
             ],
             closing: None,
             adjustment: Adjustment::Bowditch,
             adjust_angles: false,
+            scale_factor: 1.0,
         };
         let r = compute(&t).expect("open traverse");
         assert!(r.linear_misclosure.is_none() && r.precision().is_none());
         assert_eq!(r.stations[1].position, DVec3::new(1030.0, 2050.0, 11.0));
         assert!(r.stations[1].height_known);
-        let text = report(&t, &r, &Conventions::default());
+        let text = report(&t, &r, &Tolerances::default(), &Conventions::default());
         assert!(text.contains("Open traverse"), "{text}");
         assert!(
             compute(&Traverse {
@@ -470,5 +659,83 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn angle_forms_are_equivalent() {
+        // 270° right = 90° left = deflection 90° right.
+        let base = compute(&square(0.0, 0.0)).expect("traverse");
+        for form in [
+            Direction::AngleLeft(Angle::from_degrees(90.0)),
+            Direction::Deflection(Angle::from_degrees(90.0)),
+        ] {
+            let mut t = square(0.0, 0.0);
+            for l in &mut t.legs {
+                l.direction = form;
+            }
+            let r = compute(&t).expect("traverse");
+            for (a, b) in r.stations.iter().zip(&base.stations) {
+                assert!((a.position - b.position).length() < 1e-9);
+            }
+            assert_eq!(r.angles, 5);
+        }
+        // A left deflection turns the other way: south-east → east is 45° left.
+        let d = Direction::Deflection(Angle::from_degrees(-45.0))
+            .angle_right()
+            .expect("angle");
+        assert!((d.degrees() - 135.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn slope_distances_and_scale() {
+        let o = DVec3::new(1000.0, 2000.0, 50.0);
+        // 100 m slope at zenith 60°: 86.603 horizontal, 50 up; HI 1.5, HT 2.0.
+        let mut t = Traverse {
+            start_name: "1".into(),
+            start: o,
+            start_height_known: true,
+            backsight: None,
+            legs: vec![Leg {
+                zenith: Some(Angle::from_degrees(60.0)),
+                instrument_height: 1.5,
+                target_height: 2.0,
+                ..leg("2", Direction::Bearing(Bearing::from_degrees(90.0)), 100.0)
+            }],
+            closing: None,
+            adjustment: Adjustment::None,
+            adjust_angles: false,
+            scale_factor: 1.0,
+        };
+        let r = compute(&t).expect("traverse");
+        let st = &r.stations[0];
+        let h = 100.0 * 3f64.sqrt() / 2.0;
+        assert!((st.distance - h).abs() < 1e-9);
+        assert!((st.position.z - (50.0 + 50.0 + 1.5 - 2.0)).abs() < 1e-9);
+        assert!(st.height_known);
+        t.scale_factor = 0.9996;
+        let r = compute(&t).expect("traverse");
+        assert!((r.stations[0].distance - h * 0.9996).abs() < 1e-9);
+        t.scale_factor = 0.0;
+        assert_eq!(compute(&t), Err(TraverseError::BadScale));
+    }
+
+    #[test]
+    fn report_checks_tolerances() {
+        let t = square(10.0, 0.04);
+        let r = compute(&t).expect("traverse");
+        let tol = Tolerances {
+            angular_seconds: Some(5.0),
+            min_precision: Some(5000.0),
+            ..Default::default()
+        };
+        let text = report(&t, &r, &tol, &Conventions::default());
+        // 10" over 5 angles allows 11.2": pass; 1:~10000 against 1:5000: pass.
+        assert!(text.contains("(5 angles)") && !text.contains("FAIL"), "{text}");
+        let strict = Tolerances {
+            angular_seconds: Some(4.0),
+            ..tol
+        };
+        assert!(report(&t, &r, &strict, &Conventions::default()).contains("FAIL"));
+        assert!(text.contains("OBSERVATIONS") && text.contains("AR"));
     }
 }

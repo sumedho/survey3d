@@ -21,6 +21,16 @@ fn sample() -> (Document, History) {
     meta.conventions = Conventions::north_american();
     meta.feature_codes = survey_core::field_to_finish::FeatureLibrary::example();
     meta.tolerances.min_precision = Some(10_000.0);
+    meta.traverses.push(survey_core::traverse::TraverseRecord {
+        name: "Loop 1".into(),
+        start: "1".into(),
+        legs: vec![survey_core::traverse::Leg::new(
+            "2",
+            survey_core::traverse::Direction::Angle(survey_core::Angle::from_degrees(90.0)),
+            25.0,
+        )],
+        ..Default::default()
+    });
     meta.coord_system = CoordinateSystem::Projected {
         name: "MGA2020 zone 56".into(),
         epsg: Some(7856),

@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use survey_core::accuracy::Tolerances;
 use survey_core::field_to_finish::FeatureLibrary;
+use survey_core::traverse::TraverseRecord;
 use survey_core::{Aabb3, Conventions};
 
 use crate::coord_system::CoordinateSystem;
@@ -26,6 +27,9 @@ pub struct ProjectMeta {
     /// Accuracy limits for misclosure checks (none by default).
     #[serde(default)]
     pub tolerances: Tolerances,
+    /// Traverses as entered, so they can be reopened and recomputed.
+    #[serde(default)]
+    pub traverses: Vec<TraverseRecord>,
 }
 
 impl Default for ProjectMeta {
@@ -37,6 +41,7 @@ impl Default for ProjectMeta {
             conventions: Conventions::default(),
             feature_codes: FeatureLibrary::default(),
             tolerances: Tolerances::default(),
+            traverses: Vec::new(),
         }
     }
 }

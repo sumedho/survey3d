@@ -1026,6 +1026,26 @@ impl SurveyApp {
                 self.toasts.success(summary);
             }
             Some(TraverseAction::Report(title, text)) => self.reports.add(title, text),
+            Some(TraverseAction::Save(record)) => {
+                let mut meta = self.project.doc.meta().clone();
+                let name = record.name.clone();
+                match meta.traverses.iter_mut().find(|r| r.name == name) {
+                    Some(existing) => *existing = record,
+                    None => meta.traverses.push(record),
+                }
+                self.execute(Box::new(
+                    ChangeSet::new(format!("Save traverse {name}")).set_meta(meta),
+                ));
+                self.command_line
+                    .result(format!("Traverse '{name}' saved with the project"));
+            }
+            Some(TraverseAction::Delete(name)) => {
+                let mut meta = self.project.doc.meta().clone();
+                meta.traverses.retain(|r| r.name != name);
+                self.execute(Box::new(
+                    ChangeSet::new(format!("Delete traverse {name}")).set_meta(meta),
+                ));
+            }
             None => {}
         }
         let selected_line = self
