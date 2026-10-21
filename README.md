@@ -72,7 +72,8 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
 * **Point input:** pick with snapping, or type `E,N[,Z]`, `@dE,dN[,dZ]`, `@dist<bearing`, or an existing point name.
   Order, units and angle format follow the project conventions (Project → Conventions).
 * **Snapping & drafting:** Settings (gear) → Drafting holds snap modes, aperture, ortho/polar, grid and working
-  elevation. Shortcuts: F3 snap, F8 ortho, F7 grid. Tab cycles overlapping candidates; typing
+  elevation. Shortcuts: F3 object snap, F9 snap to grid (also the dotted-grid button in the header; spacing
+  follows the visible grid or a fixed value), F8 ortho, F7 grid display. Tab cycles overlapping candidates; typing
   `end`/`mid`/`int`/`per`/`nea`/`nod`/`gri` applies a one-shot snap. The status bar shows feedback only.
 * **Files:** Ctrl+S saves an `.s3d` (download on the web); File → Import points (CSV/TXT), Import / Export
   DXF. On the web, unsaved work is autosaved to browser storage and offered for recovery on the next visit.

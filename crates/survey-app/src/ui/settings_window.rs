@@ -232,7 +232,8 @@ fn drafting(ui: &mut egui::Ui, settings: &mut AppSettings) {
             .num_columns(3)
             .spacing([16.0, 4.0])
             .show(ui, |ui| {
-                for (i, mode) in SnapMode::ALL.into_iter().enumerate() {
+                let modes = SnapMode::ALL.into_iter().filter(|m| *m != SnapMode::Grid);
+                for (i, mode) in modes.enumerate() {
                     let mut on = snap.is_on(mode);
                     if ui.checkbox(&mut on, mode.label()).changed() {
                         snap.set(mode, on);
@@ -250,6 +251,36 @@ fn drafting(ui: &mut egui::Ui, settings: &mut AppSettings) {
         )
         .small()
         .weak(),
+    );
+
+    ui.add_space(8.0);
+    section_header(ui, "Grid snap");
+    let mut grid_snap = settings.snap.is_on(SnapMode::Grid);
+    switch_row(ui, &mut grid_snap, "Snap to grid (F9)");
+    settings.snap.set(SnapMode::Grid, grid_snap);
+    ui.horizontal(|ui| {
+        let mut fixed = settings.grid_snap_spacing.is_some();
+        segmented(
+            ui,
+            &mut fixed,
+            &[(false, "Follow visible grid"), (true, "Fixed spacing")],
+        );
+        if fixed {
+            let spacing = settings.grid_snap_spacing.get_or_insert(1.0);
+            ui.add(
+                egui::DragValue::new(spacing)
+                    .range(0.001..=100_000.0)
+                    .speed(0.1)
+                    .suffix(" m"),
+            );
+        } else {
+            settings.grid_snap_spacing = None;
+        }
+    });
+    ui.label(
+        RichText::new("Object snaps take priority; the grid applies when nothing else is under the cursor.")
+            .small()
+            .weak(),
     );
 
     ui.add_space(8.0);

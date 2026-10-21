@@ -10,7 +10,9 @@ use egui_cad::command_line::{CommandLine, CommandLineEvent, CommandLineState, Co
 use egui_cad::command_palette::{CommandPalette, PaletteItem};
 use egui_cad::constraint::constrain_direction;
 use egui_cad::layer_panel::{LayerAction, LayerRow, layer_panel};
-use egui_cad::snap::{Pick, SnapEngine, SnapMode, SnapQuery, SnapSettings, draw_snap_glyph, free_point};
+use egui_cad::snap::{
+    Pick, SnapEngine, SnapHit, SnapMode, SnapQuery, SnapSettings, draw_snap_glyph, free_point,
+};
 use egui_cad::toasts::Toasts;
 use egui_cad::viewport::ViewPreset;
 use egui_cad::viewport::{Viewport, ViewportState, draw_pickbox, draw_world_polyline, to_screen};
@@ -134,6 +136,10 @@ const APP_COMMANDS: &[AppCommand] = &[
     cmd("persp", "Toggle perspective", "View", icons::PERSPECTIVE),
     with_key(cmd("grid", "Toggle grid", "View", icons::GRID_FOUR), "F7"),
     with_key(cmd("snap", "Toggle object snap", "Drafting", icons::MAGNET), "F3"),
+    with_key(
+        cmd("gridsnap", "Toggle snap to grid", "Drafting", icons::DOTS_NINE),
+        "F9",
+    ),
     with_key(
         cmd("ortho", "Toggle ortho / polar", "Drafting", icons::ANGLE),
         "F8",
@@ -751,6 +757,16 @@ impl SurveyApp {
         self.command_line.info(format!("Snap {state}"));
     }
 
+    fn toggle_grid_snap(&mut self) {
+        self.settings.snap.toggle(SnapMode::Grid);
+        let state = if self.settings.snap.is_on(SnapMode::Grid) {
+            "on"
+        } else {
+            "off"
+        };
+        self.command_line.info(format!("Grid snap {state}"));
+    }
+
     fn toggle_ortho(&mut self) {
         self.settings.ortho.enabled = !self.settings.ortho.enabled;
         let state = if self.settings.ortho.enabled { "on" } else { "off" };
@@ -895,6 +911,7 @@ impl SurveyApp {
             "persp" | "perspective" => self.toggle_projection(),
             "snap" | "osnap" => self.toggle_snap(),
             "ortho" => self.toggle_ortho(),
+            "gridsnap" | "snapgrid" => self.toggle_grid_snap(),
             "grid" => self.settings.show_grid = !self.settings.show_grid,
             "delete" | "erase" => self.delete_selection(),
             "explode" => self.explode_selection(),
@@ -1389,14 +1406,18 @@ impl SurveyApp {
             self.request_discard(ctx, Discard::New);
         }
 
-        let (f3, f7, f8, home) = ctx.input_mut(|i| {
+        let (f3, f7, f8, f9, home) = ctx.input_mut(|i| {
             (
                 i.consume_key(Modifiers::NONE, Key::F3),
                 i.consume_key(Modifiers::NONE, Key::F7),
                 i.consume_key(Modifiers::NONE, Key::F8),
+                i.consume_key(Modifiers::NONE, Key::F9),
                 i.consume_key(Modifiers::NONE, Key::Home),
             )
         });
+        if f9 {
+            self.toggle_grid_snap();
+        }
         if f3 {
             self.toggle_snap();
         }

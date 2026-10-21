@@ -22,6 +22,8 @@ pub struct AppSettings {
     pub snap: SnapSettings,
     pub ortho: OrthoSettings,
     pub show_grid: bool,
+    /// Grid snap spacing in metres; `None` follows the visible grid's minor spacing.
+    pub grid_snap_spacing: Option<f64>,
     /// Height of the working plane for picks that do not snap to anything.
     pub working_z: f64,
     pub csv_layout: CsvLayout,
@@ -67,6 +69,7 @@ impl Default for AppSettings {
             snap: SnapSettings::default(),
             ortho: OrthoSettings::default(),
             show_grid: true,
+            grid_snap_spacing: None,
             working_z: 0.0,
             csv_layout: CsvLayout::from_letters("PENZC"),
             labels: LabelSettings::default(),

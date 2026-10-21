@@ -323,6 +323,21 @@ impl SurveyApp {
             if let Some(nav) = view_controls(ui, &self.viewport) {
                 action = Some(Action::View(nav));
             }
+            toolbar_divider(ui);
+            let grid_snap = self.settings.snap.is_on(SnapMode::Grid);
+            if IconButton::new(icons::DOTS_NINE, "Snap to grid")
+                .description(if grid_snap {
+                    "On — picks snap to the grid when no object snap applies"
+                } else {
+                    "Off — click to snap picks to the grid"
+                })
+                .shortcut(Some("F9"))
+                .selected(grid_snap)
+                .show(ui)
+                .clicked()
+            {
+                action = Some(Action::Run("gridsnap"));
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if IconButton::new(icons::GEAR, "Settings")
@@ -433,6 +448,11 @@ impl SurveyApp {
                 // Only states that change how picks behave, and only when non-default.
                 for (active, text, tip) in [
                     (!self.settings.snap.enabled, "snap off", "Object snap is off (F3)"),
+                    (
+                        self.settings.snap.is_on(SnapMode::Grid),
+                        "grid snap",
+                        "Picks snap to the grid (F9)",
+                    ),
                     (
                         self.settings.ortho.enabled,
                         "ortho",
@@ -790,19 +810,31 @@ impl SurveyApp {
     fn compute_pick(&mut self, cursor: glam::DVec2, grid: Option<&GridSettings>) -> Pick {
         let cam = &self.viewport.camera;
         let base = self.active_tool.base_point();
+        // Grid snap uses a fixed spacing, or the spacing the grid has (or would have) at this zoom.
+        let grid_spacing = self
+            .settings
+            .grid_snap_spacing
+            .filter(|s| *s > 0.0)
+            .unwrap_or_else(|| grid.copied().unwrap_or_default().spacing(cam).0);
         let query = SnapQuery {
             camera: cam,
             cursor,
             base_point: base.map(|b| b.position),
             working_z: self.settings.working_z,
-            grid_spacing: grid.map_or(0.0, |g| g.spacing(cam).0),
+            grid_spacing,
         };
         if !self.active_tool.wants_point() {
             return free_point(&query);
         }
+        // Grid snap is its own toggle (F9), independent of object snap (F3): object
+        // snaps win, then the grid.
         let settings = match self.snap_override {
             Some(mode) => SnapSettings::only(mode, self.settings.snap.aperture_px),
-            None => self.settings.snap.clone(),
+            None => {
+                let mut s = self.settings.snap.clone();
+                s.set(SnapMode::Grid, false);
+                s
+            }
         };
         let provider = DocSnapProvider {
             doc: &self.project.doc,
@@ -819,6 +851,27 @@ impl SurveyApp {
                 self.settings.ortho.increment_deg.to_radians(),
                 reference,
             );
+        }
+        if self.snap_override.is_none() && self.settings.snap.is_on(SnapMode::Grid) && pick.snap.is_none() {
+            let s = grid_spacing;
+            let point = glam::DVec3::new(
+                (pick.point.x / s).round() * s,
+                (pick.point.y / s).round() * s,
+                pick.point.z,
+            );
+            if let Some((screen, _)) = cam.world_to_screen(point) {
+                pick = Pick {
+                    point,
+                    height_known: pick.height_known,
+                    snap: Some(SnapHit {
+                        point,
+                        mode: SnapMode::Grid,
+                        screen,
+                        tag: None,
+                        height_known: pick.height_known,
+                    }),
+                };
+            }
         }
         pick
     }
