@@ -12,6 +12,7 @@ use egui_cad::viewport::{NavAction, view_controls};
 
 use crate::platform::FileKind;
 use crate::scene_build::select_in_box;
+use crate::tools::ToolGroup;
 use egui_cad::ThemeMode;
 use survey_core::style::LabelSet;
 
@@ -54,6 +55,89 @@ enum Action {
     Audit,
     Help,
     About,
+}
+
+/// A menu entry: a tool or app command (by command name) with its label.
+enum MenuEntry {
+    Item(&'static str, &'static str),
+    Separator,
+    Submenu(&'static str, &'static [MenuEntry]),
+}
+
+use MenuEntry::{Item, Separator, Submenu};
+
+const DRAW_MENU: &[MenuEntry] = &[
+    Item("Point", "point"),
+    Item("Polyline", "polyline"),
+    Item("Arc (three points)", "arc"),
+    Item("Circle", "circle"),
+    Separator,
+    Item("Point along line", "along"),
+    Item("Divide polyline", "divide"),
+];
+
+const MODIFY_MENU: &[MenuEntry] = &[
+    Item("Move", "move"),
+    Item("Copy", "copy"),
+    Item("Rotate", "rotate"),
+    Item("Offset", "offset"),
+    Item("Fillet", "fillet"),
+    Separator,
+    Item("Explode", "explode"),
+    Item("Join", "join"),
+    Item("Reverse direction", "reverse"),
+    Separator,
+    Item("Delete", "delete"),
+];
+
+const COGO_MENU: &[MenuEntry] = &[
+    Item("Inverse", "inverse"),
+    Item("Area", "area"),
+    Item("List selection", "list"),
+    Separator,
+    Item("Radiation", "radiate"),
+    Submenu(
+        "Intersection",
+        &[
+            Item("Bearing – bearing", "bb"),
+            Item("Bearing – distance", "bd"),
+            Item("Distance – distance", "dd"),
+        ],
+    ),
+    Item("Chainage & offset", "chainage"),
+    Item("Average points", "average"),
+    Separator,
+    Item("COGO calculator…", "calc"),
+];
+
+const SURVEY_MENU: &[MenuEntry] = &[
+    Item("Traverse…", "traverse"),
+    Item("Closure…", "closure"),
+    Item("Resection…", "resection"),
+    Item("Subdivide area…", "subdivide"),
+    Separator,
+    Item("Feature codes…", "codes"),
+    Item("Process linework", "linework"),
+];
+
+/// Menus after View: title, entries, and the tool groups whose unlisted tools they collect.
+const MENUS: &[(&str, &[MenuEntry], &[ToolGroup])] = &[
+    ("Draw", DRAW_MENU, &[ToolGroup::Draw]),
+    ("Modify", MODIFY_MENU, &[ToolGroup::Modify]),
+    ("COGO", COGO_MENU, &[ToolGroup::Cogo, ToolGroup::Measure]),
+    ("Survey", SURVEY_MENU, &[]),
+];
+
+/// Whether any menu table lists `command`.
+fn menu_lists(command: &str) -> bool {
+    fn walk(entries: &[MenuEntry], command: &str) -> bool {
+        entries.iter().any(|e| match e {
+            Item(_, c) => *c == command,
+            Separator => false,
+            Submenu(_, inner) => walk(inner, command),
+        })
+    }
+    MENUS.iter().any(|(_, entries, _)| walk(entries, command))
 }
 
 /// Horizontal gap between a point marker and its label (px).
@@ -225,34 +309,30 @@ impl SurveyApp {
                     &mut action,
                 );
             });
-            ui.menu_button("Tools", |ui| {
-                for t in self.tools.tools() {
-                    item(
-                        ui,
-                        t.name,
-                        Some(t.commands[0].into()),
-                        Action::Tool(t.id),
-                        &mut action,
-                    );
-                }
-                ui.separator();
-                for (label, command) in [
-                    ("Traverse…", "traverse"),
-                    ("Closure…", "closure"),
-                    ("Subdivide area…", "subdivide"),
-                    ("Resection…", "resection"),
-                    ("COGO calculator…", "calc"),
-                    ("Average points", "average"),
-                    ("Feature codes…", "codes"),
-                    ("Process linework", "linework"),
-                    ("List selection", "list"),
-                    ("Explode", "explode"),
-                    ("Join", "join"),
-                    ("Reverse direction", "reverse"),
-                ] {
-                    item(ui, label, Some(command.into()), Action::Run(command), &mut action);
-                }
-            });
+            for (title, entries, groups) in MENUS {
+                ui.menu_button(*title, |ui| {
+                    self.menu_entries(ui, entries, &mut action);
+                    // Tools registered by modules but not placed in a menu table.
+                    let extra: Vec<_> = self
+                        .tools
+                        .tools()
+                        .iter()
+                        .filter(|t| groups.contains(&t.group) && !menu_lists(t.commands[0]))
+                        .collect();
+                    if !extra.is_empty() {
+                        ui.separator();
+                        for t in extra {
+                            item(
+                                ui,
+                                t.name,
+                                Some(t.commands[0].into()),
+                                Action::Tool(t.id),
+                                &mut action,
+                            );
+                        }
+                    }
+                });
+            }
             ui.menu_button("Project", |ui| {
                 item(ui, "Conventions…", None, Action::Conventions, &mut action);
                 item(ui, "Accuracy limits…", None, Action::Run("accuracy"), &mut action);
@@ -344,6 +424,32 @@ impl SurveyApp {
         let ctx = ui.ctx().clone();
         if let Some(a) = action {
             self.apply_action(&ctx, a);
+        }
+    }
+
+    /// Menu entries from a table: tools by command name, otherwise app commands.
+    fn menu_entries(&self, ui: &mut egui::Ui, entries: &[MenuEntry], action: &mut Option<Action>) {
+        for entry in entries {
+            match entry {
+                MenuEntry::Item(label, command) => {
+                    let a = match self.tools.find_command(command) {
+                        Some(t) => Action::Tool(t.id),
+                        None => Action::Run(command),
+                    };
+                    if ui
+                        .add(egui::Button::new(*label).shortcut_text(*command))
+                        .clicked()
+                    {
+                        *action = Some(a);
+                    }
+                }
+                MenuEntry::Separator => {
+                    ui.separator();
+                }
+                MenuEntry::Submenu(label, inner) => {
+                    ui.menu_button(*label, |ui| self.menu_entries(ui, inner, action));
+                }
+            }
         }
     }
 
@@ -1404,4 +1510,39 @@ fn label_box(painter: &egui::Painter, bounds: egui::Rect, pos: egui::Pos2, text:
         egui::StrokeKind::Inside,
     );
     painter.galley(pos, galley, Color32::WHITE);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every menu entry is a registered tool or a known app command.
+    #[test]
+    fn menu_commands_exist() {
+        let mut tools = ToolRegistry::default();
+        CoreModule.register(&mut tools);
+        fn check(entries: &[MenuEntry], tools: &ToolRegistry) {
+            for e in entries {
+                match e {
+                    Item(label, c) => assert!(
+                        tools.find_command(c).is_some() || APP_COMMANDS.iter().any(|a| a.name == *c),
+                        "menu item '{label}' runs unknown command '{c}'"
+                    ),
+                    Separator => {}
+                    Submenu(_, inner) => check(inner, tools),
+                }
+            }
+        }
+        for (_, entries, _) in MENUS {
+            check(entries, &tools);
+        }
+        // Every core tool except Select has a place in the menus.
+        for t in tools.tools() {
+            assert!(
+                t.id == SELECT_TOOL_ID || menu_lists(t.commands[0]),
+                "tool '{}' is not in a menu",
+                t.name
+            );
+        }
+    }
 }

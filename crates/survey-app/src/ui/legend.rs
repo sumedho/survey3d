@@ -71,7 +71,7 @@ impl LegendWindow {
                 if rows.is_empty() {
                     ui.label(
                         RichText::new(if library.codes.is_empty() {
-                            "No feature codes defined (Tools → Feature codes…)."
+                            "No feature codes defined (Survey → Feature codes…)."
                         } else {
                             "No points or lines use the feature codes yet."
                         })
