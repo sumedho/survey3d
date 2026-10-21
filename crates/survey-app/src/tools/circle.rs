@@ -39,8 +39,8 @@ impl Tool for CircleTool {
         self.centre
     }
 
-    fn wants_distance(&self) -> bool {
-        self.centre.is_some()
+    fn claims_text(&self, conv: &Conventions, text: &str) -> bool {
+        self.centre.is_some() && conv.parse_length(text).is_ok()
     }
 
     fn on_event(&mut self, ctx: &mut ToolCtx<'_>, event: ToolEvent<'_>) -> ToolOutcome {

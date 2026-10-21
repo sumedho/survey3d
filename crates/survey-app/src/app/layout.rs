@@ -52,6 +52,9 @@ enum Action {
 /// Horizontal gap between a point marker and its label (px).
 const LABEL_GAP: f32 = 7.0;
 
+/// Grips within this many pixels of the cursor can be picked.
+const GRIP_APERTURE: f64 = 7.0;
+
 /// Palette for new layers.
 const LAYER_COLORS: [Color; 8] = [
     Color::rgb(0x7d, 0xd3, 0xfc),
@@ -628,6 +631,11 @@ impl SurveyApp {
             ),
             _ => None,
         };
+        let idle_select = self.active_tool.id() == SELECT_TOOL_ID && !self.active_tool.wants_point();
+        self.hovered_grip = match out.hover {
+            Some(c) if idle_select => self.grip_at(c),
+            _ => None,
+        };
 
         // Recompute the preview against this frame's cursor.
         let mut preview = Preview::default();
@@ -694,6 +702,32 @@ impl SurveyApp {
         }
     }
 
+    /// Grips of the current selection (cached).
+    fn current_grips(&mut self) -> &[Grip] {
+        let key = (self.project.doc.revision(), self.project.selection.revision());
+        if self.grips.0 != Some(key) {
+            self.grips = (
+                Some(key),
+                crate::tools::grips::grips(&self.project.doc, &self.project.selection),
+            );
+        }
+        &self.grips.1
+    }
+
+    /// The grip nearest the cursor within [`GRIP_APERTURE`].
+    fn grip_at(&mut self, cursor: glam::DVec2) -> Option<Grip> {
+        let cam = self.viewport.camera.clone();
+        self.current_grips()
+            .iter()
+            .filter_map(|g| {
+                let (s, _) = cam.world_to_screen(g.position)?;
+                let d = s.distance(cursor);
+                (d <= GRIP_APERTURE).then_some((d, *g))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, g)| g)
+    }
+
     fn compute_pick(&mut self, cursor: glam::DVec2, grid: Option<&GridSettings>) -> Pick {
         let cam = &self.viewport.camera;
         let base = self.active_tool.base_point();
@@ -739,7 +773,7 @@ impl SurveyApp {
         preview: &Preview,
         conv: &survey_core::Conventions,
     ) {
-        if self.active_tool.id() == SELECT_TOOL_ID {
+        if self.active_tool.id() == SELECT_TOOL_ID && !self.active_tool.wants_point() {
             return;
         }
         let mut lines = vec![HudLine::Prompt(self.active_tool.prompt(conv))];
@@ -755,7 +789,7 @@ impl SurveyApp {
     }
 
     fn draw_overlays(
-        &self,
+        &mut self,
         painter: &egui::Painter,
         rect: egui::Rect,
         preview: &Preview,
@@ -773,7 +807,7 @@ impl SurveyApp {
                 }
                 Some(Entity::Polyline(l)) => {
                     let stroke = Stroke::new(3.0, theme.hover.gamma_multiply(0.8));
-                    for part in l.tessellate(cam.world_per_pixel() * 0.5) {
+                    for part in l.tessellate(cam.world_per_pixel() * 0.1) {
                         draw_world_polyline(painter, rect, cam, &part, stroke, false);
                     }
                 }
@@ -781,7 +815,36 @@ impl SurveyApp {
             }
         }
 
+        // Grips of the selection while the select tool is idle.
+        if self.active_tool.id() == SELECT_TOOL_ID {
+            let hovered = self.hovered_grip;
+            let cam = cam.clone();
+            for g in self.current_grips() {
+                let Some((s, _)) = cam.world_to_screen(g.position) else {
+                    continue;
+                };
+                let vertex = !matches!(g.kind, crate::tools::grips::GripKind::Midpoint(_));
+                let half = if vertex { 4.0 } else { 3.0 };
+                let r = egui::Rect::from_center_size(to_screen(rect, s), egui::Vec2::splat(half * 2.0));
+                let fill = if hovered == Some(*g) {
+                    theme.snap
+                } else if vertex {
+                    theme.accent
+                } else {
+                    theme.accent.gamma_multiply(0.55)
+                };
+                painter.rect_filled(r, 1.0, fill);
+                painter.rect_stroke(r, 1.0, Stroke::new(1.0, theme.bg), egui::StrokeKind::Outside);
+            }
+        }
+        let cam = &self.viewport.camera;
+
         // Tool preview.
+        for p in &preview.points {
+            if let Some((s, _)) = cam.world_to_screen(*p) {
+                painter.circle_stroke(to_screen(rect, s), 3.5, Stroke::new(1.5, theme.preview));
+            }
+        }
         for pl in &preview.polylines {
             draw_world_polyline(painter, rect, cam, pl, Stroke::new(1.5, theme.preview), false);
         }

@@ -18,7 +18,7 @@ pub mod spatial;
 pub use command::{ChangeSet, Command};
 pub use coord_system::CoordinateSystem;
 pub use document::{DirtyState, Document, ProjectMeta};
-pub use entity::{Entity, Polyline, SurveyPoint};
+pub use entity::{Entity, Polyline, SurveyPoint, join_polylines};
 pub use history::{AuditAction, AuditRecord, History};
 pub use ids::{EntityId, LayerId};
 pub use layer::{Color, Layer};

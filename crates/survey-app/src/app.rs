@@ -26,6 +26,7 @@ use crate::platform::{FileEvent, FileKind, Platform, export};
 use crate::project::{APP_VERSION, Project};
 use crate::scene_build::{DocSnapProvider, SceneCache, color32, hit_test};
 use crate::settings::AppSettings;
+use crate::tools::grips::Grip;
 use crate::tools::{
     CoreModule, DomainModule, Preview, SELECT_TOOL_ID, Tool, ToolCtx, ToolEvent, ToolOutcome, ToolRegistry,
 };
@@ -35,6 +36,9 @@ use crate::ui::properties::properties_panel;
 use crate::ui::settings_window::SettingsWindow;
 
 const SETTINGS_KEY: &str = "survey3d.settings";
+
+/// Polyline ends closer than this (plan, metres) are joined.
+const JOIN_TOLERANCE: f64 = 0.001;
 
 /// A command handled by the application itself (not a tool).
 struct AppCommand {
@@ -95,6 +99,24 @@ const APP_COMMANDS: &[AppCommand] = &[
         Key::Z,
     ),
     with_key(cmd("delete", "Delete selection", "Edit", icons::TRASH), "Del"),
+    cmd(
+        "explode",
+        "Explode polylines into segments",
+        "Modify",
+        icons::ARROWS_SPLIT,
+    ),
+    cmd(
+        "join",
+        "Join polylines that meet end to end",
+        "Modify",
+        icons::ARROWS_MERGE,
+    ),
+    cmd(
+        "reverse",
+        "Reverse polyline direction",
+        "Modify",
+        icons::ARROWS_LEFT_RIGHT,
+    ),
     with_key(cmd("ze", "Zoom extents", "View", icons::FRAME_CORNERS), "Home"),
     cmd("plan", "Plan view (2D lock)", "View", icons::MAP_TRIFOLD),
     cmd("3d", "Free 3D view", "View", icons::CUBE),
@@ -161,6 +183,9 @@ pub struct SurveyApp {
     /// Resolved cursor position this frame (snapped if possible).
     pick: Option<Pick>,
     hovered_entity: Option<EntityId>,
+    /// Grips of the selection, cached by `(document revision, selection revision)`.
+    grips: (Option<(u64, u64)>, Vec<Grip>),
+    hovered_grip: Option<Grip>,
     csv_dialog: Option<CsvImportDialog>,
     palette: CommandPalette,
     toasts: Toasts,
@@ -275,6 +300,8 @@ impl SurveyApp {
             platform,
             pick: None,
             hovered_entity: None,
+            grips: (None, Vec::new()),
+            hovered_grip: None,
             csv_dialog: None,
             palette: CommandPalette::default(),
             toasts: Toasts::default(),
@@ -339,35 +366,119 @@ impl SurveyApp {
         self.command_line.info(format!("Deleted {} objects", ids.len()));
     }
 
+    /// Editable selected polylines.
+    fn selected_polylines(&self) -> Vec<(EntityId, survey_model::Polyline)> {
+        let doc = &self.project.doc;
+        self.project
+            .selection
+            .ids()
+            .iter()
+            .filter(|id| doc.is_entity_editable(**id))
+            .filter_map(|id| match doc.entity(*id) {
+                Some(Entity::Polyline(l)) => Some((*id, l.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn explode_selection(&mut self) {
+        let lines = self.selected_polylines();
+        if lines.is_empty() {
+            self.command_line.warn("Select the polylines to explode first");
+            return;
+        }
+        let mut cs = ChangeSet::new(format!("Explode {} polylines", lines.len()));
+        let mut parts = 0;
+        for (id, l) in &lines {
+            cs.push_delete_entity(*id);
+            for part in l.explode() {
+                cs.push_insert_entity(Entity::Polyline(part));
+                parts += 1;
+            }
+        }
+        self.execute(Box::new(cs));
+        self.command_line.result(format!(
+            "Exploded {} polylines into {parts} segments",
+            lines.len()
+        ));
+    }
+
+    fn join_selection(&mut self) {
+        let lines = self.selected_polylines();
+        if lines.len() < 2 {
+            self.command_line.warn("Select two or more polylines to join");
+            return;
+        }
+        let polylines: Vec<_> = lines.iter().map(|(_, l)| l.clone()).collect();
+        let joined = survey_model::join_polylines(&polylines, JOIN_TOLERANCE);
+        if joined.len() == lines.len() {
+            self.command_line
+                .warn("None of the selected polylines meet end to end");
+            return;
+        }
+        let mut cs = ChangeSet::new(format!("Join {} polylines", lines.len()));
+        for (id, _) in &lines {
+            cs.push_delete_entity(*id);
+        }
+        for l in &joined {
+            cs.push_insert_entity(Entity::Polyline(l.clone()));
+        }
+        self.execute(Box::new(cs));
+        self.command_line
+            .result(format!("Joined {} polylines into {}", lines.len(), joined.len()));
+    }
+
+    fn reverse_selection(&mut self) {
+        let lines = self.selected_polylines();
+        if lines.is_empty() {
+            self.command_line.warn("Select the polylines to reverse first");
+            return;
+        }
+        let mut cs = ChangeSet::new(format!("Reverse {} polylines", lines.len()));
+        for (id, mut l) in lines {
+            l.reverse();
+            cs.push_update_entity(id, Entity::Polyline(l));
+        }
+        self.execute(Box::new(cs));
+    }
+
     fn set_tool(&mut self, id: &str) {
         let Some(create) = self.tools.get(id).map(|d| d.create) else {
             return;
         };
-        // Give the current tool a chance to commit work in progress.
-        if self.active_tool.id() != id {
+        // Give the current tool a chance to commit work in progress. (Not the select
+        // tool: cancelling it clears the selection the next tool may work on.)
+        if self.active_tool.id() != id && self.active_tool.id() != SELECT_TOOL_ID {
             self.dispatch(ToolEvent::Cancel);
         }
         self.active_tool = create();
         self.snap_override = None;
+        self.with_tool(|tool, ctx| tool.activate(ctx));
     }
 
     /// Sends an event to the active tool and executes the commands it emits.
     fn dispatch(&mut self, event: ToolEvent<'_>) {
         let is_point = matches!(event, ToolEvent::Point(_));
+        self.with_tool(|tool, ctx| tool.on_event(ctx, event));
+        if is_point {
+            self.snap_override = None;
+        }
+    }
+
+    /// Runs `f` on the active tool with a [`ToolCtx`], then executes the commands
+    /// it emitted and returns to the select tool if it finished.
+    fn with_tool(&mut self, f: impl FnOnce(&mut dyn Tool, &mut ToolCtx<'_>) -> ToolOutcome) {
         let mut commands: Vec<Box<dyn Command>> = Vec::new();
-        let shift = self.shift_down;
         let outcome = {
             let p = &mut self.project;
             let mut ctx = ToolCtx::new(&p.doc, &mut p.selection, &mut self.command_line, &mut commands);
             ctx.hovered = self.hovered_entity;
-            ctx.shift = shift;
-            self.active_tool.on_event(&mut ctx, event)
+            ctx.hovered_grip = self.hovered_grip;
+            ctx.shift = self.shift_down;
+            f(self.active_tool.as_mut(), &mut ctx)
         };
         for c in commands {
             self.execute(c);
-        }
-        if is_point {
-            self.snap_override = None;
         }
         if outcome == ToolOutcome::Done
             && self.active_tool.id() != SELECT_TOOL_ID
@@ -430,8 +541,8 @@ impl SurveyApp {
             return;
         }
 
-        // A plain distance (e.g. a circle radius) goes straight to the tool.
-        if self.active_tool.wants_distance() && self.project.doc.conventions().parse_length(text).is_ok() {
+        // Values the tool asks for (a radius, a bearing, an observation…) go straight to it.
+        if self.active_tool.claims_text(self.project.doc.conventions(), text) {
             self.dispatch(ToolEvent::Text(text));
             return;
         }
@@ -483,7 +594,7 @@ impl SurveyApp {
         if self.run_app_command(ctx, text) {
             return;
         }
-        if self.active_tool.id() != SELECT_TOOL_ID {
+        if self.active_tool.id() != SELECT_TOOL_ID || self.active_tool.wants_point() {
             self.dispatch(ToolEvent::Text(text));
         } else {
             self.command_line
@@ -552,6 +663,9 @@ impl SurveyApp {
             "ortho" => self.toggle_ortho(),
             "grid" => self.settings.show_grid = !self.settings.show_grid,
             "delete" | "erase" => self.delete_selection(),
+            "explode" => self.explode_selection(),
+            "join" => self.join_selection(),
+            "reverse" => self.reverse_selection(),
             "import" => self.platform.pick_file(ctx, FileKind::Points),
             "dxfin" | "importdxf" => self.platform.pick_file(ctx, FileKind::Dxf),
             "dxfout" | "exportdxf" => self.export_dxf(),

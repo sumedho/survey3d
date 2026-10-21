@@ -3,6 +3,9 @@
 use glam::{DVec2, DVec3};
 
 use crate::angle::Bearing;
+use crate::arc::{Arc, bulge_segments};
+use crate::geom::line_intersection_2d;
+use crate::offset::{circle_circle, line_circle};
 
 /// Result of an inverse computation between two points.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,6 +39,154 @@ pub fn polar(from: DVec2, bearing: Bearing, distance: f64) -> DVec2 {
     from + bearing.unit_vector() * distance
 }
 
+// ---------------------------------------------------------------- intersections
+//
+// Computed relative to the first station so large grid coordinates keep full precision.
+
+/// Intersection of the lines through `a` on `brg_a` and through `b` on `brg_b`;
+/// `None` if they are parallel.
+pub fn intersect_bearings(a: DVec2, brg_a: Bearing, b: DVec2, brg_b: Bearing) -> Option<DVec2> {
+    let (da, db) = (brg_a.unit_vector(), brg_b.unit_vector());
+    let rb = b - a;
+    let (t, _) = line_intersection_2d(DVec2::ZERO, da, rb, rb + db)?;
+    Some(a + da * t)
+}
+
+/// Points on the line through `a` on `brg` at horizontal `distance` from `b`
+/// (zero, one or two), those ahead along the bearing first.
+pub fn intersect_bearing_distance(a: DVec2, brg: Bearing, b: DVec2, distance: f64) -> Vec<DVec2> {
+    let d = brg.unit_vector();
+    let mut pts = line_circle(DVec2::ZERO, d, b - a, distance);
+    pts.sort_by(|p, q| q.dot(d).total_cmp(&p.dot(d)));
+    pts.into_iter().map(|p| a + p).collect()
+}
+
+/// Points at `dist_a` from `a` and `dist_b` from `b` (zero, one or two): the one
+/// to the right of `a → b` first.
+pub fn intersect_distances(a: DVec2, dist_a: f64, b: DVec2, dist_b: f64) -> Vec<DVec2> {
+    let rb = b - a;
+    let mut pts = circle_circle(DVec2::ZERO, dist_a, rb, dist_b);
+    pts.sort_by(|p, q| rb.perp_dot(*p).total_cmp(&rb.perp_dot(*q)));
+    pts.into_iter().map(|p| a + p).collect()
+}
+
+// ---------------------------------------------------------------- chainage & offset
+
+/// A point's position relative to a polyline (an alignment or string).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StationOffset {
+    /// Plan distance along the polyline to the foot of the perpendicular.
+    pub chainage: f64,
+    /// Plan distance from the polyline: positive to the **right** of the direction of travel.
+    pub offset: f64,
+    /// Index of the segment the foot lies on.
+    pub segment: usize,
+    /// The foot point on the polyline (with interpolated height).
+    pub foot: DVec3,
+}
+
+/// Projects `p` onto the nearest part of a polyline (plan).
+pub fn station_offset(vertices: &[DVec3], bulges: &[f64], closed: bool, p: DVec2) -> Option<StationOffset> {
+    let mut best: Option<(f64, StationOffset)> = None;
+    let mut start = 0.0;
+    for (i, (a, b, bulge)) in bulge_segments(vertices, bulges, closed).enumerate() {
+        let (length, t, foot, offset) = match Arc::from_bulge(a, b, bulge) {
+            Some(arc) => {
+                let d = p - arc.center;
+                let t = (d.length_squared() > 0.0)
+                    .then(|| arc.param_of_angle(d.y.atan2(d.x)))
+                    .flatten()
+                    .unwrap_or_else(|| {
+                        let (s, e) = (arc.point_at(0.0), arc.point_at(1.0));
+                        if s.truncate().distance(p) <= e.truncate().distance(p) {
+                            0.0
+                        } else {
+                            1.0
+                        }
+                    });
+                let foot = arc.point_at(t);
+                // An anticlockwise arc has its centre on the left, so outside is right.
+                let side = (d.length() - arc.radius).signum() * arc.sweep.signum();
+                (arc.length_2d(), t, foot, side * foot.truncate().distance(p))
+            }
+            None => {
+                let dir = (b - a).truncate();
+                let len = dir.length();
+                let t = if len > 0.0 {
+                    ((p - a.truncate()).dot(dir) / (len * len)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let foot = a + (b - a) * t;
+                let side = if dir.perp_dot(p - foot.truncate()) > 0.0 {
+                    -1.0
+                } else {
+                    1.0
+                };
+                (len, t, foot, side * foot.truncate().distance(p))
+            }
+        };
+        let candidate = StationOffset {
+            chainage: start + length * t,
+            offset,
+            segment: i,
+            foot,
+        };
+        if best.is_none_or(|(d, _)| offset.abs() < d) {
+            best = Some((offset.abs(), candidate));
+        }
+        start += length;
+    }
+    best.map(|(_, so)| so)
+}
+
+/// The point at `chainage` along a polyline and `offset` to the right of it (plan);
+/// `None` beyond either end. Heights are interpolated along the polyline.
+pub fn point_at_station(
+    vertices: &[DVec3],
+    bulges: &[f64],
+    closed: bool,
+    chainage: f64,
+    offset: f64,
+) -> Option<DVec3> {
+    let eps = 1e-9 * (1.0 + chainage.abs());
+    if chainage < -eps {
+        return None;
+    }
+    let mut start = 0.0;
+    for (a, b, bulge) in bulge_segments(vertices, bulges, closed) {
+        let (length, point) = match Arc::from_bulge(a, b, bulge) {
+            Some(arc) => {
+                let len = arc.length_2d();
+                let t = ((chainage - start) / len).clamp(0.0, 1.0);
+                let foot = arc.point_at(t);
+                let outward = (foot.truncate() - arc.center) / arc.radius;
+                (len, foot + (outward * offset * arc.sweep.signum()).extend(0.0))
+            }
+            None => {
+                let dir = (b - a).truncate();
+                let len = dir.length();
+                let t = if len > 0.0 {
+                    ((chainage - start) / len).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let right = if len > 0.0 {
+                    DVec2::new(dir.y, -dir.x) / len
+                } else {
+                    DVec2::ZERO
+                };
+                (len, a + (b - a) * t + (right * offset).extend(0.0))
+            }
+        };
+        if chainage <= start + length + eps {
+            return Some(point);
+        }
+        start += length;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,5 +209,63 @@ mod tests {
         let inv = inverse(DVec3::ONE, DVec3::new(1.0, 1.0, 5.0));
         assert!(inv.bearing.is_none() && inv.grade.is_none());
         assert_eq!(inv.slope, 4.0);
+    }
+
+    #[test]
+    fn intersections() {
+        let o = DVec2::new(512_000.0, 6_912_000.0);
+        // Bearing–bearing: 45° from the origin, 315° from (100, 0) → (50, 50).
+        let p = intersect_bearings(
+            o,
+            Bearing::from_degrees(45.0),
+            o + DVec2::new(100.0, 0.0),
+            Bearing::from_degrees(315.0),
+        )
+        .expect("not parallel");
+        assert!((p - (o + DVec2::new(50.0, 50.0))).length() < 1e-8);
+        assert!(
+            intersect_bearings(
+                o,
+                Bearing::from_degrees(10.0),
+                o + DVec2::X,
+                Bearing::from_degrees(190.0)
+            )
+            .is_none()
+        );
+        // Bearing–distance: due east from the origin, 5 from (4, 3) → (8, 0) ahead and (0, 0) behind.
+        let pts = intersect_bearing_distance(o, Bearing::from_degrees(90.0), o + DVec2::new(4.0, 3.0), 5.0);
+        assert_eq!(pts.len(), 2);
+        assert!(
+            (pts[0] - (o + DVec2::new(8.0, 0.0))).length() < 1e-8,
+            "{:?}",
+            pts[0] - o
+        );
+        // Distance–distance: equilateral triangle; the solution right of a→b (south) first.
+        let pts = intersect_distances(o, 5.0, o + DVec2::new(5.0, 0.0), 5.0);
+        assert_eq!(pts.len(), 2);
+        assert!(pts[0].y < o.y && pts[1].y > o.y);
+        assert!(intersect_distances(o, 1.0, o + DVec2::new(5.0, 0.0), 1.0).is_empty());
+    }
+
+    #[test]
+    fn chainage_and_offset() {
+        let o = DVec3::new(300_000.0, 5_000_000.0, 0.0);
+        // East 10, then a quarter circle (r = 10) turning left to (20, 10).
+        let verts = [o, o + DVec3::new(10.0, 0.0, 0.0), o + DVec3::new(20.0, 10.0, 0.0)];
+        let bulges = [0.0, (std::f64::consts::PI / 8.0).tan()];
+        // 2 m south of the line at chainage 4 → right offset.
+        let so = station_offset(&verts, &bulges, false, o.truncate() + DVec2::new(4.0, -2.0)).expect("so");
+        assert!((so.chainage - 4.0).abs() < 1e-9 && (so.offset - 2.0).abs() < 1e-9 && so.segment == 0);
+        // Inside the left-turning curve is left (negative).
+        let arc_len = 10.0 * std::f64::consts::FRAC_PI_2;
+        let mid = point_at_station(&verts, &bulges, false, 10.0 + arc_len / 2.0, -3.0).expect("on arc");
+        let back = station_offset(&verts, &bulges, false, mid.truncate()).expect("so");
+        assert!((back.chainage - (10.0 + arc_len / 2.0)).abs() < 1e-9, "{back:?}");
+        assert!((back.offset + 3.0).abs() < 1e-9 && back.segment == 1);
+        let centre = o.truncate() + DVec2::new(10.0, 10.0);
+        assert!((mid.truncate().distance(centre) - 7.0).abs() < 1e-9);
+        assert!(point_at_station(&verts, &bulges, false, 10.0 + arc_len + 1.0, 0.0).is_none());
+        let end = point_at_station(&verts, &bulges, false, 10.0 + arc_len, 0.0).expect("end");
+        assert!((end - verts[2]).length() < 1e-9);
     }
 }

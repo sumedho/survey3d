@@ -178,6 +178,11 @@ impl Document {
 
     /// Next free numeric point name (one more than the largest numeric name in use).
     pub fn next_point_name(&self) -> String {
+        self.point_names().next().unwrap_or_default()
+    }
+
+    /// Successive free numeric point names, for commands that add several points.
+    pub fn point_names(&self) -> impl Iterator<Item = String> + use<> {
         let max = self
             .entities
             .values()
@@ -187,7 +192,7 @@ impl Document {
             })
             .max()
             .unwrap_or(0);
-        (max + 1).to_string()
+        (max + 1..).map(|n| n.to_string())
     }
 
     pub fn dirty(&self) -> &DirtyState {

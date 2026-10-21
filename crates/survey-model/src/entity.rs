@@ -1,7 +1,7 @@
 use glam::DVec3;
 use serde::{Deserialize, Serialize};
 use survey_core::Aabb3;
-use survey_core::arc::{Arc, bulge_segments};
+use survey_core::arc::{Arc, bulge_segments, reverse_bulges};
 
 use crate::ids::LayerId;
 
@@ -42,6 +42,49 @@ impl Polyline {
         bulge_segments(&self.vertices, &self.bulges, self.closed)
     }
 
+    /// Bulge of every segment (one per vertex; the last is unused when open).
+    pub fn padded_bulges(&self) -> Vec<f64> {
+        (0..self.vertices.len()).map(|i| self.bulge(i)).collect()
+    }
+
+    /// Reverses the direction of travel without changing the shape.
+    pub fn reverse(&mut self) {
+        reverse_bulges(&mut self.vertices, &mut self.bulges, self.closed);
+    }
+
+    /// One two-vertex polyline per segment, keeping name, code and layer.
+    pub fn explode(&self) -> Vec<Polyline> {
+        self.segments()
+            .map(|(a, b, bulge)| Polyline {
+                vertices: vec![a, b],
+                bulges: if bulge == 0.0 {
+                    Vec::new()
+                } else {
+                    vec![bulge, 0.0]
+                },
+                closed: false,
+                ..self.clone()
+            })
+            .collect()
+    }
+
+    fn start(&self) -> DVec3 {
+        self.vertices[0]
+    }
+
+    fn end(&self) -> DVec3 {
+        self.vertices[self.vertices.len() - 1]
+    }
+
+    /// Appends `next`, whose first vertex coincides with this polyline's last.
+    fn append(&mut self, next: &Polyline) {
+        let mut bulges = self.padded_bulges();
+        bulges.pop();
+        bulges.extend(next.padded_bulges());
+        self.vertices.extend_from_slice(&next.vertices[1..]);
+        self.bulges = bulges;
+    }
+
     /// Straight-line approximation (arcs tessellated to `tolerance`), for display and hit testing.
     pub fn tessellate(&self, tolerance: f64) -> Vec<Vec<DVec3>> {
         self.segments()
@@ -51,6 +94,59 @@ impl Polyline {
             })
             .collect()
     }
+}
+
+/// Joins open polylines whose ends meet (within `tolerance`, in plan) into chains.
+/// Each result keeps the name, code and layer of the first polyline in its chain;
+/// a chain that returns to its start is closed. Closed and too-short inputs pass through.
+pub fn join_polylines(lines: &[Polyline], tolerance: f64) -> Vec<Polyline> {
+    let meets = |a: DVec3, b: DVec3| a.truncate().distance(b.truncate()) <= tolerance;
+    let (mut open, mut out): (Vec<Polyline>, Vec<Polyline>) = lines
+        .iter()
+        .cloned()
+        .partition(|l| !l.closed && l.vertices.len() >= 2);
+    open.reverse(); // pop() takes them in the given order
+    while let Some(mut chain) = open.pop() {
+        loop {
+            let found = open.iter().position(|l| {
+                meets(chain.end(), l.start())
+                    || meets(chain.end(), l.end())
+                    || meets(chain.start(), l.end())
+                    || meets(chain.start(), l.start())
+            });
+            let Some(i) = found else { break };
+            let mut next = open.remove(i);
+            if meets(chain.end(), next.start()) {
+                chain.append(&next);
+            } else if meets(chain.end(), next.end()) {
+                next.reverse();
+                chain.append(&next);
+            } else {
+                if meets(chain.start(), next.start()) {
+                    next.reverse();
+                }
+                // `next` ends where the chain starts.
+                let attrs = chain.clone();
+                next.append(&chain);
+                chain = Polyline {
+                    vertices: next.vertices,
+                    bulges: next.bulges,
+                    ..attrs
+                };
+            }
+        }
+        if chain.vertices.len() > 2 && meets(chain.start(), chain.end()) {
+            let n = chain.vertices.len() - 1;
+            chain.vertices.truncate(n);
+            chain.bulges = chain.padded_bulges();
+            chain.closed = true;
+        }
+        if chain.bulges.iter().all(|b| *b == 0.0) {
+            chain.bulges.clear();
+        }
+        out.push(chain);
+    }
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -72,6 +168,19 @@ impl Entity {
         match self {
             Entity::Point(p) => p.layer = layer,
             Entity::Polyline(l) => l.layer = layer,
+        }
+    }
+
+    /// Applies `f` to every stored position. Bulges are kept, so `f` must be a
+    /// rigid motion that preserves orientation (translation or rotation).
+    pub fn map_positions(&mut self, f: impl Fn(DVec3) -> DVec3) {
+        match self {
+            Entity::Point(p) => p.position = f(p.position),
+            Entity::Polyline(l) => {
+                for v in &mut l.vertices {
+                    *v = f(*v);
+                }
+            }
         }
     }
 
@@ -106,5 +215,52 @@ impl Entity {
                 b
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(points: &[(f64, f64)], bulges: Vec<f64>) -> Polyline {
+        Polyline {
+            name: String::new(),
+            vertices: points.iter().map(|&(x, y)| DVec3::new(x, y, 0.0)).collect(),
+            bulges,
+            closed: false,
+            code: "KB".into(),
+            layer: LayerId(1),
+        }
+    }
+
+    #[test]
+    fn join_chains_in_any_direction() {
+        let a = line(&[(0.0, 0.0), (1.0, 0.0)], vec![]);
+        let b = line(&[(2.0, 0.0), (1.0, 0.0)], vec![0.5, 0.0]); // reversed, with an arc
+        let c = line(&[(5.0, 5.0), (6.0, 5.0)], vec![]);
+        let d = line(&[(-1.0, 0.0), (0.0, 0.0)], vec![]);
+        let joined = join_polylines(&[a, b, c, d], 1e-6);
+        assert_eq!(joined.len(), 2);
+        let chain = &joined[0];
+        let xs: Vec<f64> = chain.vertices.iter().map(|v| v.x).collect();
+        assert_eq!(xs, vec![-1.0, 0.0, 1.0, 2.0]);
+        // The arc was reversed with its segment.
+        assert_eq!(chain.padded_bulges(), vec![0.0, 0.0, -0.5, 0.0]);
+        assert_eq!(chain.code, "KB");
+    }
+
+    #[test]
+    fn join_closes_a_loop_and_explode_splits() {
+        let parts = [
+            line(&[(0.0, 0.0), (1.0, 0.0)], vec![]),
+            line(&[(1.0, 0.0), (1.0, 1.0)], vec![]),
+            line(&[(1.0, 1.0), (0.0, 0.0)], vec![]),
+        ];
+        let joined = join_polylines(&parts, 1e-6);
+        assert_eq!(joined.len(), 1);
+        assert!(joined[0].closed && joined[0].vertices.len() == 3);
+        let exploded = joined[0].explode();
+        assert_eq!(exploded.len(), 3);
+        assert!(exploded.iter().all(|l| !l.closed && l.vertices.len() == 2));
     }
 }

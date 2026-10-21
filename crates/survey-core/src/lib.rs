@@ -11,6 +11,7 @@ pub mod cogo;
 pub mod conventions;
 pub mod error;
 pub mod geom;
+pub mod offset;
 pub mod point_input;
 
 pub use angle::{Angle, Bearing, Dms, Quadrant};

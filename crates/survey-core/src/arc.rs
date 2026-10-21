@@ -88,6 +88,24 @@ impl Arc {
         self.point_at(0.5)
     }
 
+    /// Unit direction of travel (plan) at parameter `t`.
+    pub fn tangent_at(&self, t: f64) -> DVec2 {
+        DVec2::from_angle(self.start_angle + self.sweep * t).perp() * self.sweep.signum()
+    }
+
+    /// Bulge of the part of this circle swept from `from` to `to` (plan points on the
+    /// circle) in this arc's direction; `0.0` when they coincide.
+    pub fn bulge_between(&self, from: DVec2, to: DVec2) -> f64 {
+        let (u, v) = (from - self.center, to - self.center);
+        let (a0, a1) = (u.y.atan2(u.x), v.y.atan2(v.x));
+        let sweep = if self.sweep >= 0.0 {
+            (a1 - a0).rem_euclid(TAU)
+        } else {
+            -(a0 - a1).rem_euclid(TAU)
+        };
+        (sweep / 4.0).tan()
+    }
+
     /// Plan length.
     pub fn length_2d(&self) -> f64 {
         self.radius * self.sweep.abs()
@@ -195,6 +213,44 @@ impl Arc {
         let n = ((self.sweep.abs() / max_step.max(1e-6)).ceil() as usize).clamp(2, 512);
         (0..=n).map(|i| self.point_at(i as f64 / n as f64)).collect()
     }
+}
+
+/// Bulge of the arc that leaves `start` in direction `tangent` and ends at `end`;
+/// `None` when the end lies straight behind the start (no such arc).
+pub fn tangent_bulge(start: DVec2, tangent: DVec2, end: DVec2) -> Option<f64> {
+    let chord = end - start;
+    if chord.length_squared() == 0.0 || tangent.length_squared() == 0.0 {
+        return None;
+    }
+    // The included angle is twice the angle between tangent and chord.
+    let phi = tangent.perp_dot(chord).atan2(tangent.dot(chord));
+    (phi.abs() < std::f64::consts::PI - 1e-9).then(|| (phi / 2.0).tan())
+}
+
+/// Direction of travel (plan, not normalised) leaving the end of segment `a → b`.
+pub fn end_direction(a: DVec3, b: DVec3, bulge: f64) -> DVec2 {
+    match Arc::from_bulge(a, b, bulge) {
+        Some(arc) => arc.tangent_at(1.0),
+        None => (b - a).truncate(),
+    }
+}
+
+/// Reverses a polyline's direction: vertex order and segment bulges.
+pub fn reverse_bulges(vertices: &mut [DVec3], bulges: &mut Vec<f64>, closed: bool) {
+    let n = vertices.len();
+    vertices.reverse();
+    if bulges.iter().all(|b| b.abs() < STRAIGHT_BULGE) {
+        bulges.clear();
+        return;
+    }
+    let old: Vec<f64> = (0..n).map(|i| bulges.get(i).copied().unwrap_or(0.0)).collect();
+    // New segment i runs along old segment n-2-i backwards (wrapping for the closing segment).
+    *bulges = (0..n)
+        .map(|i| {
+            let j = (n as isize - 2 - i as isize).rem_euclid(n as isize) as usize;
+            if !closed && i == n - 1 { 0.0 } else { -old[j] }
+        })
+        .collect();
 }
 
 fn circumcenter(a: DVec2, b: DVec2, c: DVec2) -> Option<DVec2> {
@@ -324,6 +380,39 @@ mod tests {
         let sq = [v(0.0, 0.0), v(2.0, 0.0), v(2.0, 2.0), v(0.0, 2.0)];
         let (_, _, a) = polyline_metrics(&sq, &[1.0, 0.0, 0.0, 0.0], true);
         assert!((a - (4.0 + PI / 2.0)).abs() < 1e-9, "{a}");
+    }
+
+    #[test]
+    fn tangent_arcs() {
+        // Heading east from the origin, ending at (10, 10): a quarter circle turning left.
+        let bulge = tangent_bulge(DVec2::ZERO, DVec2::X, DVec2::new(10.0, 10.0)).expect("arc");
+        let arc = Arc::from_bulge(v(0.0, 0.0), v(10.0, 10.0), bulge).expect("arc");
+        assert!((arc.sweep - PI / 2.0).abs() < 1e-12);
+        assert!((arc.tangent_at(0.0) - DVec2::X).length() < 1e-12);
+        assert!((arc.tangent_at(1.0) - DVec2::Y).length() < 1e-12);
+        assert!((end_direction(v(0.0, 0.0), v(10.0, 10.0), bulge).normalize() - DVec2::Y).length() < 1e-12);
+        // Straight ahead is a zero bulge; straight behind has no arc.
+        assert!(
+            tangent_bulge(DVec2::ZERO, DVec2::X, DVec2::new(5.0, 0.0))
+                .expect("line")
+                .abs()
+                < 1e-15
+        );
+        assert!(tangent_bulge(DVec2::ZERO, DVec2::X, DVec2::new(-5.0, 0.0)).is_none());
+    }
+
+    #[test]
+    fn reversing_keeps_geometry() {
+        let mut verts = vec![v(0.0, 0.0), v(2.0, 0.0), v(2.0, 2.0)];
+        let mut bulges = vec![1.0, 0.0, 0.0];
+        let (_, _, area) = polyline_metrics(&verts, &bulges, true);
+        reverse_bulges(&mut verts, &mut bulges, true);
+        let (_, _, reversed) = polyline_metrics(&verts, &bulges, true);
+        assert!((area + reversed).abs() < 1e-12, "{area} {reversed}");
+        let mut open_v = vec![v(0.0, 0.0), v(2.0, 0.0), v(4.0, 0.0)];
+        let mut open_b = vec![0.5, -0.25, 0.0];
+        reverse_bulges(&mut open_v, &mut open_b, false);
+        assert_eq!(open_b, vec![0.25, -0.5, 0.0]);
     }
 
     #[test]

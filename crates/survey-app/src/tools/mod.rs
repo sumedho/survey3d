@@ -7,7 +7,10 @@
 
 mod arc;
 mod circle;
+pub mod grips;
 mod inverse;
+mod modify;
+mod offset;
 mod point;
 mod polyline;
 mod select;
@@ -52,6 +55,8 @@ pub struct ToolCtx<'a> {
     pub log: &'a mut CommandLineState,
     /// Entity under the cursor (for selection).
     pub hovered: Option<EntityId>,
+    /// Grip of a selected object under the cursor (select tool).
+    pub hovered_grip: Option<grips::Grip>,
     /// Shift held (add/toggle selection).
     pub shift: bool,
     commands: &'a mut Vec<Box<dyn Command>>,
@@ -69,6 +74,7 @@ impl<'a> ToolCtx<'a> {
             selection,
             log,
             hovered: None,
+            hovered_grip: None,
             shift: false,
             commands,
         }
@@ -90,6 +96,8 @@ pub struct Preview {
     pub polylines: Vec<Vec<DVec3>>,
     /// Rubber-band lines (drawn dashed).
     pub rubber: Vec<[DVec3; 2]>,
+    /// Point markers (e.g. points being moved or candidate solutions).
+    pub points: Vec<DVec3>,
     /// Text annotations anchored at world points, offset in pixels.
     pub labels: Vec<(DVec3, DVec2, String)>,
 }
@@ -100,13 +108,18 @@ pub trait Tool {
     /// Prompt shown on the command line.
     fn prompt(&self, conv: &Conventions) -> String;
     fn on_event(&mut self, ctx: &mut ToolCtx<'_>, event: ToolEvent<'_>) -> ToolOutcome;
+    /// Called once when the tool becomes active (e.g. to pick up the current selection).
+    fn activate(&mut self, _ctx: &mut ToolCtx<'_>) -> ToolOutcome {
+        ToolOutcome::Continue
+    }
     /// Whether clicks and typed coordinates are treated as point input (enables snapping).
     fn wants_point(&self) -> bool {
         true
     }
-    /// Whether a typed plain number should be passed as text (e.g. a radius)
-    /// rather than looked up as a point name.
-    fn wants_distance(&self) -> bool {
+    /// Whether typed `text` is a value for the tool (a radius, bearing, observation…)
+    /// rather than a point name, coordinates or a command. Claimed text is sent as
+    /// [`ToolEvent::Text`] before any other interpretation.
+    fn claims_text(&self, _conv: &Conventions, _text: &str) -> bool {
         false
     }
     /// The last point entered, for relative input, ortho and perpendicular snaps.
@@ -121,6 +134,7 @@ pub trait Tool {
 pub enum ToolGroup {
     Select,
     Draw,
+    Modify,
     Measure,
 }
 
@@ -129,6 +143,7 @@ impl ToolGroup {
         match self {
             ToolGroup::Select => "Select",
             ToolGroup::Draw => "Draw",
+            ToolGroup::Modify => "Modify",
             ToolGroup::Measure => "Measure",
         }
     }
@@ -196,7 +211,7 @@ impl DomainModule for CoreModule {
             icon: icons::CURSOR,
             group: ToolGroup::Select,
             description: "Select objects (Shift toggles)",
-            create: || Box::new(select::SelectTool),
+            create: || Box::<select::SelectTool>::default(),
         });
         tools.register(ToolDescriptor {
             id: point::ID,
@@ -233,6 +248,42 @@ impl DomainModule for CoreModule {
             group: ToolGroup::Draw,
             description: "Circle from its centre and a radius (pick or type)",
             create: || Box::<circle::CircleTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: modify::MOVE_ID,
+            name: "Move",
+            commands: &["move", "mv"],
+            icon: icons::ARROWS_OUT_CARDINAL,
+            group: ToolGroup::Modify,
+            description: "Move objects by a base point and a second point (plan)",
+            create: || Box::new(modify::MoveTool::new(false)),
+        });
+        tools.register(ToolDescriptor {
+            id: modify::COPY_ID,
+            name: "Copy",
+            commands: &["copy", "cp"],
+            icon: icons::COPY,
+            group: ToolGroup::Modify,
+            description: "Copy objects by a base point and one or more second points",
+            create: || Box::new(modify::MoveTool::new(true)),
+        });
+        tools.register(ToolDescriptor {
+            id: modify::ROTATE_ID,
+            name: "Rotate",
+            commands: &["rotate", "ro"],
+            icon: icons::ARROW_CLOCKWISE,
+            group: ToolGroup::Modify,
+            description: "Rotate objects about a point from a reference bearing to a new bearing",
+            create: || Box::<modify::RotateTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: offset::ID,
+            name: "Offset",
+            commands: &["offset", "ofs"],
+            icon: icons::ARROWS_OUT_LINE_HORIZONTAL,
+            group: ToolGroup::Modify,
+            description: "Parallel copy of a polyline at a distance or through a point",
+            create: || Box::<offset::OffsetTool>::default(),
         });
         tools.register(ToolDescriptor {
             id: inverse::ID,
