@@ -154,6 +154,30 @@ Known follow-ups: traverse observations are not yet stored in the project (only 
 scale factors / combined scale factor for traverse distances (Phase 5 projections); mirror/scale/trim/
 extend; drag-to-move grips; coordinate CSV export from the points table.
 
+## Phase 2.5 plan (2026-10-22): more COGO, accuracy and code styling
+
+Research (Trimble Access / TBC feature libraries and COGO, Carlson code tables and COGO, Civil 3D
+description keys, Leica Captivate codelists, 12d) agreed with the user; COGO first, then styling.
+
+- **2.5a Closures:** figure / lot closure from a polyline or typed courses (lines and arcs):
+  misclosure bearing and distance, precision, area, perimeter. Missing-value solutions for any two
+  unknowns (bearing + distance of one course, two distances, two bearings, a bearing and a distance;
+  two-solution cases offer both).
+- **2.5b Traverse + accuracy:** traverses stored in the project (re-open, edit, recompute when control
+  moves); angle right / left / deflection / bearing; slope distance + zenith with instrument and target
+  heights; scale factor; open, loop and link traverses; field-book style report. Accuracy limits are
+  user-defined (no regional defaults): angular `k·√n` seconds and linear `1:N` / absolute, with pass or
+  fail shown in the traverse and closure results.
+- **2.5c Area & resection:** area by pick or polyline (arcs), area subdivision by parallel line or
+  swing line about a hinge point; resection (two or three known points, angles and distances, least
+  squares when redundant) with residuals.
+- **2.5d Solvers & helpers:** curve solver (any two of radius / delta / arc / chord / tangent /
+  external / mid-ordinate), triangle solver (SSS, SAS, ASA, SAA, SSA with the ambiguous case), fillet,
+  divide line or arc (n parts or interval), point along a line, average points, point-to-line inverse.
+- **2.5e Code styling:** each feature code gains a point symbol from a built-in vector library (~30
+  surveying symbols, GPU instanced), symbol size, colour by layer or custom, line style (solid, dashed,
+  dotted, dash-dot) and weight, wildcard patterns (`EP*`), label choices; symbol picker and legend.
+
 ## UI design system (egui-cad)
 
 Based on research into professional CAD/3D tools (AutoCAD, Fusion, Blender, Onshape) and dark-UI
@@ -190,6 +214,8 @@ guidance (Material dark theme, WCAG):
 - **Phase 2 — COGO & field-to-finish (done):** editing (grips, move/copy/rotate/offset, explode/join),
   radiation, intersections, chainage/offset, traverse + Bowditch/Transit with misclosure report, feature
   code library and auto-linework, points table, reports.
+- **Phase 2.5 — COGO, accuracy, code styling (in progress):** closures, traverse upgrade, area,
+  resection, solvers, code symbols and line styles.
 - **Phase 3 — surfaces:** TIN with breaklines, contours, volumes, sections, LandXML surfaces.
 - **Phase 4 — domain modules:** cadastral (parcels, closures, areas, plan annotation, LandXML/ePlan);
   construction (alignments, chainage/offset, setout); mining (pickups, EOM volumes, stockpiles, point cloud LOD).

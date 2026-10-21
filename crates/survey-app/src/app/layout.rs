@@ -236,6 +236,7 @@ impl SurveyApp {
                 ui.separator();
                 for (label, command) in [
                     ("Traverse…", "traverse"),
+                    ("Closure…", "closure"),
                     ("Feature codes…", "codes"),
                     ("Process linework", "linework"),
                     ("List selection", "list"),
@@ -248,6 +249,7 @@ impl SurveyApp {
             });
             ui.menu_button("Project", |ui| {
                 item(ui, "Conventions…", None, Action::Conventions, &mut action);
+                item(ui, "Accuracy limits…", None, Action::Run("accuracy"), &mut action);
                 item(ui, "Settings…", None, Action::Settings, &mut action);
                 item(ui, "Audit trail…", None, Action::Audit, &mut action);
             });
@@ -1024,6 +1026,22 @@ impl SurveyApp {
                 self.toasts.success(summary);
             }
             Some(TraverseAction::Report(title, text)) => self.reports.add(title, text),
+            None => {}
+        }
+        let selected_line = self
+            .closure_window
+            .open
+            .then(|| self.selected_polylines().into_iter().next().map(|(_, l)| l))
+            .flatten();
+        match self
+            .closure_window
+            .show(ctx, &self.project.doc, selected_line.as_ref())
+        {
+            Some(ClosureAction::Draw(cmd, summary)) => {
+                self.execute(cmd);
+                self.command_line.result(summary);
+            }
+            Some(ClosureAction::Report(title, text)) => self.reports.add(title, text),
             None => {}
         }
         match self

@@ -4,6 +4,7 @@ use egui::RichText;
 use egui_cad::chrome::{section_header, segmented, switch_row};
 use egui_cad::snap::SnapMode;
 use egui_cad::{Accent, CadTheme, Density, ThemeMode};
+use survey_core::accuracy::Tolerances;
 use survey_core::conventions::{
     AngleFormat, AxisLabels, BearingStyle, ChainageStyle, CoordOrder, LinearUnit,
 };
@@ -18,6 +19,7 @@ enum Tab {
     Display,
     Conventions,
     Coordinates,
+    Accuracy,
     General,
 }
 
@@ -28,6 +30,7 @@ pub struct SettingsWindow {
     /// Draft project settings, applied together as one audited edit.
     conventions: Option<Conventions>,
     coord_system: Option<CoordinateSystem>,
+    tolerances: Option<Tolerances>,
 }
 
 impl SettingsWindow {
@@ -39,6 +42,11 @@ impl SettingsWindow {
     pub fn open_at_display(&mut self) {
         self.open = true;
         self.tab = Some(Tab::Display);
+    }
+
+    pub fn open_at_accuracy(&mut self) {
+        self.open = true;
+        self.tab = Some(Tab::Accuracy);
     }
 
     pub fn open_at_conventions(&mut self) {
@@ -55,6 +63,7 @@ impl SettingsWindow {
         if !self.open {
             self.conventions = None;
             self.coord_system = None;
+            self.tolerances = None;
             return None;
         }
         let mut open = self.open;
@@ -71,6 +80,7 @@ impl SettingsWindow {
                         (Tab::Display, "Display"),
                         (Tab::Conventions, "Conventions"),
                         (Tab::Coordinates, "Coordinates"),
+                        (Tab::Accuracy, "Accuracy"),
                         (Tab::General, "General"),
                     ] {
                         ui.selectable_value(tab, t, label);
@@ -105,6 +115,23 @@ impl SettingsWindow {
                             }
                         });
                     }
+                    Tab::Accuracy => {
+                        let draft = self.tolerances.get_or_insert(doc.meta().tolerances);
+                        tolerances_editor(ui, draft, doc.conventions());
+                        ui.separator();
+                        if ui
+                            .add_enabled(
+                                *draft != doc.meta().tolerances,
+                                egui::Button::new("Apply to project"),
+                            )
+                            .clicked()
+                        {
+                            let mut meta = doc.meta().clone();
+                            meta.tolerances = *draft;
+                            command = Some(Box::new(ChangeSet::new("Change accuracy limits").set_meta(meta))
+                                as Box<dyn Command>);
+                        }
+                    }
                     Tab::Coordinates => {
                         let draft = self
                             .coord_system
@@ -132,6 +159,7 @@ impl SettingsWindow {
         if command.is_some() {
             self.conventions = None;
             self.coord_system = None;
+            self.tolerances = None;
         }
         command
     }
@@ -437,6 +465,63 @@ fn coord_system_editor(ui: &mut egui::Ui, cs: &mut CoordinateSystem) {
         RichText::new("Recorded with the project. Transformations between systems arrive in a later phase.")
             .small(),
     );
+}
+
+fn tolerances_editor(ui: &mut egui::Ui, t: &mut Tolerances, conv: &Conventions) {
+    section_header(ui, "Misclosure limits");
+    ui.label(
+        RichText::new(
+            "Limits depend on your jurisdiction and survey class, so none are set by default. \
+             Traverse and closure results show PASS or FAIL against the limits switched on here.",
+        )
+        .small(),
+    );
+    ui.add_space(4.0);
+    let unit = conv.linear_unit.suffix();
+    egui::Grid::new("tolerances")
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Angular misclosure");
+            optional_f64(ui, &mut t.angular_seconds, 10.0, 0.0..=3600.0, "″ × √n angles");
+            ui.end_row();
+            ui.label("Minimum precision");
+            optional_f64(ui, &mut t.min_precision, 10_000.0, 1.0..=10_000_000.0, "1 : N");
+            ui.end_row();
+            ui.label("Linear allowance");
+            let mpu = conv.linear_unit.metres_per_unit();
+            let mut floor = t.linear_floor.map(|m| m / mpu);
+            optional_f64(
+                ui,
+                &mut floor,
+                0.02 / mpu,
+                0.0..=10.0,
+                &format!("{unit} (passes regardless of ratio)"),
+            );
+            t.linear_floor = floor.map(|v| v * mpu);
+            ui.end_row();
+            ui.label("Vertical misclosure");
+            optional_f64(ui, &mut t.vertical_mm_per_root_km, 12.0, 0.0..=1000.0, "mm × √km");
+            ui.end_row();
+        });
+}
+
+/// A checkbox enabling an optional number, with a unit hint after it.
+fn optional_f64(
+    ui: &mut egui::Ui,
+    value: &mut Option<f64>,
+    default: f64,
+    range: std::ops::RangeInclusive<f64>,
+    suffix: &str,
+) {
+    let mut on = value.is_some();
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut on, "");
+        let mut v = value.unwrap_or(default);
+        ui.add_enabled(on, egui::DragValue::new(&mut v).range(range).max_decimals(4));
+        ui.label(RichText::new(suffix).small());
+        *value = on.then_some(v);
+    });
 }
 
 fn optional_u32(ui: &mut egui::Ui, value: &mut Option<u32>) {

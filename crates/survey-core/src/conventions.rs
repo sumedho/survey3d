@@ -273,6 +273,18 @@ impl Conventions {
         format!("{} {}", self.format_length(metres), self.linear_unit.suffix())
     }
 
+    /// Area in square display units plus hectares (metres) or acres (feet).
+    pub fn format_area(&self, square_metres: f64) -> String {
+        let unit = self.linear_unit.metres_per_unit();
+        let v = square_metres / (unit * unit);
+        let decimals = usize::from(self.linear_decimals);
+        let large = match self.linear_unit {
+            LinearUnit::Metre => format!("{:.4} ha", v / 10_000.0),
+            LinearUnit::InternationalFoot | LinearUnit::UsSurveyFoot => format!("{:.4} ac", v / 43_560.0),
+        };
+        format!("{v:.decimals$} {}² ({large})", self.linear_unit.suffix())
+    }
+
     pub fn format_chainage(&self, metres: f64) -> String {
         let decimals = usize::from(self.linear_decimals);
         let v = metres / self.linear_unit.metres_per_unit();

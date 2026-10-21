@@ -31,6 +31,7 @@ use crate::tools::{
     CoreModule, DomainModule, Preview, SELECT_TOOL_ID, Tool, ToolCtx, ToolEvent, ToolOutcome, ToolRegistry,
 };
 use crate::ui::audit_window::AuditWindow;
+use crate::ui::closure_window::{ClosureAction, ClosureWindow};
 use crate::ui::csv_import::{CsvDialogResult, CsvImportDialog};
 use crate::ui::feature_codes::{CodesAction, FeatureCodesWindow};
 use crate::ui::points_table::{PointsAction, PointsWindow};
@@ -157,6 +158,18 @@ const APP_COMMANDS: &[AppCommand] = &[
     cmd("dxfout", "Export DXF", "File", icons::EXPORT),
     cmd("traverse", "Traverse (reduce & adjust)", "COGO", icons::STEPS),
     cmd(
+        "closure",
+        "Figure closure & missing values",
+        "COGO",
+        icons::POLYGON,
+    ),
+    cmd(
+        "accuracy",
+        "Accuracy limits (misclosure checks)",
+        "Project",
+        icons::SHIELD_CHECK,
+    ),
+    cmd(
         "codes",
         "Feature codes (field-to-finish)",
         "COGO",
@@ -217,6 +230,7 @@ pub struct SurveyApp {
     settings_window: SettingsWindow,
     audit_window: AuditWindow,
     traverse_window: TraverseWindow,
+    closure_window: ClosureWindow,
     codes_window: FeatureCodesWindow,
     reports: ReportsWindow,
     points_window: PointsWindow,
@@ -337,6 +351,7 @@ impl SurveyApp {
             settings_window: SettingsWindow::default(),
             audit_window: AuditWindow::default(),
             traverse_window: TraverseWindow::default(),
+            closure_window: ClosureWindow::default(),
             codes_window: FeatureCodesWindow::default(),
             reports: ReportsWindow::default(),
             points_window: PointsWindow::default(),
@@ -800,6 +815,11 @@ impl SurveyApp {
             "new" => self.request_discard(ctx, Discard::New),
             "audit" => self.audit_window.open = true,
             "traverse" | "trav" => self.traverse_window.open = true,
+            "closure" | "clo" => match self.selected_polylines().first() {
+                Some((_, line)) => self.closure_window.load_polyline(&self.project.doc, line),
+                None => self.closure_window.open = true,
+            },
+            "accuracy" | "tolerances" => self.settings_window.open_at_accuracy(),
             "codes" | "featurecodes" => self.codes_window.open(),
             "linework" | "f2f" => {
                 let library = self.project.doc.meta().feature_codes.clone();

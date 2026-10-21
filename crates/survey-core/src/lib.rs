@@ -5,8 +5,10 @@
 //! (bearing style, coordinate order, units) only apply when parsing user input
 //! or formatting output — see [`conventions::Conventions`].
 
+pub mod accuracy;
 pub mod angle;
 pub mod arc;
+pub mod closure;
 pub mod cogo;
 pub mod conventions;
 pub mod error;

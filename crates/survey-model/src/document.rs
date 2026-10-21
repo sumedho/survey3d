@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use survey_core::accuracy::Tolerances;
 use survey_core::field_to_finish::FeatureLibrary;
 use survey_core::{Aabb3, Conventions};
 
@@ -22,6 +23,9 @@ pub struct ProjectMeta {
     /// Feature codes for field-to-finish.
     #[serde(default)]
     pub feature_codes: FeatureLibrary,
+    /// Accuracy limits for misclosure checks (none by default).
+    #[serde(default)]
+    pub tolerances: Tolerances,
 }
 
 impl Default for ProjectMeta {
@@ -32,6 +36,7 @@ impl Default for ProjectMeta {
             coord_system: CoordinateSystem::Unspecified,
             conventions: Conventions::default(),
             feature_codes: FeatureLibrary::default(),
+            tolerances: Tolerances::default(),
         }
     }
 }
