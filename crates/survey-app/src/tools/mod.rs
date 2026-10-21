@@ -7,6 +7,7 @@
 
 mod arc;
 mod circle;
+mod cogo;
 pub mod grips;
 mod inverse;
 mod modify;
@@ -135,6 +136,7 @@ pub enum ToolGroup {
     Select,
     Draw,
     Modify,
+    Cogo,
     Measure,
 }
 
@@ -144,6 +146,7 @@ impl ToolGroup {
             ToolGroup::Select => "Select",
             ToolGroup::Draw => "Draw",
             ToolGroup::Modify => "Modify",
+            ToolGroup::Cogo => "COGO",
             ToolGroup::Measure => "Measure",
         }
     }
@@ -159,6 +162,8 @@ pub struct ToolDescriptor {
     pub commands: &'static [&'static str],
     pub icon: &'static str,
     pub group: ToolGroup,
+    /// Shown as a button in the tool palette (otherwise only by command or search).
+    pub palette: bool,
     pub description: &'static str,
     pub create: fn() -> Box<dyn Tool>,
 }
@@ -209,6 +214,7 @@ impl DomainModule for CoreModule {
             name: "Select",
             commands: &["select", "sel"],
             icon: icons::CURSOR,
+            palette: true,
             group: ToolGroup::Select,
             description: "Select objects (Shift toggles)",
             create: || Box::<select::SelectTool>::default(),
@@ -218,6 +224,7 @@ impl DomainModule for CoreModule {
             name: "Point",
             commands: &["point", "pt", "po"],
             icon: icons::CROSSHAIR,
+            palette: true,
             group: ToolGroup::Draw,
             description: "Create survey points by picking or typing coordinates",
             create: || Box::<point::PointTool>::default(),
@@ -227,6 +234,7 @@ impl DomainModule for CoreModule {
             name: "Polyline",
             commands: &["polyline", "pl", "line"],
             icon: icons::POLYGON,
+            palette: true,
             group: ToolGroup::Draw,
             description: "Draw a polyline (string); Enter finishes, C closes, U undoes a vertex",
             create: || Box::<polyline::PolylineTool>::default(),
@@ -236,6 +244,7 @@ impl DomainModule for CoreModule {
             name: "Arc",
             commands: &["arc", "ar"],
             icon: icons::ARC,
+            palette: true,
             group: ToolGroup::Draw,
             description: "Arc through three points: start, a point on the arc, end",
             create: || Box::<arc::ArcTool>::default(),
@@ -245,6 +254,7 @@ impl DomainModule for CoreModule {
             name: "Circle",
             commands: &["circle", "ci"],
             icon: icons::CIRCLE,
+            palette: true,
             group: ToolGroup::Draw,
             description: "Circle from its centre and a radius (pick or type)",
             create: || Box::<circle::CircleTool>::default(),
@@ -254,6 +264,7 @@ impl DomainModule for CoreModule {
             name: "Move",
             commands: &["move", "mv"],
             icon: icons::ARROWS_OUT_CARDINAL,
+            palette: true,
             group: ToolGroup::Modify,
             description: "Move objects by a base point and a second point (plan)",
             create: || Box::new(modify::MoveTool::new(false)),
@@ -263,6 +274,7 @@ impl DomainModule for CoreModule {
             name: "Copy",
             commands: &["copy", "cp"],
             icon: icons::COPY,
+            palette: true,
             group: ToolGroup::Modify,
             description: "Copy objects by a base point and one or more second points",
             create: || Box::new(modify::MoveTool::new(true)),
@@ -272,6 +284,7 @@ impl DomainModule for CoreModule {
             name: "Rotate",
             commands: &["rotate", "ro"],
             icon: icons::ARROW_CLOCKWISE,
+            palette: true,
             group: ToolGroup::Modify,
             description: "Rotate objects about a point from a reference bearing to a new bearing",
             create: || Box::<modify::RotateTool>::default(),
@@ -281,15 +294,78 @@ impl DomainModule for CoreModule {
             name: "Offset",
             commands: &["offset", "ofs"],
             icon: icons::ARROWS_OUT_LINE_HORIZONTAL,
+            palette: true,
             group: ToolGroup::Modify,
             description: "Parallel copy of a polyline at a distance or through a point",
             create: || Box::<offset::OffsetTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: cogo::RADIATE_ID,
+            name: "Radiate",
+            commands: &["radiate", "rad"],
+            icon: icons::COMPASS_TOOL,
+            palette: true,
+            group: ToolGroup::Cogo,
+            description: "Side shots from a station: backsight, then angle, distance[, dZ]",
+            create: || Box::<cogo::RadiateTool>::default(),
+        });
+        for (kind, name, commands, description) in [
+            (
+                cogo::IntersectKind::BearingBearing,
+                "Intersect bearing–bearing",
+                &["bb", "brgbrg"][..],
+                "Point where bearings from two known points cross",
+            ),
+            (
+                cogo::IntersectKind::BearingDistance,
+                "Intersect bearing–distance",
+                &["bd", "brgdist"][..],
+                "Point on a bearing from one point at a distance from another",
+            ),
+            (
+                cogo::IntersectKind::DistanceDistance,
+                "Intersect distance–distance",
+                &["dd", "distdist"][..],
+                "Point at given distances from two known points",
+            ),
+        ] {
+            tools.register(ToolDescriptor {
+                id: kind.id(),
+                name,
+                commands,
+                icon: icons::INTERSECT,
+                palette: kind == cogo::IntersectKind::BearingBearing,
+                group: ToolGroup::Cogo,
+                description,
+                create: match kind {
+                    cogo::IntersectKind::BearingBearing => {
+                        || Box::new(cogo::IntersectTool::new(cogo::IntersectKind::BearingBearing))
+                    }
+                    cogo::IntersectKind::BearingDistance => {
+                        || Box::new(cogo::IntersectTool::new(cogo::IntersectKind::BearingDistance))
+                    }
+                    cogo::IntersectKind::DistanceDistance => {
+                        || Box::new(cogo::IntersectTool::new(cogo::IntersectKind::DistanceDistance))
+                    }
+                },
+            });
+        }
+        tools.register(ToolDescriptor {
+            id: cogo::CHAINAGE_ID,
+            name: "Chainage & offset",
+            commands: &["chainage", "chn"],
+            icon: icons::SIGNPOST,
+            palette: true,
+            group: ToolGroup::Cogo,
+            description: "Chainage/offset of points along a polyline, or set out points by chainage",
+            create: || Box::<cogo::ChainageTool>::default(),
         });
         tools.register(ToolDescriptor {
             id: inverse::ID,
             name: "Inverse",
             commands: &["inverse", "inv", "dist", "di"],
             icon: icons::RULER,
+            palette: true,
             group: ToolGroup::Measure,
             description: "Bearing, distance and height difference between points",
             create: || Box::<inverse::InverseTool>::default(),

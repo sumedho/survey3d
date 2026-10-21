@@ -427,6 +427,7 @@ impl SurveyApp {
             .tools
             .tools()
             .iter()
+            .filter(|t| t.palette)
             .map(|t| (t.group, t.id, t.icon, t.name, t.description, t.commands[0]))
             .collect();
         tools.sort_by_key(|t| t.0);
