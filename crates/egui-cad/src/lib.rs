@@ -11,7 +11,10 @@
 
 pub mod chrome;
 pub mod command_line;
+pub mod command_palette;
 pub mod constraint;
+pub mod fonts;
+pub mod hud;
 pub mod icons;
 pub mod labels;
 pub mod layer_panel;
@@ -20,24 +23,12 @@ pub mod property_grid;
 pub mod selection;
 pub mod snap;
 pub mod theme;
+pub mod toasts;
 pub mod viewport;
 
-pub use theme::{CadTheme, ThemeMode};
+pub use theme::{Accent, CadTheme, Density, ThemeMode};
 
-/// Registers the bundled icon font as a fallback for proportional text.
+/// Installs the bundled fonts (also done by [`CadTheme::apply`]).
 pub fn install_fonts(ctx: &egui::Context) {
-    const NAME: &str = "phosphor";
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        NAME.into(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-            "../assets/Phosphor.ttf"
-        ))),
-    );
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        let keys = fonts.families.entry(family).or_default();
-        // Second, so it never shadows the text font.
-        keys.insert(keys.len().min(1), NAME.into());
-    }
-    ctx.set_fonts(fonts);
+    fonts::install(ctx);
 }

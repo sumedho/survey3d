@@ -33,8 +33,11 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
 * **Navigate:** wheel/pinch zooms about the cursor, middle-drag (or Shift+right-drag) pans, right-drag orbits in 3D.
   The toolbar cube (or `plan` / `3d`) toggles the plan lock; returning to plan is always north-up.
   `persp` (or View menu) toggles perspective.
-* **Commands:** start typing anywhere — `point`, `pl` (polyline), `arc`, `circle`, `inv` (inverse), `ze`,
-  `undo`, `help`.
+* **Commands:** press **Ctrl/Cmd+K** to search every command and tool, or start typing anywhere —
+  `point`, `pl` (polyline), `arc`, `circle`, `inv` (inverse), `ze`, `undo`, `help`. With dynamic input
+  (F12) the prompt, live measurement and typed input follow the cursor.
+* **Views:** click the orientation gizmo (bottom-left) for plan, elevations (axis ends) or isometric
+  (background); the floating pill (top-right) has zoom extents, isometric, plan/3D and perspective.
 * **Selection:** click, Shift+click to add; drag left→right for a window (fully inside), right→left for a
   crossing (touching).
 * **Point input:** pick with snapping, or type `E,N[,Z]`, `@dE,dN[,dZ]`, `@dist<bearing`, or an existing point name.
@@ -44,5 +47,6 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
   `end`/`mid`/`int`/`per`/`nea`/`nod`/`gri` applies a one-shot snap. The status bar shows feedback only.
 * **Files:** Ctrl+S saves an `.s3d` (download on the web); File → Import points (CSV/TXT), Import / Export
   DXF. On the web, unsaved work is autosaved to browser storage and offered for recovery on the next visit.
-* **Labels:** Settings → Display (or `labels`) shows point names, codes and heights.
+* **Labels & appearance:** Settings → Display (or `labels`): point names, codes and heights; dark/light
+  theme, accent colour and density.
   Project → Audit trail shows every edit and verifies the hash chain.

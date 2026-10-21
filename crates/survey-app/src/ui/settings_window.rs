@@ -1,9 +1,9 @@
 //! Settings: user preferences (app-wide) and project conventions / coordinate system.
 
 use egui::RichText;
-use egui_cad::chrome::section_header;
+use egui_cad::chrome::{section_header, segmented, switch_row};
 use egui_cad::snap::SnapMode;
-use egui_cad::{CadTheme, ThemeMode};
+use egui_cad::{Accent, CadTheme, Density, ThemeMode};
 use survey_core::conventions::{
     AngleFormat, AxisLabels, BearingStyle, ChainageStyle, CoordOrder, LinearUnit,
 };
@@ -148,21 +148,40 @@ fn general(ui: &mut egui::Ui, settings: &mut AppSettings) {
 /// How things look: theme, grid and point labels.
 fn display(ui: &mut egui::Ui, settings: &mut AppSettings) {
     section_header(ui, "Appearance");
-    ui.horizontal(|ui| {
-        ui.label("Theme");
-        ui.selectable_value(&mut settings.theme, ThemeMode::Dark, "Dark");
-        ui.selectable_value(&mut settings.theme, ThemeMode::Light, "Light");
-    });
-    ui.checkbox(&mut settings.show_grid, "Show grid (F7)");
+    egui::Grid::new("appearance")
+        .num_columns(2)
+        .spacing([16.0, 8.0])
+        .show(ui, |ui| {
+            ui.label("Theme");
+            segmented(
+                ui,
+                &mut settings.theme,
+                &[(ThemeMode::Dark, "Dark"), (ThemeMode::Light, "Light")],
+            );
+            ui.end_row();
+            ui.label("Accent");
+            let accents: Vec<(Accent, &str)> = Accent::ALL.iter().map(|a| (*a, a.label())).collect();
+            segmented(ui, &mut settings.accent, &accents);
+            ui.end_row();
+            ui.label("Density");
+            let densities: Vec<(Density, &str)> = Density::ALL.iter().map(|d| (*d, d.label())).collect();
+            segmented(ui, &mut settings.density, &densities);
+            ui.end_row();
+        });
+    ui.add_space(4.0);
+    switch_row(ui, &mut settings.show_grid, "Grid (F7)");
+    switch_row(
+        ui,
+        &mut settings.dynamic_input,
+        "Dynamic input beside the cursor (F12)",
+    );
 
-    ui.add_space(6.0);
+    ui.add_space(8.0);
     section_header(ui, "Point labels");
     let labels = &mut settings.labels;
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut labels.names, "Name");
-        ui.checkbox(&mut labels.codes, "Code");
-        ui.checkbox(&mut labels.heights, "Height");
-    });
+    switch_row(ui, &mut labels.names, "Name");
+    switch_row(ui, &mut labels.codes, "Code");
+    switch_row(ui, &mut labels.heights, "Height");
     ui.add_enabled(
         labels.any(),
         egui::Slider::new(&mut labels.size, 8.0..=18.0).text("text size"),
@@ -174,11 +193,12 @@ fn display(ui: &mut egui::Ui, settings: &mut AppSettings) {
     );
 }
 
-/// Everything that affects picking and drawing in the viewport.
+/// Everything that affects picking in the viewport.
 fn drafting(ui: &mut egui::Ui, settings: &mut AppSettings) {
     section_header(ui, "Object snap");
     let snap = &mut settings.snap;
-    ui.checkbox(&mut snap.enabled, "Snap to objects (F3)");
+    switch_row(ui, &mut snap.enabled, "Snap to objects (F3)");
+    ui.add_space(2.0);
     ui.add_enabled_ui(snap.enabled, |ui| {
         egui::Grid::new("snap_modes")
             .num_columns(3)
@@ -197,14 +217,16 @@ fn drafting(ui: &mut egui::Ui, settings: &mut AppSettings) {
         ui.add(egui::Slider::new(&mut snap.aperture_px, 4.0..=30.0).text("pick aperture (px)"));
     });
     ui.label(
-        RichText::new("During a command, type end, mid, int, per, nea, nod or gri for a one-shot snap; Tab cycles candidates.")
-            .small()
-            .weak(),
+        RichText::new(
+            "During a command, type end, mid, int, per, cen, nea, nod or gri for a one-shot snap; Tab cycles candidates.",
+        )
+        .small()
+        .weak(),
     );
 
-    ui.add_space(6.0);
+    ui.add_space(8.0);
     section_header(ui, "Direction constraint");
-    ui.checkbox(&mut settings.ortho.enabled, "Ortho / polar (F8)");
+    switch_row(ui, &mut settings.ortho.enabled, "Ortho / polar (F8)");
     ui.add_enabled(
         settings.ortho.enabled,
         egui::Slider::new(&mut settings.ortho.increment_deg, 5.0..=90.0)
@@ -212,7 +234,7 @@ fn drafting(ui: &mut egui::Ui, settings: &mut AppSettings) {
             .text("increment (°)"),
     );
 
-    ui.add_space(6.0);
+    ui.add_space(8.0);
     section_header(ui, "Working plane");
     ui.horizontal(|ui| {
         ui.add(
@@ -328,7 +350,7 @@ fn conventions_editor(ui: &mut egui::Ui, c: &mut Conventions) {
         .show(ui, |ui| {
             for (k, v) in example {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{k}:")).color(theme.text_dim));
+                    ui.label(RichText::new(format!("{k}:")).color(theme.text_secondary));
                     ui.label(RichText::new(v).monospace());
                 });
             }

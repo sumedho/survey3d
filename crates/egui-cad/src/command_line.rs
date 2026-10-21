@@ -8,6 +8,8 @@ use std::collections::VecDeque;
 
 use egui::{Key, RichText, TextEdit};
 
+use crate::fonts;
+use crate::icons;
 use crate::theme::CadTheme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +36,8 @@ pub struct CommandLineState {
     log: VecDeque<LogLine>,
     focus_requested: bool,
     cursor_to_end: bool,
+    /// Show a taller history (toggled by the chevron next to the input).
+    expanded: bool,
 }
 
 const MAX_LOG: usize = 500;
@@ -132,24 +136,29 @@ impl<'a> CommandLine<'a> {
         let id = ui.scope_id().with("egui_cad_command_line");
 
         // Log.
-        let row_h = ui.text_style_height(&egui::TextStyle::Monospace) + 2.0;
+        let row_h = 11.5 + 5.0;
+        let rows = if state.expanded {
+            self.log_rows * 3
+        } else {
+            self.log_rows
+        };
         egui::ScrollArea::vertical()
             .id_salt(id.with("log"))
-            .max_height(row_h * self.log_rows as f32)
-            .min_scrolled_height(row_h * self.log_rows as f32)
+            .max_height(row_h * rows as f32)
+            .min_scrolled_height(row_h * rows as f32)
             .stick_to_bottom(true)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 for line in &state.log {
                     let color = match line.kind {
-                        LogKind::Info => theme.text_dim,
+                        LogKind::Info => theme.text_secondary,
                         LogKind::Command => theme.accent,
                         LogKind::Result => theme.text,
                         LogKind::Warning => theme.warning,
                         LogKind::Error => theme.error,
                     };
-                    ui.label(RichText::new(&line.text).monospace().color(color));
+                    ui.label(RichText::new(&line.text).font(fonts::mono(11.5)).color(color));
                 }
             });
 
@@ -185,7 +194,11 @@ impl<'a> CommandLine<'a> {
 
         let mut event = None;
         ui.horizontal(|ui| {
-            ui.label(RichText::new(self.prompt).monospace().color(theme.accent));
+            ui.label(
+                RichText::new(self.prompt)
+                    .font(fonts::medium(12.5))
+                    .color(theme.accent),
+            );
             let text_id = id.with("input");
             let has_focus = ui.ctx().memory(|m| m.has_focus(text_id));
             // Handle keys before the TextEdit consumes them.
@@ -228,9 +241,28 @@ impl<'a> CommandLine<'a> {
             let edit = TextEdit::singleline(&mut state.input)
                 .id(text_id)
                 .font(egui::TextStyle::Monospace)
-                .hint_text("type a command or coordinates…")
-                .desired_width(f32::INFINITY)
+                .hint_text("Type a command or coordinates — Ctrl/Cmd+K to search")
+                .desired_width(ui.available_width() - 26.0)
                 .show(ui);
+            let chevron = if state.expanded {
+                icons::CARET_DOWN
+            } else {
+                crate::icons::CARET_RIGHT
+            };
+            if crate::chrome::IconButton::new(
+                chevron,
+                if state.expanded {
+                    "Shorter history"
+                } else {
+                    "Longer history"
+                },
+            )
+            .size(20.0)
+            .show(ui)
+            .clicked()
+            {
+                state.expanded = !state.expanded;
+            }
             if state.focus_requested {
                 edit.response.request_focus();
                 state.focus_requested = false;
@@ -256,7 +288,7 @@ impl<'a> CommandLine<'a> {
         });
         if !matches.is_empty() {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Tab:").small().color(theme.text_dim));
+                ui.label(RichText::new("Tab").small().color(theme.text_secondary));
                 for m in matches {
                     ui.label(RichText::new(&m.name).small().monospace().color(theme.text))
                         .on_hover_text(&m.description);

@@ -1,8 +1,8 @@
 //! Per-user application settings (persisted by eframe, not stored in projects).
 
-use egui_cad::ThemeMode;
 use egui_cad::constraint::OrthoSettings;
 use egui_cad::snap::SnapSettings;
+use egui_cad::{Accent, Density, ThemeMode};
 use serde::{Deserialize, Serialize};
 use survey_core::Conventions;
 use survey_io::CsvLayout;
@@ -13,6 +13,10 @@ pub struct AppSettings {
     /// Recorded in the audit trail for every edit.
     pub user_name: String,
     pub theme: ThemeMode,
+    pub accent: Accent,
+    pub density: Density,
+    /// Show the prompt, live measurements and typed input next to the cursor (F12).
+    pub dynamic_input: bool,
     /// Conventions given to new projects (each project stores its own).
     pub default_conventions: Conventions,
     pub snap: SnapSettings,
@@ -56,6 +60,9 @@ impl Default for AppSettings {
         Self {
             user_name: default_user_name(),
             theme: ThemeMode::Dark,
+            accent: Accent::default(),
+            density: Density::default(),
+            dynamic_input: true,
             default_conventions: Conventions::default(),
             snap: SnapSettings::default(),
             ortho: OrthoSettings::default(),

@@ -1,7 +1,11 @@
-//! Layer list with current/visible/locked toggles, colour swatches and rename.
+//! Layer list: one compact row per layer with colour swatch, visibility and
+//! lock toggles, name (double-click to rename) and object count. The current
+//! layer is marked with an accent bar. Add a "new layer" button to the
+//! surrounding section header (see [`crate::chrome::section`]).
 
-use egui::{Color32, RichText, Sense};
+use egui::{Align2, Color32, CornerRadius, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
 
+use crate::fonts;
 use crate::icons;
 use crate::theme::CadTheme;
 
@@ -28,6 +32,8 @@ pub enum LayerAction {
     Delete(i64),
 }
 
+const ROW_HEIGHT: f32 = 24.0;
+
 /// Shows the layer list; returns the actions the user requested.
 pub fn layer_panel(ui: &mut egui::Ui, rows: &[LayerRow]) -> Vec<LayerAction> {
     let theme = CadTheme::current(ui.ctx());
@@ -35,78 +41,119 @@ pub fn layer_panel(ui: &mut egui::Ui, rows: &[LayerRow]) -> Vec<LayerAction> {
     let rename_id = ui.scope_id().with("egui_cad_layer_rename");
     let mut renaming: Option<(i64, String)> = ui.data(|d| d.get_temp(rename_id));
 
-    ui.horizontal(|ui| {
-        if icon_button(ui, icons::PLUS, "New layer", &theme).clicked() {
-            actions.push(LayerAction::Add);
-        }
-    });
-
     for row in rows {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            // Current-layer marker.
-            let dot = if row.current { icons::CHECK } else { " " };
-            let current = ui
-                .add_sized(
-                    [16.0, 18.0],
-                    egui::Label::new(RichText::new(dot).color(theme.accent)).sense(Sense::click()),
-                )
-                .on_hover_text("Make current");
-            if current.clicked() && !row.current {
-                actions.push(LayerAction::SetCurrent(row.id));
-            }
+        let (rect, row_resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
+        let hovered = ui.rect_contains_pointer(rect);
+        if row.current {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(theme.radius), theme.accent_subtle);
+            ui.painter().rect_filled(
+                Rect::from_min_size(rect.min + vec2(0.0, 4.0), vec2(3.0, rect.height() - 8.0)),
+                CornerRadius::same(2),
+                theme.accent,
+            );
+        } else if hovered {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(theme.radius), theme.raised);
+        }
+        if row_resp.clicked() && !row.current {
+            actions.push(LayerAction::SetCurrent(row.id));
+        }
 
-            let mut color = row.color;
-            if egui::color_picker::color_edit_button_srgba(ui, &mut color, egui::color_picker::Alpha::Opaque)
-                .changed()
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.shrink2(vec2(8.0, 0.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let cui = &mut child;
+        cui.spacing_mut().item_spacing.x = 4.0;
+
+        // Colour swatch (opens a picker).
+        let mut color = row.color;
+        let swatch = cui
+            .scope(|ui| {
+                ui.spacing_mut().interact_size = vec2(16.0, 14.0);
+                egui::color_picker::color_edit_button_srgba(ui, &mut color, egui::color_picker::Alpha::Opaque)
+            })
+            .inner
+            .on_hover_text("Layer colour");
+        if swatch.changed() {
+            actions.push(LayerAction::SetColor(row.id, color));
+        }
+
+        let eye = if row.visible { icons::EYE } else { icons::EYE_SLASH };
+        if small_toggle(cui, eye, row.visible, "Visibility", &theme).clicked() {
+            actions.push(LayerAction::SetVisible(row.id, !row.visible));
+        }
+        let lock = if row.locked { icons::LOCK } else { icons::LOCK_OPEN };
+        if small_toggle(cui, lock, !row.locked, "Lock", &theme).clicked() {
+            actions.push(LayerAction::SetLocked(row.id, !row.locked));
+        }
+        cui.add_space(2.0);
+
+        match &mut renaming {
+            Some((id, text)) if *id == row.id => {
+                let width = cui.available_width() - 30.0;
+                let r = cui.add(egui::TextEdit::singleline(text).desired_width(width));
+                r.request_focus();
+                if r.lost_focus() {
+                    if !cui.input(|i| i.key_pressed(egui::Key::Escape)) && !text.trim().is_empty() {
+                        actions.push(LayerAction::Rename(row.id, text.trim().to_string()));
+                    }
+                    renaming = None;
+                }
+            }
+            _ => {
+                let color = if row.visible {
+                    theme.text
+                } else {
+                    theme.text_disabled
+                };
+                let font = if row.current {
+                    fonts::medium(12.5)
+                } else {
+                    fonts::ui(12.5)
+                };
+                let label = egui::Label::new(RichText::new(&row.name).font(font).color(color))
+                    .truncate()
+                    .sense(Sense::click());
+                let name = cui
+                    .add(label)
+                    .on_hover_text("Click to make current · double-click to rename");
+                if name.double_clicked() {
+                    renaming = Some((row.id, row.name.clone()));
+                } else if name.clicked() && !row.current {
+                    actions.push(LayerAction::SetCurrent(row.id));
+                }
+            }
+        }
+
+        // Object count, or a delete button for empty layers on hover.
+        let deletable = row.count == 0 && !row.current && rows.len() > 1;
+        let slot = Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), vec2(20.0, 20.0));
+        if deletable && hovered {
+            let button = egui::Button::new(
+                RichText::new(icons::TRASH)
+                    .font(fonts::icon(13.0))
+                    .color(theme.text_secondary),
+            )
+            .frame(false);
+            if cui
+                .put(slot, button)
+                .on_hover_text("Delete empty layer")
+                .clicked()
             {
-                actions.push(LayerAction::SetColor(row.id, color));
+                actions.push(LayerAction::Delete(row.id));
             }
-
-            let eye = if row.visible { icons::EYE } else { icons::EYE_SLASH };
-            if icon_toggle(ui, eye, row.visible, "Visible", &theme).clicked() {
-                actions.push(LayerAction::SetVisible(row.id, !row.visible));
-            }
-            let lock = if row.locked { icons::LOCK } else { icons::LOCK_OPEN };
-            if icon_toggle(ui, lock, !row.locked, "Locked", &theme).clicked() {
-                actions.push(LayerAction::SetLocked(row.id, !row.locked));
-            }
-
-            match &mut renaming {
-                Some((id, text)) if *id == row.id => {
-                    let r =
-                        ui.add(egui::TextEdit::singleline(text).desired_width(ui.available_width() - 40.0));
-                    r.request_focus();
-                    if r.lost_focus() {
-                        if !ui.input(|i| i.key_pressed(egui::Key::Escape)) && !text.trim().is_empty() {
-                            actions.push(LayerAction::Rename(row.id, text.trim().to_string()));
-                        }
-                        renaming = None;
-                    }
-                }
-                _ => {
-                    let name_color = if row.visible { theme.text } else { theme.text_dim };
-                    let mut text = RichText::new(&row.name).color(name_color);
-                    if row.current {
-                        text = text.strong();
-                    }
-                    let r = ui
-                        .add(egui::Label::new(text).sense(Sense::click()).truncate())
-                        .on_hover_text("Double-click to rename");
-                    if r.double_clicked() {
-                        renaming = Some((row.id, row.name.clone()));
-                    }
-                }
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let deletable = row.count == 0 && !row.current && rows.len() > 1;
-                if deletable && icon_button(ui, icons::TRASH, "Delete empty layer", &theme).clicked() {
-                    actions.push(LayerAction::Delete(row.id));
-                }
-                ui.label(RichText::new(row.count.to_string()).small().color(theme.text_dim));
-            });
-        });
+        } else {
+            cui.painter().text(
+                pos2(rect.right() - 8.0, rect.center().y),
+                Align2::RIGHT_CENTER,
+                row.count.to_string(),
+                fonts::mono(11.0),
+                theme.text_secondary,
+            );
+        }
     }
     ui.data_mut(|d| match renaming {
         Some(r) => {
@@ -119,17 +166,30 @@ pub fn layer_panel(ui: &mut egui::Ui, rows: &[LayerRow]) -> Vec<LayerAction> {
     actions
 }
 
-fn icon_button(ui: &mut egui::Ui, icon: &str, tooltip: &str, theme: &CadTheme) -> egui::Response {
-    ui.add(egui::Button::new(RichText::new(icon).color(theme.text)).frame(false))
-        .on_hover_text(tooltip)
-}
-
-fn icon_toggle(ui: &mut egui::Ui, icon: &str, on: bool, tooltip: &str, theme: &CadTheme) -> egui::Response {
+/// A 20 px icon toggle: full colour when on, faded when off.
+fn small_toggle(ui: &mut egui::Ui, icon: &str, on: bool, tooltip: &str, theme: &CadTheme) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
+    if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(theme.radius_small), theme.overlay);
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(theme.radius_small),
+            Stroke::new(1.0, theme.border),
+            StrokeKind::Inside,
+        );
+    }
     let color = if on {
-        theme.text
+        theme.text_secondary
     } else {
-        theme.text_dim.gamma_multiply(0.7)
+        theme.text_disabled
     };
-    ui.add(egui::Button::new(RichText::new(icon).color(color)).frame(false))
-        .on_hover_text(tooltip)
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        icon,
+        fonts::icon(13.0),
+        color,
+    );
+    resp.on_hover_text(tooltip)
 }

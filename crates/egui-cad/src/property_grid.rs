@@ -2,6 +2,8 @@
 
 use egui::{Color32, RichText, WidgetText};
 
+use crate::fonts;
+
 use crate::parsed_edit::ParsedEdit;
 use crate::theme::CadTheme;
 
@@ -15,8 +17,8 @@ pub fn property_grid<R>(
     let label_width = (ui.available_width() * 0.38).clamp(70.0, 140.0);
     egui::Grid::new(id_salt)
         .num_columns(2)
-        .striped(true)
-        .spacing([8.0, 4.0])
+        .striped(false)
+        .spacing([10.0, 3.0])
         .min_col_width(label_width)
         .show(ui, |ui| {
             let mut grid = PropertyGridUi { ui, theme };
@@ -36,18 +38,19 @@ impl PropertyGridUi<'_> {
     }
 
     pub fn section(&mut self, title: &str) {
+        // (No add_space here: egui grids do not allow it.)
         self.ui.label(
             RichText::new(title.to_uppercase())
-                .small()
-                .strong()
-                .color(self.theme.text_dim),
+                .font(fonts::medium(10.5))
+                .color(self.theme.text_secondary),
         );
         self.ui.label("");
         self.ui.end_row();
     }
 
     fn label(&mut self, label: &str) {
-        self.ui.label(RichText::new(label).color(self.theme.text_dim));
+        self.ui
+            .label(RichText::new(label).size(12.0).color(self.theme.text_secondary));
     }
 
     /// A generic row with a custom editor.

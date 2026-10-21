@@ -131,6 +131,31 @@ web autosave (OPFS); remembering camera per project.
 Known follow-ups: polyline tool arc segments (tangent/3-point within a polyline), editing vertices,
 DXF TEXT/INSERT, point names in DXF export (as text), native autosave.
 
+## UI design system (egui-cad)
+
+Based on research into professional CAD/3D tools (AutoCAD, Fusion, Blender, Onshape) and dark-UI
+guidance (Material dark theme, WCAG):
+
+- **Tokens, not colours.** `CadTheme` exposes semantic tokens: surfaces by elevation
+  (`bg → panel → raised → overlay`, plus `viewport_bg`), three border weights, three text levels,
+  accent (+ hover / pressed / subtle / on-accent / focus), status colours and canvas colours.
+- **Dark mode = lighter means higher.** No pure black or white; elevation by lightness rather than
+  shadow; light mode uses white overlays with soft shadows.
+- **One desaturated accent** (Amber / Blue / Teal), used for the active tool, focus and selection.
+- **Contrast is tested**: body text ≥ 7:1 and secondary text ≥ 4.5:1 on every surface, text on the
+  accent ≥ 4.5:1, accent vs panel ≥ 3:1, in both modes and all accents (`theme.rs` tests).
+- **Density**: Compact / Comfortable on a 2/4 px grid.
+- **Typography**: Inter (variable; regular + medium via `wght`) for UI, JetBrains Mono for numbers
+  and input (equal-width digits), Phosphor icons in a dedicated family (Inter defines glyphs in the
+  Private Use Area, so icons must use `fonts::icon`). All OFL/MIT, bundled in `egui-cad/assets`.
+- **Widgets**: icon buttons with rest/hover/pressed/selected/disabled/focus states and rich tooltips
+  (title, description, shortcut keycap); collapsible sections with header actions; segmented
+  controls; switches; keycaps; floating frames; empty states; command palette (Ctrl/Cmd+K, fuzzy
+  search, recents); toasts; cursor HUD (dynamic input, F12); interactive orientation gizmo (click for
+  elevations / plan / isometric) and a floating view-control pill.
+- **Canvas colour adaptation**: on a light canvas, near-white data draws in the text colour and very
+  bright colours are darkened for display; stored colours never change.
+
 ## Roadmap
 
 - **Phase 0 — scaffold (done):** workspace; native + web builds; wgpu viewport (grid, axes, points, lines) with

@@ -116,6 +116,24 @@ pub trait Tool {
     fn preview(&self, _conv: &Conventions, _cursor: Option<&Pick>, _out: &mut Preview) {}
 }
 
+/// Groups in the tool palette, top to bottom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ToolGroup {
+    Select,
+    Draw,
+    Measure,
+}
+
+impl ToolGroup {
+    pub fn label(self) -> &'static str {
+        match self {
+            ToolGroup::Select => "Select",
+            ToolGroup::Draw => "Draw",
+            ToolGroup::Measure => "Measure",
+        }
+    }
+}
+
 /// Static description of a tool, used for the palette, command names and creation.
 #[derive(Clone)]
 pub struct ToolDescriptor {
@@ -125,6 +143,7 @@ pub struct ToolDescriptor {
     /// would shadow tool options such as `c` (close) or `u` (undo).
     pub commands: &'static [&'static str],
     pub icon: &'static str,
+    pub group: ToolGroup,
     pub description: &'static str,
     pub create: fn() -> Box<dyn Tool>,
 }
@@ -175,6 +194,7 @@ impl DomainModule for CoreModule {
             name: "Select",
             commands: &["select", "sel"],
             icon: icons::CURSOR,
+            group: ToolGroup::Select,
             description: "Select objects (Shift toggles)",
             create: || Box::new(select::SelectTool),
         });
@@ -183,6 +203,7 @@ impl DomainModule for CoreModule {
             name: "Point",
             commands: &["point", "pt", "po"],
             icon: icons::CROSSHAIR,
+            group: ToolGroup::Draw,
             description: "Create survey points by picking or typing coordinates",
             create: || Box::<point::PointTool>::default(),
         });
@@ -191,6 +212,7 @@ impl DomainModule for CoreModule {
             name: "Polyline",
             commands: &["polyline", "pl", "line"],
             icon: icons::POLYGON,
+            group: ToolGroup::Draw,
             description: "Draw a polyline (string); Enter finishes, C closes, U undoes a vertex",
             create: || Box::<polyline::PolylineTool>::default(),
         });
@@ -199,6 +221,7 @@ impl DomainModule for CoreModule {
             name: "Arc",
             commands: &["arc", "ar"],
             icon: icons::ARC,
+            group: ToolGroup::Draw,
             description: "Arc through three points: start, a point on the arc, end",
             create: || Box::<arc::ArcTool>::default(),
         });
@@ -207,6 +230,7 @@ impl DomainModule for CoreModule {
             name: "Circle",
             commands: &["circle", "ci"],
             icon: icons::CIRCLE,
+            group: ToolGroup::Draw,
             description: "Circle from its centre and a radius (pick or type)",
             create: || Box::<circle::CircleTool>::default(),
         });
@@ -215,6 +239,7 @@ impl DomainModule for CoreModule {
             name: "Inverse",
             commands: &["inverse", "inv", "dist", "di"],
             icon: icons::RULER,
+            group: ToolGroup::Measure,
             description: "Bearing, distance and height difference between points",
             create: || Box::<inverse::InverseTool>::default(),
         });

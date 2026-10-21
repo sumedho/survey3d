@@ -3,8 +3,12 @@
 use std::collections::HashMap;
 
 use egui::{Color32, RichText, Stroke};
+use egui_cad::chrome::empty_state;
+use egui_cad::chrome::{IconButton, palette_divider, search_button, toolbar_divider};
+use egui_cad::hud::{HudLine, draw_cursor_hud};
 use egui_cad::labels::LabelPlacer;
 use egui_cad::selection::SelectionBox;
+use egui_cad::viewport::NavAction;
 
 use crate::platform::FileKind;
 use crate::scene_build::select_in_box;
@@ -24,6 +28,7 @@ enum Action {
     ImportDxf,
     ExportDxf,
     Labels,
+    Palette,
     #[cfg(not(target_arch = "wasm32"))]
     Quit,
     Undo,
@@ -211,7 +216,7 @@ impl SurveyApp {
                 for t in self.tools.tools() {
                     item(
                         ui,
-                        &format!("{}  {}", t.icon, t.name),
+                        t.name,
                         Some(t.commands[0].into()),
                         Action::Tool(t.id),
                         &mut action,
@@ -228,39 +233,77 @@ impl SurveyApp {
                 item(ui, "About survey3d", None, Action::About, &mut action);
             });
 
-            ui.separator();
-            let icon_btn =
-                |ui: &mut egui::Ui, icon: &str, tip: &str, a: Action, action: &mut Option<Action>| {
-                    if ui
-                        .add(egui::Button::new(RichText::new(icon).size(15.0)).frame(false))
-                        .on_hover_text(tip)
-                        .clicked()
-                    {
-                        *action = Some(a);
-                    }
-                };
-            icon_btn(ui, icons::FILE_PLUS, "New project", Action::New, &mut action);
-            icon_btn(ui, icons::FOLDER_OPEN, "Open project", Action::Open, &mut action);
-            icon_btn(ui, icons::FLOPPY_DISK, "Save project", Action::Save, &mut action);
-            icon_btn(ui, icons::FILE_CSV, "Import points", Action::Import, &mut action);
-            ui.separator();
-            icon_btn(ui, icons::ARROW_U_UP_LEFT, "Undo", Action::Undo, &mut action);
-            icon_btn(ui, icons::ARROW_U_UP_RIGHT, "Redo", Action::Redo, &mut action);
-            ui.separator();
-            icon_btn(
-                ui,
-                icons::CORNERS_OUT,
-                "Zoom extents",
-                Action::ZoomExtents,
-                &mut action,
-            );
-            let (icon, tip) = if self.viewport.plan_locked {
-                (icons::CUBE, "Switch to 3D view")
-            } else {
-                (icons::MAP_TRIFOLD, "Lock to plan view")
-            };
-            icon_btn(ui, icon, tip, Action::TogglePlan, &mut action);
-            icon_btn(ui, icons::GEAR, "Settings", Action::Settings, &mut action);
+            toolbar_divider(ui);
+            let sc = |m: Modifiers, k: Key| Some(ctx.format_shortcut(&KeyboardShortcut::new(m, k)));
+            let buttons: [(&str, &str, Option<String>, Action); 4] = [
+                (
+                    icons::FILE_PLUS,
+                    "New project",
+                    sc(Modifiers::COMMAND, Key::N),
+                    Action::New,
+                ),
+                (
+                    icons::FOLDER_OPEN,
+                    "Open project",
+                    sc(Modifiers::COMMAND, Key::O),
+                    Action::Open,
+                ),
+                (
+                    icons::FLOPPY_DISK,
+                    "Save project",
+                    sc(Modifiers::COMMAND, Key::S),
+                    Action::Save,
+                ),
+                (icons::FILE_CSV, "Import points", None, Action::Import),
+            ];
+            for (icon, title, shortcut, a) in buttons {
+                if IconButton::new(icon, title)
+                    .shortcut(shortcut.as_deref())
+                    .show(ui)
+                    .clicked()
+                {
+                    action = Some(a);
+                }
+            }
+            toolbar_divider(ui);
+            let undo = self.project.history.undo_label();
+            let redo = self.project.history.redo_label();
+            let undo_sc = sc(Modifiers::COMMAND, Key::Z);
+            let redo_sc = sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+            if IconButton::new(icons::ARROW_U_UP_LEFT, "Undo")
+                .description(undo.as_deref().unwrap_or("Nothing to undo"))
+                .shortcut(undo_sc.as_deref())
+                .enabled(undo.is_some())
+                .show(ui)
+                .clicked()
+            {
+                action = Some(Action::Undo);
+            }
+            if IconButton::new(icons::ARROW_U_UP_RIGHT, "Redo")
+                .description(redo.as_deref().unwrap_or("Nothing to redo"))
+                .shortcut(redo_sc.as_deref())
+                .enabled(redo.is_some())
+                .show(ui)
+                .clicked()
+            {
+                action = Some(Action::Redo);
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if IconButton::new(icons::GEAR, "Settings")
+                    .description("Drafting, display, conventions and coordinates")
+                    .show(ui)
+                    .clicked()
+                {
+                    action = Some(Action::Settings);
+                }
+                // Search box look-alike that opens the command palette.
+                let palette_sc = ctx.format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::K));
+                let search = search_button(ui, "Search commands", &palette_sc, 240.0);
+                if search.clicked() {
+                    action = Some(Action::Palette);
+                }
+            });
         });
 
         let ctx = ui.ctx().clone();
@@ -280,6 +323,7 @@ impl SurveyApp {
             Action::ImportDxf => self.platform.pick_file(ctx, FileKind::Dxf),
             Action::ExportDxf => self.export_dxf(),
             Action::Labels => self.settings_window.open_at_display(),
+            Action::Palette => self.palette.open(),
             #[cfg(not(target_arch = "wasm32"))]
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::Undo => self.undo(),
@@ -376,43 +420,75 @@ impl SurveyApp {
     // ------------------------------------------------------------------ tool palette
 
     pub(super) fn tool_palette(&mut self, ui: &mut egui::Ui) {
-        let items: Vec<(&'static str, &'static str, String)> = self
+        let mut tools: Vec<_> = self
             .tools
             .tools()
             .iter()
-            .map(|t| {
-                (
-                    t.id,
-                    t.icon,
-                    format!("{} — {}\nCommand: {}", t.name, t.description, t.commands[0]),
-                )
-            })
+            .map(|t| (t.group, t.id, t.icon, t.name, t.description, t.commands[0]))
             .collect();
+        tools.sort_by_key(|t| t.0);
+        let active = self.active_tool.id();
+        let mut chosen = None;
         ui.vertical_centered(|ui| {
-            ui.add_space(4.0);
-            for (id, icon, tip) in items {
-                if tool_button(ui, icon, &tip, self.active_tool.id() == id).clicked() {
-                    self.set_tool(id);
+            ui.add_space(2.0);
+            let mut group = None;
+            for (g, id, icon, name, description, command) in tools {
+                if group.is_some_and(|prev| prev != g) {
+                    palette_divider(ui);
+                }
+                group = Some(g);
+                if IconButton::new(icon, name)
+                    .description(description)
+                    .shortcut(Some(command))
+                    .selected(active == id)
+                    .size(32.0)
+                    .show(ui)
+                    .clicked()
+                {
+                    chosen = Some(id);
                 }
             }
         });
+        if let Some(id) = chosen {
+            self.set_tool(id);
+        }
     }
 
     // ------------------------------------------------------------------ side panel
 
     pub(super) fn side_panel(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            section_header(ui, "Layers");
             let rows = self.layer_rows();
-            let actions = layer_panel(ui, &rows);
+            let mut add = false;
+            let actions = section(
+                ui,
+                "Layers",
+                true,
+                |ui| {
+                    add = IconButton::new(icons::PLUS, "New layer")
+                        .description("Adds a layer and makes it current")
+                        .size(20.0)
+                        .show(ui)
+                        .clicked();
+                },
+                |ui| layer_panel(ui, &rows),
+            )
+            .unwrap_or_default();
+            if add {
+                self.apply_layer_action(LayerAction::Add);
+            }
             for a in actions {
                 self.apply_layer_action(a);
             }
-            ui.add_space(6.0);
-            ui.separator();
-            section_header(ui, "Properties");
             let p = &self.project;
-            if let Some(cmd) = properties_panel(ui, &p.doc, &p.selection) {
+            let edit = section(
+                ui,
+                "Properties",
+                true,
+                |_| {},
+                |ui| properties_panel(ui, &p.doc, &p.selection),
+            );
+            if let Some(cmd) = edit.flatten() {
                 self.execute(cmd);
             }
         });
@@ -561,6 +637,36 @@ impl SurveyApp {
             self.draw_labels(&painter, out.rect, &theme);
         }
         self.draw_overlays(&painter, out.rect, &preview, out.hover, &theme);
+        if self.settings.dynamic_input
+            && let Some(c) = out.hover
+        {
+            self.draw_hud(&painter, out.rect, to_screen(out.rect, c), &preview, &conv);
+        }
+        if self.project.doc.entity_count() == 0 && out.drag.is_none() {
+            let search = ui
+                .ctx()
+                .format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::K));
+            empty_state(
+                &painter,
+                out.rect,
+                icons::MAP_TRIFOLD,
+                "Start a survey",
+                &[
+                    (search.as_str(), "Search every command"),
+                    ("point", "Place points — pick or type E,N[,Z]"),
+                    ("import", "Import points from CSV / TXT"),
+                    ("dxfin", "Import a DXF drawing"),
+                ],
+            );
+        }
+        self.toasts.show(&painter, out.rect);
+        match out.nav {
+            Some(NavAction::ZoomExtents) => self.zoom_extents(),
+            Some(NavAction::TogglePlan) => self.toggle_plan(),
+            Some(NavAction::ToggleProjection) => self.toggle_projection(),
+            Some(NavAction::Preset(p)) => self.command_line.info(p.label()),
+            None => {}
+        }
 
         // Window / crossing selection with the select tool.
         if !self.active_tool.wants_point() {
@@ -624,6 +730,30 @@ impl SurveyApp {
         pick
     }
 
+    /// Dynamic input: prompt, live measurement and typed text beside the cursor.
+    fn draw_hud(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        cursor: egui::Pos2,
+        preview: &Preview,
+        conv: &survey_core::Conventions,
+    ) {
+        if self.active_tool.id() == SELECT_TOOL_ID {
+            return;
+        }
+        let mut lines = vec![HudLine::Prompt(self.active_tool.prompt(conv))];
+        if let Some((_, _, text)) = preview.labels.first() {
+            lines.push(HudLine::Value(text.clone()));
+        } else if let Some(p) = self.pick {
+            lines.push(HudLine::Value(conv.format_coord(p.point, p.height_known)));
+        }
+        if !self.command_line.input.is_empty() {
+            lines.push(HudLine::Input(self.command_line.input.clone()));
+        }
+        draw_cursor_hud(painter, rect, cursor, &lines);
+    }
+
     fn draw_overlays(
         &self,
         painter: &egui::Painter,
@@ -658,7 +788,13 @@ impl SurveyApp {
         for r in &preview.rubber {
             draw_world_polyline(painter, rect, cam, r, Stroke::new(1.2, theme.preview), true);
         }
-        for (p, offset, text) in &preview.labels {
+        // With dynamic input on, measurements appear in the cursor HUD instead.
+        let labels = if self.settings.dynamic_input {
+            &[][..]
+        } else {
+            &preview.labels[..]
+        };
+        for (p, offset, text) in labels {
             if let Some((s, _)) = cam.world_to_screen(*p) {
                 let pos = to_screen(rect, s) + egui::vec2(offset.x as f32, offset.y as f32);
                 label_box(painter, rect, pos, text, theme);
@@ -683,7 +819,7 @@ impl SurveyApp {
                 painter,
                 to_screen(rect, c),
                 self.settings.snap.aperture_px as f32,
-                theme.text_dim,
+                theme.text_secondary,
             );
         }
     }
@@ -731,7 +867,7 @@ impl SurveyApp {
                 line(&p.code, &small, theme.accent);
             }
             if opts.heights && p.height_known {
-                line(&conv.format_length(p.position.z), &small, theme.text_dim);
+                line(&conv.format_length(p.position.z), &small, theme.text_secondary);
             }
             if job.text.is_empty() {
                 continue;
@@ -762,6 +898,7 @@ impl SurveyApp {
                     self.csv_dialog = None;
                     self.execute(cmd);
                     self.command_line.info(format!("Imported {n} points"));
+                    self.toasts.success(format!("Imported {n} points"));
                     self.zoom_extents();
                 }
             }

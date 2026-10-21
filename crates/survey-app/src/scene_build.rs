@@ -84,10 +84,24 @@ fn build_scene(doc: &Document, selection: &Selection, theme: &CadTheme, revision
 }
 
 /// Near-white layer colours are drawn dark on a light background so they stay visible.
+/// Display colour for a layer colour on the current canvas. Stored colours are
+/// never changed; on a light canvas, near-white becomes the text colour and
+/// other very bright colours (DXF yellow, green, cyan…) are darkened so they
+/// stay readable — the same adaptation CAD packages apply to white/black.
 fn layer_color(c: [u8; 4], theme: &CadTheme) -> [u8; 4] {
-    if theme.mode == ThemeMode::Light && c[0] > 200 && c[1] > 200 && c[2] > 200 {
+    if theme.mode != ThemeMode::Light {
+        return c;
+    }
+    if c[0] > 200 && c[1] > 200 && c[2] > 200 {
         let t = theme.text.to_srgba_unmultiplied();
-        [t[0], t[1], t[2], c[3]]
+        return [t[0], t[1], t[2], c[3]];
+    }
+    // Rec. 709 luma of the sRGB values is enough for this heuristic.
+    let luma = 0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2]);
+    if luma > 140.0 {
+        let k = 110.0 / luma;
+        let d = |v: u8| (f32::from(v) * k).round() as u8;
+        [d(c[0]), d(c[1]), d(c[2]), c[3]]
     } else {
         c
     }
@@ -189,4 +203,18 @@ pub fn select_in_box(doc: &Document, cam: &Camera, sel: &SelectionBox) -> Vec<En
             }
     });
     ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bright_colours_are_darkened_on_light_canvas() {
+        let light = CadTheme::light();
+        let green = layer_color([0, 255, 0, 255], &light);
+        assert!(green[1] <= 160, "{green:?}");
+        assert_eq!(layer_color([200, 0, 0, 255], &light), [200, 0, 0, 255]);
+        assert_eq!(layer_color([0, 255, 0, 255], &CadTheme::dark()), [0, 255, 0, 255]);
+    }
 }

@@ -5,13 +5,16 @@ mod layout;
 
 use cad_render::{GridSettings, Projection};
 use egui::{Key, KeyboardShortcut, Modifiers};
-use egui_cad::chrome::{bar_frame, panel_frame, section_header, tool_button};
+use egui_cad::chrome::{bar_frame, panel_frame, section};
 use egui_cad::command_line::{CommandLine, CommandLineEvent, CommandLineState, Completion, LogKind};
+use egui_cad::command_palette::{CommandPalette, PaletteItem};
 use egui_cad::constraint::constrain_direction;
 use egui_cad::layer_panel::{LayerAction, LayerRow, layer_panel};
 use egui_cad::snap::{Pick, SnapEngine, SnapMode, SnapQuery, SnapSettings, draw_snap_glyph, free_point};
+use egui_cad::toasts::Toasts;
+use egui_cad::viewport::ViewPreset;
 use egui_cad::viewport::{Viewport, ViewportState, draw_pickbox, draw_world_polyline, to_screen};
-use egui_cad::{CadTheme, icons};
+use egui_cad::{CadTheme, ThemeMode, icons};
 use glam::DVec3;
 use survey_core::Aabb3;
 use survey_core::point_input::PointInput;
@@ -33,29 +36,105 @@ use crate::ui::settings_window::SettingsWindow;
 
 const SETTINGS_KEY: &str = "survey3d.settings";
 
-/// Commands handled by the application itself (not tools).
-const APP_COMMANDS: &[(&str, &str)] = &[
-    ("undo", "Undo the last edit (Ctrl+Z)"),
-    ("redo", "Redo (Ctrl+Shift+Z)"),
-    ("ze", "Zoom to extents (Home)"),
-    ("plan", "Lock to 2D plan view"),
-    ("3d", "Free 3D view"),
-    ("persp", "Toggle perspective / orthographic"),
-    ("snap", "Toggle object snap (F3)"),
-    ("ortho", "Toggle ortho constraint (F8)"),
-    ("grid", "Toggle grid (F7)"),
-    ("delete", "Delete selection (Del)"),
-    ("import", "Import points from CSV/TXT"),
-    ("dxfin", "Import a DXF drawing"),
-    ("dxfout", "Export the project as DXF"),
-    ("labels", "Label settings"),
-    ("save", "Save project (Ctrl+S)"),
-    ("open", "Open project (Ctrl+O)"),
-    ("new", "New project (Ctrl+N)"),
-    ("audit", "Show the audit trail"),
-    ("settings", "Open settings"),
-    ("drafting", "Snap, ortho and grid settings"),
-    ("help", "List commands"),
+/// A command handled by the application itself (not a tool).
+struct AppCommand {
+    /// Command-line name.
+    name: &'static str,
+    title: &'static str,
+    category: &'static str,
+    icon: &'static str,
+    /// A modifier shortcut (formatted per platform) …
+    shortcut: Option<KeyboardShortcut>,
+    /// … or a plain key such as `F3`.
+    key: Option<&'static str>,
+}
+
+const fn cmd(
+    name: &'static str,
+    title: &'static str,
+    category: &'static str,
+    icon: &'static str,
+) -> AppCommand {
+    AppCommand {
+        name,
+        title,
+        category,
+        icon,
+        shortcut: None,
+        key: None,
+    }
+}
+
+const fn with_shortcut(mut c: AppCommand, modifiers: Modifiers, key: Key) -> AppCommand {
+    c.shortcut = Some(KeyboardShortcut::new(modifiers, key));
+    c
+}
+
+const fn with_key(mut c: AppCommand, key: &'static str) -> AppCommand {
+    c.key = Some(key);
+    c
+}
+
+const SHIFT_COMMAND: Modifiers = Modifiers {
+    alt: false,
+    ctrl: false,
+    shift: true,
+    mac_cmd: false,
+    command: true,
+};
+
+const APP_COMMANDS: &[AppCommand] = &[
+    with_shortcut(
+        cmd("undo", "Undo", "Edit", icons::ARROW_U_UP_LEFT),
+        Modifiers::COMMAND,
+        Key::Z,
+    ),
+    with_shortcut(
+        cmd("redo", "Redo", "Edit", icons::ARROW_U_UP_RIGHT),
+        SHIFT_COMMAND,
+        Key::Z,
+    ),
+    with_key(cmd("delete", "Delete selection", "Edit", icons::TRASH), "Del"),
+    with_key(cmd("ze", "Zoom extents", "View", icons::FRAME_CORNERS), "Home"),
+    cmd("plan", "Plan view (2D lock)", "View", icons::MAP_TRIFOLD),
+    cmd("3d", "Free 3D view", "View", icons::CUBE),
+    cmd("iso", "Isometric view", "View", icons::CUBE_FOCUS),
+    cmd("persp", "Toggle perspective", "View", icons::PERSPECTIVE),
+    with_key(cmd("grid", "Toggle grid", "View", icons::GRID_FOUR), "F7"),
+    with_key(cmd("snap", "Toggle object snap", "Drafting", icons::MAGNET), "F3"),
+    with_key(
+        cmd("ortho", "Toggle ortho / polar", "Drafting", icons::ANGLE),
+        "F8",
+    ),
+    with_key(
+        cmd("hud", "Toggle dynamic input", "Drafting", icons::CROSSHAIR),
+        "F12",
+    ),
+    with_shortcut(
+        cmd("new", "New project", "File", icons::FILE_PLUS),
+        Modifiers::COMMAND,
+        Key::N,
+    ),
+    with_shortcut(
+        cmd("open", "Open project", "File", icons::FOLDER_OPEN),
+        Modifiers::COMMAND,
+        Key::O,
+    ),
+    with_shortcut(
+        cmd("save", "Save project", "File", icons::FLOPPY_DISK),
+        Modifiers::COMMAND,
+        Key::S,
+    ),
+    cmd("import", "Import points (CSV/TXT)", "File", icons::FILE_CSV),
+    cmd("dxfin", "Import DXF", "File", icons::FILE_ARROW_UP),
+    cmd("dxfout", "Export DXF", "File", icons::EXPORT),
+    cmd("audit", "Audit trail", "Project", icons::SHIELD_CHECK),
+    cmd("conventions", "Conventions", "Project", icons::RULER),
+    cmd("drafting", "Drafting settings", "Settings", icons::MAGNET),
+    cmd("labels", "Label & display settings", "Settings", icons::TAG),
+    cmd("theme", "Toggle light / dark theme", "Settings", icons::PALETTE),
+    cmd("settings", "Settings", "Settings", icons::GEAR),
+    cmd("help", "List commands", "Help", icons::KEYBOARD),
 ];
 
 /// An action that would discard unsaved changes and needs confirmation.
@@ -83,6 +162,8 @@ pub struct SurveyApp {
     pick: Option<Pick>,
     hovered_entity: Option<EntityId>,
     csv_dialog: Option<CsvImportDialog>,
+    palette: CommandPalette,
+    toasts: Toasts,
     settings_window: SettingsWindow,
     audit_window: AuditWindow,
     about_open: bool,
@@ -138,7 +219,7 @@ impl SurveyApp {
             .storage
             .and_then(|s| eframe::get_value(s, SETTINGS_KEY))
             .unwrap_or_default();
-        let theme = CadTheme::for_mode(settings.theme);
+        let theme = CadTheme::new(settings.theme, settings.accent, settings.density);
         theme.apply(&cc.egui_ctx);
 
         let mut tools = ToolRegistry::default();
@@ -157,9 +238,9 @@ impl SurveyApp {
                 })
             })
             .collect();
-        completions.extend(APP_COMMANDS.iter().map(|(n, d)| Completion {
-            name: (*n).to_string(),
-            description: (*d).to_string(),
+        completions.extend(APP_COMMANDS.iter().map(|c| Completion {
+            name: c.name.to_string(),
+            description: c.title.to_string(),
         }));
         completions.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -195,6 +276,8 @@ impl SurveyApp {
             pick: None,
             hovered_entity: None,
             csv_dialog: None,
+            palette: CommandPalette::default(),
+            toasts: Toasts::default(),
             settings_window: SettingsWindow::default(),
             audit_window: AuditWindow::default(),
             about_open: false,
@@ -408,6 +491,47 @@ impl SurveyApp {
         }
     }
 
+    /// Everything searchable in the command palette.
+    fn palette_items(&self, ctx: &egui::Context) -> Vec<PaletteItem> {
+        let mut items: Vec<PaletteItem> = self
+            .tools
+            .tools()
+            .iter()
+            .map(|t| PaletteItem {
+                id: format!("tool:{}", t.id),
+                title: t.name.to_string(),
+                category: format!("{} tool", t.group.label()),
+                description: t.description.to_string(),
+                shortcut: Some(t.commands[0].to_string()),
+                icon: t.icon,
+            })
+            .collect();
+        items.extend(APP_COMMANDS.iter().map(|c| {
+            PaletteItem {
+                id: format!("cmd:{}", c.name),
+                title: c.title.to_string(),
+                category: c.category.to_string(),
+                description: format!("Command: {}", c.name),
+                shortcut: c
+                    .shortcut
+                    .map(|s| ctx.format_shortcut(&s))
+                    .or(c.key.map(str::to_string)),
+                icon: c.icon,
+            }
+        }));
+        items
+    }
+
+    fn run_palette_choice(&mut self, ctx: &egui::Context, id: &str) {
+        if let Some(tool) = id.strip_prefix("tool:") {
+            self.set_tool(tool);
+        } else if let Some(name) = id.strip_prefix("cmd:") {
+            self.command_line
+                .log(LogKind::Command, format!("Command: {name}"));
+            self.run_app_command(ctx, name);
+        }
+    }
+
     fn run_app_command(&mut self, ctx: &egui::Context, text: &str) -> bool {
         match text.to_ascii_lowercase().as_str() {
             "undo" => self.undo(),
@@ -438,14 +562,29 @@ impl SurveyApp {
             "audit" => self.audit_window.open = true,
             "settings" | "options" => self.settings_window.open = true,
             "drafting" | "dsettings" => self.settings_window.open_at_drafting(),
+            "conventions" => self.settings_window.open_at_conventions(),
+            "iso" | "isometric" => {
+                self.viewport.apply_preset(ViewPreset::Isometric);
+            }
+            "hud" | "dyn" => {
+                self.settings.dynamic_input = !self.settings.dynamic_input;
+                let state = if self.settings.dynamic_input { "on" } else { "off" };
+                self.command_line.info(format!("Dynamic input {state}"));
+            }
+            "theme" => {
+                self.settings.theme = match self.settings.theme {
+                    ThemeMode::Dark => ThemeMode::Light,
+                    ThemeMode::Light => ThemeMode::Dark,
+                };
+            }
             "help" | "?" => {
                 let mut lines = vec!["Tools:".to_string()];
                 for t in self.tools.tools() {
                     lines.push(format!("  {:<18} {}", t.commands.join(", "), t.description));
                 }
                 lines.push("Commands:".into());
-                for (n, d) in APP_COMMANDS {
-                    lines.push(format!("  {n:<18} {d}"));
+                for c in APP_COMMANDS {
+                    lines.push(format!("  {:<18} {}", c.name, c.title));
                 }
                 lines.push("Point input: E,N[,Z]  @dE,dN[,dZ]  @dist<bearing  or a point name".into());
                 self.command_line.info(lines.join("\n"));
@@ -540,7 +679,10 @@ impl SurveyApp {
         let text = survey_io::dxf::write_dxf(&dxf_export(&self.project.doc));
         let stem = file_stem(&self.project.doc.meta().name);
         match export(&self.platform, FileKind::Dxf, &stem, text.as_bytes()) {
-            Ok(Some(where_)) => self.command_line.info(format!("Exported DXF: {where_}")),
+            Ok(Some(where_)) => {
+                self.command_line.info(format!("Exported DXF: {where_}"));
+                self.toasts.success("Exported DXF");
+            }
             Ok(None) => {}
             Err(e) => self.command_line.error(format!("DXF export failed: {e}")),
         }
@@ -554,6 +696,7 @@ impl SurveyApp {
                 self.execute(Box::new(cmd));
                 self.command_line
                     .info(format!("Imported {n} objects from {name}"));
+                self.toasts.success(format!("Imported {n} objects from {name}"));
                 for w in &drawing.warnings {
                     self.command_line.warn(w.clone());
                 }
@@ -570,8 +713,12 @@ impl SurveyApp {
                 let n = p.doc.entity_count();
                 self.replace_project(p);
                 self.command_line.info(format!("Opened {name} ({n} objects)"));
+                self.toasts.success(format!("Opened {name}"));
             }
-            Err(e) => self.command_line.error(format!("Could not open {name}: {e}")),
+            Err(e) => {
+                self.command_line.error(format!("Could not open {name}: {e}"));
+                self.toasts.error(format!("Could not open {name}"));
+            }
         }
     }
 
@@ -582,10 +729,15 @@ impl SurveyApp {
             if self.project.has_file() {
                 self.store_view();
                 match self.project.save() {
-                    Ok(()) => self
-                        .command_line
-                        .info(format!("Saved {}", self.project.display_name)),
-                    Err(e) => self.command_line.error(format!("Save failed: {e}")),
+                    Ok(()) => {
+                        self.command_line
+                            .info(format!("Saved {}", self.project.display_name));
+                        self.toasts.success("Saved");
+                    }
+                    Err(e) => {
+                        self.command_line.error(format!("Save failed: {e}"));
+                        self.toasts.error("Save failed — see the command line");
+                    }
                 }
             } else {
                 self.save_as();
@@ -609,13 +761,17 @@ impl SurveyApp {
                 Ok(()) => {
                     self.project.display_name = name.clone();
                     self.command_line.info(format!("Downloaded {name}"));
+                    self.toasts.success(format!("Saved {name}"));
                     // The download is now the user's copy; drop the recovery snapshot.
                     self.autosave.written = None;
                     wasm_bindgen_futures::spawn_local(async {
                         let _ = crate::platform::opfs::remove(crate::platform::opfs::AUTOSAVE).await;
                     });
                 }
-                Err(e) => self.command_line.error(format!("Save failed: {e}")),
+                Err(e) => {
+                    self.command_line.error(format!("Save failed: {e}"));
+                    self.toasts.error("Save failed — see the command line");
+                }
             }
         }
     }
@@ -626,8 +782,14 @@ impl SurveyApp {
         if let Some(path) = self.platform.pick_save_path(FileKind::Project, &default) {
             self.store_view();
             match self.project.save_as(&path) {
-                Ok(()) => self.command_line.info(format!("Saved {}", path.display())),
-                Err(e) => self.command_line.error(format!("Save failed: {e}")),
+                Ok(()) => {
+                    self.command_line.info(format!("Saved {}", path.display()));
+                    self.toasts.success("Saved");
+                }
+                Err(e) => {
+                    self.command_line.error(format!("Save failed: {e}"));
+                    self.toasts.error("Save failed — see the command line");
+                }
             }
         }
     }
@@ -719,8 +881,9 @@ fn file_stem(name: &str) -> String {
 impl eframe::App for SurveyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if self.theme.mode != self.settings.theme {
-            self.theme = CadTheme::for_mode(self.settings.theme);
+        let s = &self.settings;
+        if (self.theme.mode, self.theme.accent_family, self.theme.density) != (s.theme, s.accent, s.density) {
+            self.theme = CadTheme::new(s.theme, s.accent, s.density);
             self.theme.apply(&ctx);
         }
         self.project.history.set_user(self.settings.user_name.clone());
@@ -756,6 +919,12 @@ impl eframe::App for SurveyApp {
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport_ui(ui));
 
         self.dialogs(&ctx);
+        if self.palette.is_open() {
+            let items = self.palette_items(&ctx);
+            if let Some(id) = self.palette.show(&ctx, &items) {
+                self.run_palette_choice(&ctx, &id);
+            }
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -768,7 +937,15 @@ impl SurveyApp {
         let dirty = if self.project.is_dirty() { " •" } else { "" };
         let title = format!("{}{dirty} — survey3d", self.project.display_name);
         if title != self.title {
+            #[cfg(not(target_arch = "wasm32"))]
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = ctx; // the web backend ignores viewport title commands
+                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                    doc.set_title(&title);
+                }
+            }
             self.title = title;
         }
     }
@@ -784,6 +961,21 @@ impl SurveyApp {
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         let sc = |m: Modifiers, k: Key| KeyboardShortcut::new(m, k);
         let shift_cmd = Modifiers::COMMAND | Modifiers::SHIFT;
+        let (palette, f12) = ctx.input_mut(|i| {
+            (
+                i.consume_shortcut(&sc(Modifiers::COMMAND, Key::K)),
+                i.consume_key(Modifiers::NONE, Key::F12),
+            )
+        });
+        if palette {
+            self.palette.toggle();
+        }
+        if f12 {
+            self.run_app_command(ctx, "hud");
+        }
+        if self.palette.is_open() {
+            return; // the palette owns the keyboard while open
+        }
         let (undo, redo, redo_y, save, save_as, open, new) = ctx.input_mut(|i| {
             (
                 i.consume_shortcut(&sc(Modifiers::COMMAND, Key::Z)),
@@ -849,7 +1041,10 @@ impl SurveyApp {
                     i.consume_key(Modifiers::NONE, Key::Tab),
                 )
             });
-            if esc {
+            if esc && self.settings_window.open {
+                // Escape dismisses the settings panel first.
+                self.settings_window.open = false;
+            } else if esc {
                 self.command_line.input.clear();
                 self.snap_override = None;
                 self.dispatch(ToolEvent::Cancel);

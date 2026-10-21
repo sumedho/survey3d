@@ -16,6 +16,9 @@ use glam::{DVec2, DVec3};
 use serde::{Deserialize, Serialize};
 use survey_core::Aabb3;
 
+use crate::chrome::{self, IconButton};
+use crate::fonts;
+use crate::icons;
 use crate::theme::CadTheme;
 
 /// Persistent per-viewport state.
@@ -50,6 +53,18 @@ impl ViewportState {
             let target = self.camera.target;
             self.camera.orbit(target, 0.0, -35f64.to_radians());
         }
+    }
+
+    /// Moves the camera to a standard view, keeping the target and distance.
+    pub fn apply_preset(&mut self, preset: ViewPreset) {
+        if preset == ViewPreset::Plan {
+            self.set_plan_locked(true);
+            return;
+        }
+        self.plan_locked = false;
+        let (yaw, pitch) = preset.angles();
+        self.camera.yaw = yaw;
+        self.camera.pitch = pitch;
     }
 
     pub fn set_projection(&mut self, projection: Projection) {
@@ -99,6 +114,57 @@ pub struct ViewportOutput {
     pub drag: Option<(DVec2, DVec2)>,
     /// A primary-button drag that ended this frame: `(start, end)`.
     pub drag_released: Option<(DVec2, DVec2)>,
+    /// A view-control button or gizmo end was clicked. Presets are already
+    /// applied to the camera; the others are left to the application.
+    pub nav: Option<NavAction>,
+}
+
+/// Standard views offered by the gizmo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewPreset {
+    Plan,
+    /// Camera north of the model, looking south.
+    NorthElevation,
+    SouthElevation,
+    EastElevation,
+    WestElevation,
+    /// From the south-west, looking north-east and down.
+    Isometric,
+}
+
+impl ViewPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            ViewPreset::Plan => "Plan (top)",
+            ViewPreset::NorthElevation => "North elevation",
+            ViewPreset::SouthElevation => "South elevation",
+            ViewPreset::EastElevation => "East elevation",
+            ViewPreset::WestElevation => "West elevation",
+            ViewPreset::Isometric => "Isometric",
+        }
+    }
+
+    /// `(yaw, pitch)` in radians; yaw is the bearing the camera looks towards.
+    fn angles(self) -> (f64, f64) {
+        use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+        match self {
+            ViewPreset::Plan => (0.0, FRAC_PI_2),
+            ViewPreset::NorthElevation => (PI, 0.0),
+            ViewPreset::SouthElevation => (0.0, 0.0),
+            ViewPreset::EastElevation => (1.5 * PI, 0.0),
+            ViewPreset::WestElevation => (FRAC_PI_2, 0.0),
+            ViewPreset::Isometric => (FRAC_PI_4, (1.0 / 2f64.sqrt()).atan()),
+        }
+    }
+}
+
+/// View-control requests from the floating toolbar or gizmo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavAction {
+    ZoomExtents,
+    TogglePlan,
+    ToggleProjection,
+    Preset(ViewPreset),
 }
 
 pub struct Viewport<'a> {
@@ -111,6 +177,7 @@ pub struct Viewport<'a> {
     axis_labels: [String; 3],
     /// Metres per display unit and its suffix, for the scale bar.
     length_unit: (f64, String),
+    show_nav: bool,
 }
 
 impl<'a> Viewport<'a> {
@@ -124,6 +191,7 @@ impl<'a> Viewport<'a> {
             extra_bounds: Aabb3::EMPTY,
             axis_labels: ["X".into(), "Y".into(), "Z".into()],
             length_unit: (1.0, "m".into()),
+            show_nav: true,
         }
     }
 
@@ -146,6 +214,12 @@ impl<'a> Viewport<'a> {
     /// Extra geometry (e.g. tool previews) that must not be clipped by near/far.
     pub fn extra_bounds(mut self, bounds: Aabb3) -> Self {
         self.extra_bounds = bounds;
+        self
+    }
+
+    /// Show the floating view-control toolbar (default on).
+    pub fn nav_controls(mut self, show: bool) -> Self {
+        self.show_nav = show;
         self
     }
 
@@ -254,9 +328,16 @@ impl<'a> Viewport<'a> {
             ));
 
         let painter = ui.painter_at(rect);
-        draw_axis_gizmo(&painter, rect, cam, &self.axis_labels, &theme);
         if cam.projection == Projection::Orthographic {
             draw_scale_bar(&painter, rect, cam, &self.length_unit, &theme);
+        }
+        let cam_snapshot = cam.clone();
+        let mut nav = axis_gizmo(ui, rect, &cam_snapshot, &self.axis_labels, &theme).map(NavAction::Preset);
+        if self.show_nav {
+            nav = nav.or(nav_controls(ui, rect, state, &theme));
+        }
+        if let Some(NavAction::Preset(p)) = nav {
+            state.apply_preset(p);
         }
 
         let clicked = response
@@ -291,6 +372,7 @@ impl<'a> Viewport<'a> {
             navigated,
             drag,
             drag_released,
+            nav,
         }
     }
 }
@@ -300,43 +382,162 @@ pub fn to_screen(rect: Rect, p: DVec2) -> Pos2 {
     pos2(rect.min.x + p.x as f32, rect.min.y + p.y as f32)
 }
 
-fn draw_axis_gizmo(
-    painter: &egui::Painter,
+/// Interactive orientation gizmo (bottom-left). Clicking an axis end puts the
+/// camera on that side; Z gives plan, the background gives an isometric view.
+fn axis_gizmo(
+    ui: &mut egui::Ui,
     rect: Rect,
     cam: &Camera,
     labels: &[String; 3],
     theme: &CadTheme,
-) {
-    let center = pos2(rect.min.x + 42.0, rect.max.y - 42.0);
-    let len = 26.0;
-    painter.circle_filled(center, len + 10.0, theme.panel.gamma_multiply(0.75));
+) -> Option<ViewPreset> {
+    let center = pos2(rect.min.x + 46.0, rect.max.y - 46.0);
+    let len = 27.0;
+    let bg_rect = Rect::from_center_size(center, Vec2::splat(2.0 * (len + 12.0)));
+    let bg = ui.interact(bg_rect, ui.scope_id().with("gizmo_bg"), Sense::click());
+    let painter = ui.painter_at(rect);
+    let ring = if bg.hovered() {
+        theme.overlay
+    } else {
+        theme.panel.gamma_multiply(0.7)
+    };
+    painter.circle_filled(center, len + 12.0, ring);
+
     let (r, u, b) = (cam.right(), cam.up(), cam.back());
-    let mut axes: Vec<(DVec3, Color32, &str)> = vec![
-        (DVec3::X, theme.axis_x, &labels[0]),
-        (DVec3::Y, theme.axis_y, &labels[1]),
-        (DVec3::Z, theme.axis_z, &labels[2]),
+    let short = |s: &str| s.chars().take(2).collect::<String>();
+    // (direction, colour, label, preset when clicked, is positive end)
+    let mut ends: Vec<(DVec3, Color32, String, ViewPreset, bool)> = vec![
+        (
+            DVec3::X,
+            theme.axis_x,
+            short(&labels[0]),
+            ViewPreset::EastElevation,
+            true,
+        ),
+        (
+            DVec3::Y,
+            theme.axis_y,
+            short(&labels[1]),
+            ViewPreset::NorthElevation,
+            true,
+        ),
+        (DVec3::Z, theme.axis_z, short(&labels[2]), ViewPreset::Plan, true),
+        (
+            DVec3::NEG_X,
+            theme.axis_x,
+            String::new(),
+            ViewPreset::WestElevation,
+            false,
+        ),
+        (
+            DVec3::NEG_Y,
+            theme.axis_y,
+            String::new(),
+            ViewPreset::SouthElevation,
+            false,
+        ),
     ];
-    // Draw far axes first.
-    axes.sort_by(|a, c| a.0.dot(b).total_cmp(&c.0.dot(b)));
-    for (axis, color, label) in axes {
-        let v = vec2(axis.dot(r) as f32, -axis.dot(u) as f32) * len;
+    // Far ends first so near ones draw on top.
+    ends.sort_by(|a, c| a.0.dot(b).total_cmp(&c.0.dot(b)));
+    let mut chosen = None;
+    for (i, (dir, color, label, preset, positive)) in ends.into_iter().enumerate() {
+        let v = vec2(dir.dot(r) as f32, -dir.dot(u) as f32) * len;
         let end = center + v;
-        let faded = if axis.dot(b) < -0.1 {
-            color.gamma_multiply(0.45)
+        let radius = if positive { 8.5 } else { 5.5 };
+        let hit = ui.interact(
+            Rect::from_center_size(end, Vec2::splat(radius * 2.0 + 4.0)),
+            ui.scope_id().with(("gizmo_end", i)),
+            Sense::click(),
+        );
+        let hovered = hit.hovered();
+        let faded = if dir.dot(b) < -0.2 {
+            color.gamma_multiply(0.55)
         } else {
             color
         };
-        painter.line_segment([center, end], Stroke::new(2.0, faded));
-        if v.length() > 4.0 {
+        if positive {
+            painter.line_segment([center, end], Stroke::new(2.0, faded));
+            painter.circle_filled(end, radius, faded);
             painter.text(
-                center + v * 1.32,
+                end,
                 egui::Align2::CENTER_CENTER,
-                label,
-                egui::FontId::proportional(11.0),
-                faded,
+                &label,
+                fonts::medium(10.0),
+                Color32::from_black_alpha(220),
             );
+        } else {
+            painter.circle_filled(end, radius, theme.panel);
+            painter.circle_stroke(end, radius, Stroke::new(1.5, faded));
+        }
+        if hovered {
+            painter.circle_stroke(end, radius + 2.0, Stroke::new(1.5, theme.text));
+        }
+        let tooltip = preset.label();
+        if hit.on_hover_text(tooltip).clicked() {
+            chosen = Some(preset);
         }
     }
+    if chosen.is_none() && bg.on_hover_text("Isometric view").clicked() {
+        chosen = Some(ViewPreset::Isometric);
+    }
+    chosen
+}
+
+/// Floating view controls (top-right of the viewport).
+fn nav_controls(ui: &mut egui::Ui, rect: Rect, state: &ViewportState, theme: &CadTheme) -> Option<NavAction> {
+    let mut action = None;
+    let area = Rect::from_min_max(
+        pos2(rect.right() - 220.0, rect.top() + 10.0),
+        pos2(rect.right() - 10.0, rect.top() + 48.0),
+    );
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(area)
+            .layout(egui::Layout::right_to_left(egui::Align::Min)),
+        |ui| {
+            chrome::floating_frame(theme).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let persp = state.camera.projection == Projection::Perspective;
+                if IconButton::new(icons::PERSPECTIVE, "Perspective")
+                    .description("Toggle perspective / orthographic projection")
+                    .selected(persp)
+                    .enabled(!state.plan_locked)
+                    .show(ui)
+                    .clicked()
+                {
+                    action = Some(NavAction::ToggleProjection);
+                }
+                let (icon, title) = if state.plan_locked {
+                    (icons::CUBE, "3D view")
+                } else {
+                    (icons::MAP_TRIFOLD, "Plan view")
+                };
+                if IconButton::new(icon, title)
+                    .description("Switch between locked plan and free 3D")
+                    .show(ui)
+                    .clicked()
+                {
+                    action = Some(NavAction::TogglePlan);
+                }
+                if IconButton::new(icons::CUBE_FOCUS, "Isometric")
+                    .description("Isometric view from the south-west")
+                    .show(ui)
+                    .clicked()
+                {
+                    action = Some(NavAction::Preset(ViewPreset::Isometric));
+                }
+                if IconButton::new(icons::FRAME_CORNERS, "Zoom extents")
+                    .description("Fit everything in view")
+                    .shortcut(Some("Home"))
+                    .show(ui)
+                    .clicked()
+                {
+                    action = Some(NavAction::ZoomExtents);
+                }
+            });
+        },
+    );
+    action
 }
 
 fn draw_scale_bar(painter: &egui::Painter, rect: Rect, cam: &Camera, unit: &(f64, String), theme: &CadTheme) {
@@ -358,7 +559,7 @@ fn draw_scale_bar(painter: &egui::Painter, rect: Rect, cam: &Camera, unit: &(f64
     let right = rect.max.x - 16.0;
     let y = rect.max.y - 18.0;
     let left = right - px;
-    let stroke = Stroke::new(1.5, theme.text_dim);
+    let stroke = Stroke::new(1.5, theme.text_secondary);
     painter.line_segment([pos2(left, y), pos2(right, y)], stroke);
     for x in [left, (left + right) * 0.5, right] {
         painter.line_segment([pos2(x, y - 4.0), pos2(x, y)], stroke);
@@ -376,7 +577,7 @@ fn draw_scale_bar(painter: &egui::Painter, rect: Rect, cam: &Camera, unit: &(f64
         egui::Align2::CENTER_BOTTOM,
         text,
         egui::FontId::proportional(11.0),
-        theme.text_dim,
+        theme.text_secondary,
     );
 }
 
@@ -430,5 +631,29 @@ mod tests {
         assert!(cam.is_plan());
         assert!((cam.right() - DVec3::X).length() < 1e-12, "east is screen-right");
         assert!((cam.up() - DVec3::Y).length() < 1e-12, "north is screen-up");
+    }
+}
+
+#[cfg(test)]
+mod preset_tests {
+    use super::*;
+
+    #[test]
+    fn presets_look_the_right_way() {
+        let mut state = ViewportState::new(1);
+        state.apply_preset(ViewPreset::NorthElevation);
+        // Camera sits north of the target, looking south.
+        assert!(state.camera.back().y > 0.99, "{:?}", state.camera.back());
+        assert!(!state.plan_locked);
+        state.apply_preset(ViewPreset::EastElevation);
+        assert!(state.camera.back().x > 0.99);
+        state.apply_preset(ViewPreset::Isometric);
+        let back = state.camera.back();
+        assert!(
+            back.x < 0.0 && back.y < 0.0 && back.z > 0.0,
+            "south-west and above: {back:?}"
+        );
+        state.apply_preset(ViewPreset::Plan);
+        assert!(state.plan_locked && state.camera.is_plan());
     }
 }
