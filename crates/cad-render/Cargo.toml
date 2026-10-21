@@ -1,0 +1,21 @@
+[package]
+name = "cad-render"
+description = "wgpu renderer for CAD viewports with relative-to-center precision"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+survey-core.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in", "glsl-out"] }

@@ -1,0 +1,19 @@
+//! Pure surveying mathematics with no UI or I/O dependencies.
+//!
+//! All values are stored canonically: lengths in metres, angles in radians and
+//! coordinates as `(easting, northing, height)` in `f64`. Regional conventions
+//! (bearing style, coordinate order, units) only apply when parsing user input
+//! or formatting output — see [`conventions::Conventions`].
+
+pub mod angle;
+pub mod cogo;
+pub mod conventions;
+pub mod error;
+pub mod geom;
+pub mod point_input;
+
+pub use angle::{Angle, Bearing, Dms, Quadrant};
+pub use conventions::Conventions;
+pub use error::ParseError;
+pub use geom::Aabb3;
+pub use glam::{DVec2, DVec3};

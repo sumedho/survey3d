@@ -1,0 +1,22 @@
+[package]
+name = "survey-store"
+description = "SQLite (.s3d) project storage with audit trail"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+survey-core.workspace = true
+survey-model.workspace = true
+glam.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rusqlite = { workspace = true, features = ["bundled"] }

@@ -1,0 +1,5 @@
+/target
+/dist
+*.s3d-wal
+*.s3d-shm
+.DS_Store

@@ -1,0 +1,16 @@
+[package]
+name = "survey-io"
+description = "Import/export of survey interchange formats"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+survey-core.workspace = true
+csv.workspace = true
+serde.workspace = true
+thiserror.workspace = true

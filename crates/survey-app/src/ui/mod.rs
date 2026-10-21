@@ -1,0 +1,6 @@
+//! Application panels and dialogs.
+
+pub mod audit_window;
+pub mod csv_import;
+pub mod properties;
+pub mod settings_window;

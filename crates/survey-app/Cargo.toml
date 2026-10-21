@@ -1,0 +1,37 @@
+[package]
+name = "survey-app"
+description = "survey3d: surveying CAD for cadastral, construction and mining"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "survey3d"
+path = "src/main.rs"
+
+[dependencies]
+survey-core.workspace = true
+survey-model.workspace = true
+survey-io.workspace = true
+survey-store.workspace = true
+egui-cad.workspace = true
+cad-render.workspace = true
+eframe.workspace = true
+egui.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+rfd.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
+web-sys = { workspace = true, features = ["Window", "Document", "Element", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url"] }

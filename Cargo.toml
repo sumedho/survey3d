@@ -1,0 +1,70 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/survey-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sumedho/survey3d"
+
+[workspace.dependencies]
+# Internal crates
+survey-core = { path = "crates/survey-core" }
+survey-model = { path = "crates/survey-model" }
+survey-io = { path = "crates/survey-io" }
+survey-store = { path = "crates/survey-store" }
+egui-cad = { path = "crates/egui-cad" }
+cad-render = { path = "crates/cad-render" }
+
+# UI / rendering
+eframe = { version = "0.37", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "wgpu",
+    "persistence",
+    "wayland",
+    "x11",
+] }
+egui = "0.37"
+egui-wgpu = "0.37"
+
+# Maths / data
+glam = { version = "0.34", features = ["serde", "bytemuck"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+rstar = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+csv = "1.4"
+sha2 = "0.11"
+web-time = "1.1"
+log = "0.4"
+rusqlite = { version = "0.40.2", features = ["serialize", "backup"] }
+
+# Platform
+rfd = "0.17"
+env_logger = "0.11"
+wasm-bindgen-futures = "0.4"
+web-sys = "0.3"
+js-sys = "0.3"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "allow"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.dev.package."*"]
+# Dependencies (wgpu, sqlite) are much faster with optimisation; our own code stays debuggable.
+opt-level = 2
