@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use egui::{Color32, RichText, Stroke};
 use egui_cad::chrome::empty_state;
-use egui_cad::chrome::{IconButton, palette_divider, search_button, toolbar_divider};
+use egui_cad::chrome::{IconButton, palette_divider, search_button, status_toggle, toolbar_divider};
 use egui_cad::hud::{HudLine, draw_cursor_hud};
 use egui_cad::labels::LabelPlacer;
 use egui_cad::selection::SelectionBox;
@@ -323,21 +323,6 @@ impl SurveyApp {
             if let Some(nav) = view_controls(ui, &self.viewport) {
                 action = Some(Action::View(nav));
             }
-            toolbar_divider(ui);
-            let grid_snap = self.settings.snap.is_on(SnapMode::Grid);
-            if IconButton::new(icons::DOTS_NINE, "Snap to grid")
-                .description(if grid_snap {
-                    "On — picks snap to the grid when no object snap applies"
-                } else {
-                    "Off — click to snap picks to the grid"
-                })
-                .shortcut(Some("F9"))
-                .selected(grid_snap)
-                .show(ui)
-                .clicked()
-            {
-                action = Some(Action::Run("gridsnap"));
-            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if IconButton::new(icons::GEAR, "Settings")
@@ -420,18 +405,11 @@ impl SurveyApp {
     /// Read-only feedback only; all settings live in the Settings panel.
     pub(super) fn status_bar(&mut self, ui: &mut egui::Ui) {
         let theme = self.theme.clone();
-        let conv = self.project.doc.conventions();
         ui.horizontal(|ui| {
-            let coord = self
-                .pick
-                .map_or_else(|| "—".to_string(), |p| conv.format_coord(p.point, p.height_known));
-            ui.add_sized(
-                [340.0, 18.0],
-                egui::Label::new(RichText::new(coord).monospace().color(theme.text)).truncate(),
-            );
-            if let Some(hit) = self.pick.and_then(|p| p.snap) {
-                ui.label(RichText::new(hit.mode.label()).small().color(theme.snap));
-            }
+            self.coordinate_readout(ui, &theme);
+            ui.add_space(8.0);
+            ui.separator();
+            self.snap_toggles(ui);
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.project.is_dirty() {
@@ -445,27 +423,96 @@ impl SurveyApp {
                             .color(theme.selection),
                     );
                 }
-                // Only states that change how picks behave, and only when non-default.
-                for (active, text, tip) in [
-                    (!self.settings.snap.enabled, "snap off", "Object snap is off (F3)"),
-                    (
-                        self.settings.snap.is_on(SnapMode::Grid),
-                        "grid snap",
-                        "Picks snap to the grid (F9)",
-                    ),
-                    (
-                        self.settings.ortho.enabled,
-                        "ortho",
-                        "Ortho / polar constraint is on (F8)",
-                    ),
-                ] {
-                    if active {
-                        ui.label(RichText::new(text).small().color(theme.accent))
-                            .on_hover_text(tip);
-                    }
+                if let Some(hit) = self.pick.and_then(|p| p.snap) {
+                    ui.label(RichText::new(hit.mode.label()).small().color(theme.snap));
                 }
             });
         });
+    }
+
+    /// Cursor coordinates in a fixed-width, left-aligned field sized for grid
+    /// coordinates (7-digit northings), so it never shifts as the values change.
+    fn coordinate_readout(&self, ui: &mut egui::Ui, theme: &CadTheme) {
+        const HORIZONTAL: usize = 12;
+        const HEIGHT: usize = 10;
+        let conv = self.project.doc.conventions();
+        let (ea, nb) = conv.horizontal_labels();
+        let z_label = conv.axis_labels.height.as_str();
+        let text = match self.pick {
+            Some(p) => {
+                let (a, b) = conv.horizontal_values(p.point);
+                let z = if p.height_known {
+                    conv.format_length(p.point.z)
+                } else {
+                    "—".to_string()
+                };
+                format!(
+                    "{ea} {:>HORIZONTAL$}  {nb} {:>HORIZONTAL$}  {z_label} {z:>HEIGHT$}",
+                    conv.format_length(a),
+                    conv.format_length(b),
+                )
+            }
+            None => format!(
+                "{ea} {:>HORIZONTAL$}  {nb} {:>HORIZONTAL$}  {z_label} {:>HEIGHT$}",
+                "—", "—", "—"
+            ),
+        };
+        // Width of the longest possible text in the monospace font.
+        let font = egui::FontId::monospace(12.0);
+        let chars =
+            ea.chars().count() + nb.chars().count() + z_label.chars().count() + 2 * HORIZONTAL + HEIGHT + 7;
+        let width = ui.fonts_mut(|f| f.glyph_width(&font, '0')) * chars as f32;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 18.0), egui::Sense::hover());
+        ui.painter().text(
+            rect.left_center(),
+            egui::Align2::LEFT_CENTER,
+            text,
+            font,
+            theme.text,
+        );
+    }
+
+    /// Snap and drafting toggles: object snap master and modes, grid snap, ortho.
+    fn snap_toggles(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let snap_on = self.settings.snap.enabled;
+        if status_toggle(ui, snap_on, "SNAP", "Object snap on/off (F3)").clicked() {
+            self.toggle_snap();
+        }
+        ui.add_enabled_ui(snap_on, |ui| {
+            for mode in SnapMode::ALL.into_iter().filter(|m| *m != SnapMode::Grid) {
+                let on = self.settings.snap.is_on(mode);
+                let tip = format!("{} snap (type {} for a one-shot snap)", mode.label(), mode.code());
+                if status_toggle(ui, on, &mode.code().to_uppercase(), &tip).clicked() {
+                    self.settings.snap.toggle(mode);
+                }
+            }
+        });
+        ui.add_space(6.0);
+        let grid = self.settings.snap.is_on(SnapMode::Grid);
+        if status_toggle(ui, grid, "GRID", "Snap to grid (F9)").clicked() {
+            self.toggle_grid_snap();
+        }
+        if status_toggle(
+            ui,
+            self.settings.ortho.enabled,
+            "ORTHO",
+            "Ortho / polar constraint (F8)",
+        )
+        .clicked()
+        {
+            self.toggle_ortho();
+        }
+        if status_toggle(
+            ui,
+            self.settings.dynamic_input,
+            "DYN",
+            "Dynamic input at the cursor (F12)",
+        )
+        .clicked()
+        {
+            self.settings.dynamic_input = !self.settings.dynamic_input;
+        }
     }
 
     // ------------------------------------------------------------------ command line

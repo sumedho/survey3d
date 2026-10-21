@@ -34,6 +34,33 @@ pub fn rich_tooltip(response: Response, title: &str, description: &str, shortcut
 }
 
 /// Draws a keyboard shortcut as a small key cap, e.g. `Ctrl+S`.
+/// A compact on/off chip for status bars (e.g. snap modes). Returns the
+/// response; the caller flips its state on click.
+pub fn status_toggle(ui: &mut Ui, on: bool, text: &str, tooltip: &str) -> Response {
+    let theme = CadTheme::current(ui.ctx());
+    let font = fonts::medium(10.5);
+    let color = if on { theme.accent } else { theme.text_secondary };
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
+    let size = vec2(galley.size().x + 10.0, (galley.size().y + 4.0).max(16.0));
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let fill = if on {
+        theme.accent_subtle
+    } else if response.hovered() {
+        theme.raised
+    } else {
+        Color32::TRANSPARENT
+    };
+    let radius = CornerRadius::same(theme.radius_small);
+    ui.painter().rect_filled(rect, radius, fill);
+    if response.hovered() {
+        ui.painter()
+            .rect_stroke(rect, radius, Stroke::new(1.0, theme.border), StrokeKind::Inside);
+    }
+    let pos = rect.center() - galley.size() * 0.5;
+    ui.painter().galley(pos, galley, color);
+    response.on_hover_text(tooltip)
+}
+
 pub fn keycap(ui: &mut Ui, text: &str) -> Response {
     let theme = CadTheme::current(ui.ctx());
     let galley = ui
