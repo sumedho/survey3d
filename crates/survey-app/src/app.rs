@@ -37,7 +37,9 @@ use crate::ui::feature_codes::{CodesAction, FeatureCodesWindow};
 use crate::ui::points_table::{PointsAction, PointsWindow};
 use crate::ui::properties::properties_panel;
 use crate::ui::reports::{ReportAction, ReportsWindow};
+use crate::ui::resection_window::{ResectionAction, ResectionWindow};
 use crate::ui::settings_window::SettingsWindow;
+use crate::ui::subdivide_window::{SubdivideAction, SubdivideWindow};
 use crate::ui::traverse_window::{TraverseAction, TraverseWindow};
 
 const SETTINGS_KEY: &str = "survey3d.settings";
@@ -164,6 +166,13 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::POLYGON,
     ),
     cmd(
+        "subdivide",
+        "Subdivide area (parallel or swing line)",
+        "COGO",
+        icons::SCISSORS,
+    ),
+    cmd("resection", "Resection / free station", "COGO", icons::ARROWS_IN),
+    cmd(
         "accuracy",
         "Accuracy limits (misclosure checks)",
         "Project",
@@ -231,6 +240,8 @@ pub struct SurveyApp {
     audit_window: AuditWindow,
     traverse_window: TraverseWindow,
     closure_window: ClosureWindow,
+    subdivide_window: SubdivideWindow,
+    resection_window: ResectionWindow,
     codes_window: FeatureCodesWindow,
     reports: ReportsWindow,
     points_window: PointsWindow,
@@ -352,6 +363,8 @@ impl SurveyApp {
             audit_window: AuditWindow::default(),
             traverse_window: TraverseWindow::default(),
             closure_window: ClosureWindow::default(),
+            subdivide_window: SubdivideWindow::default(),
+            resection_window: ResectionWindow::default(),
             codes_window: FeatureCodesWindow::default(),
             reports: ReportsWindow::default(),
             points_window: PointsWindow::default(),
@@ -819,6 +832,16 @@ impl SurveyApp {
                 Some((_, line)) => self.closure_window.load_polyline(&self.project.doc, line),
                 None => self.closure_window.open = true,
             },
+            "subdivide" | "subdiv" => {
+                let parcel = self.selected_polylines().into_iter().find(|(_, l)| l.closed);
+                match parcel {
+                    Some((id, line)) => {
+                        self.subdivide_window.load(id, &line);
+                    }
+                    None => self.subdivide_window.open = true,
+                }
+            }
+            "resection" | "resect" | "freestation" => self.resection_window.open = true,
             "accuracy" | "tolerances" => self.settings_window.open_at_accuracy(),
             "codes" | "featurecodes" => self.codes_window.open(),
             "linework" | "f2f" => {

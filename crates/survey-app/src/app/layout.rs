@@ -237,6 +237,8 @@ impl SurveyApp {
                 for (label, command) in [
                     ("Traverse…", "traverse"),
                     ("Closure…", "closure"),
+                    ("Subdivide area…", "subdivide"),
+                    ("Resection…", "resection"),
                     ("Feature codes…", "codes"),
                     ("Process linework", "linework"),
                     ("List selection", "list"),
@@ -1046,6 +1048,31 @@ impl SurveyApp {
                     ChangeSet::new(format!("Delete traverse {name}")).set_meta(meta),
                 ));
             }
+            None => {}
+        }
+        let selected_parcel = self
+            .subdivide_window
+            .open
+            .then(|| self.selected_polylines().into_iter().next())
+            .flatten();
+        match self.subdivide_window.show(
+            ctx,
+            &self.project.doc,
+            selected_parcel.as_ref().map(|(id, l)| (*id, l)),
+        ) {
+            Some(SubdivideAction::Draw(cmd, summary)) => {
+                self.execute(cmd);
+                self.command_line.result(summary);
+            }
+            Some(SubdivideAction::Report(title, text)) => self.reports.add(title, text),
+            None => {}
+        }
+        match self.resection_window.show(ctx, &self.project.doc) {
+            Some(ResectionAction::Create(cmd, summary)) => {
+                self.execute(cmd);
+                self.command_line.result(summary);
+            }
+            Some(ResectionAction::Report(title, text)) => self.reports.add(title, text),
             None => {}
         }
         let selected_line = self

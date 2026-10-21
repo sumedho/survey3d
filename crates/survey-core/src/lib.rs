@@ -16,6 +16,8 @@ pub mod field_to_finish;
 pub mod geom;
 pub mod offset;
 pub mod point_input;
+pub mod resection;
+pub mod subdivide;
 pub mod traverse;
 
 pub use angle::{Angle, Bearing, Dms, Quadrant};

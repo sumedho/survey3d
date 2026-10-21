@@ -7,5 +7,7 @@ pub mod feature_codes;
 pub mod points_table;
 pub mod properties;
 pub mod reports;
+pub mod resection_window;
 pub mod settings_window;
+pub mod subdivide_window;
 pub mod traverse_window;

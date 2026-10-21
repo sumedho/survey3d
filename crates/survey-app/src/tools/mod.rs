@@ -6,6 +6,7 @@
 //! undo history (and therefore the audit trail).
 
 mod arc;
+mod area;
 mod circle;
 mod cogo;
 pub mod grips;
@@ -370,6 +371,16 @@ impl DomainModule for CoreModule {
             group: ToolGroup::Measure,
             description: "Bearing, distance and height difference between points",
             create: || Box::<inverse::InverseTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: area::ID,
+            name: "Area",
+            commands: &["area"],
+            icon: icons::SQUARE_HALF,
+            palette: true,
+            group: ToolGroup::Measure,
+            description: "Area and perimeter of selected polylines, or of picked corners",
+            create: || Box::<area::AreaTool>::default(),
         });
     }
 }
