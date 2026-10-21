@@ -33,6 +33,7 @@ use crate::tools::{
 use crate::ui::audit_window::AuditWindow;
 use crate::ui::csv_import::{CsvDialogResult, CsvImportDialog};
 use crate::ui::feature_codes::{CodesAction, FeatureCodesWindow};
+use crate::ui::points_table::{PointsAction, PointsWindow};
 use crate::ui::properties::properties_panel;
 use crate::ui::reports::{ReportAction, ReportsWindow};
 use crate::ui::settings_window::SettingsWindow;
@@ -120,6 +121,7 @@ const APP_COMMANDS: &[AppCommand] = &[
         "Modify",
         icons::ARROWS_LEFT_RIGHT,
     ),
+    cmd("points", "Points table", "View", icons::TABLE),
     with_key(cmd("ze", "Zoom extents", "View", icons::FRAME_CORNERS), "Home"),
     cmd("plan", "Plan view (2D lock)", "View", icons::MAP_TRIFOLD),
     cmd("3d", "Free 3D view", "View", icons::CUBE),
@@ -217,6 +219,7 @@ pub struct SurveyApp {
     traverse_window: TraverseWindow,
     codes_window: FeatureCodesWindow,
     reports: ReportsWindow,
+    points_window: PointsWindow,
     about_open: bool,
     confirm_discard: Option<Discard>,
     allowed_to_close: bool,
@@ -336,6 +339,7 @@ impl SurveyApp {
             traverse_window: TraverseWindow::default(),
             codes_window: FeatureCodesWindow::default(),
             reports: ReportsWindow::default(),
+            points_window: PointsWindow::default(),
             about_open: false,
             confirm_discard: None,
             allowed_to_close: false,
@@ -803,6 +807,7 @@ impl SurveyApp {
                 self.process_linework(library, only_selected, false);
             }
             "reports" => self.reports.open = true,
+            "points" | "pts" | "table" => self.points_window.open = true,
             "list" | "li" => self.list_selection(),
             "settings" | "options" => self.settings_window.open = true,
             "drafting" | "dsettings" => self.settings_window.open_at_drafting(),

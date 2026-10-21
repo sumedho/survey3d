@@ -131,6 +131,29 @@ web autosave (OPFS); remembering camera per project.
 Known follow-ups: polyline tool arc segments (tangent/3-point within a polyline), editing vertices,
 DXF TEXT/INSERT, point names in DXF export (as text), native autosave.
 
+## Phase 2 status (2026-10-22): complete
+
+- **Editing:** grips (stretch / insert vertex / reshape arc / delete vertex; heights kept unless the pick
+  snaps to a known height), Move, Copy, Rotate (reference bearing → new bearing, clockwise like
+  bearings), Offset (distance or through point; arcs change radius, corners are trimmed/extended, gaps
+  bevelled), Explode, Join, Reverse, tangent and three-point arcs inside the polyline tool. Moves and
+  copies are plan-only so heights never change by snapping.
+- **COGO:** radiation, bearing–bearing / bearing–distance / distance–distance intersections,
+  chainage & offset along polylines (with arcs; offsets positive right).
+- **Traverse:** `survey_core::traverse` — angles or bearings, angular misclosure against a closing
+  reference distributed equally, linear misclosure, precision, Bowditch / Transit, heights from dZ.
+  Window with live reduction; creates points (code `TRAV`) and an optional polyline in one command.
+- **Field-to-finish:** `survey_core::field_to_finish` — feature library saved in the project
+  (`project_meta.feature_codes`, no migration needed), configurable control codes, string numbers,
+  arcs PC…PT. Generated strings are named `CODE.n` and replaced on re-processing.
+- **Panels:** points table (virtualised, sort, filter, inline edit), Reports window, `list`.
+- Tool trait gained `activate()` (pick up the selection) and `claims_text()` (tool values before point
+  names/commands); tools can be command-only (`palette: false`).
+
+Known follow-ups: traverse observations are not yet stored in the project (only their results);
+scale factors / combined scale factor for traverse distances (Phase 5 projections); mirror/scale/trim/
+extend; drag-to-move grips; coordinate CSV export from the points table.
+
 ## UI design system (egui-cad)
 
 Based on research into professional CAD/3D tools (AutoCAD, Fusion, Blender, Onshape) and dark-UI
@@ -164,8 +187,9 @@ guidance (Material dark theme, WCAG):
   R-tree and undo/redo; **snapping**; tools: Select, Point, Line/Polyline, Inverse; CSV import;
   `.s3d` save/load with audit trail; core unit tests; clippy/fmt/wasm CI config.
 - **Phase 1 — CAD basics (done):** arcs, window/crossing selection, labels, property editing, DXF import/export, OPFS autosave.
-- **Phase 2 — COGO & field-to-finish:** radiation, intersections, offsets, traverse + Bowditch with misclosure
-  report, feature code library and auto-linework.
+- **Phase 2 — COGO & field-to-finish (done):** editing (grips, move/copy/rotate/offset, explode/join),
+  radiation, intersections, chainage/offset, traverse + Bowditch/Transit with misclosure report, feature
+  code library and auto-linework, points table, reports.
 - **Phase 3 — surfaces:** TIN with breaklines, contours, volumes, sections, LandXML surfaces.
 - **Phase 4 — domain modules:** cadastral (parcels, closures, areas, plan annotation, LandXML/ePlan);
   construction (alignments, chainage/offset, setout); mining (pickups, EOM volumes, stockpiles, point cloud LOD).

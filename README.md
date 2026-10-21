@@ -20,9 +20,9 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
 
 | Crate | Purpose |
 |---|---|
-| `survey-core` | Pure maths: angles/bearings, conventions (parse/format), geometry, arcs (bulges), COGO, point input |
+| `survey-core` | Pure maths: angles/bearings, conventions (parse/format), geometry, arcs (bulges), offsets, COGO (intersections, chainage/offset), traverse adjustment, field-to-finish, point input |
 | `survey-model` | `Document`, entities, layers, `Command`/`ChangeSet`, undo `History` with audit records, R-tree index |
-| `survey-io` | Interchange formats: CSV/TXT points (configurable columns), DXF read/write |
+| `survey-io` | Interchange formats: CSV/TXT points (configurable columns), DXF read/write, feature code sheets |
 | `survey-store` | `.s3d` project files (SQLite): incremental saves, migrations, hash-chained append-only audit trail |
 | `cad-render` | wgpu renderer: f64 camera, relative-to-center chunks, reverse-Z, offscreen MSAA, egui paint callback |
 | `egui-cad` | Reusable CAD widgets: theme, viewport, snapping, box selection, label placement, command line, panels |
@@ -40,6 +40,20 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
   (background); the floating pill (top-right) has zoom extents, isometric, plan/3D and perspective.
 * **Selection:** click, Shift+click to add; drag left→right for a window (fully inside), right→left for a
   crossing (touching).
+* **Editing:** selected objects show grips — click one, then pick (or type) the new position. Vertex grips
+  stretch (type `d` to delete the vertex); a segment's middle grip inserts a vertex, or reshapes an arc.
+  Heights are kept unless the pick snaps to a known height. `move`, `copy`, `rotate` (from a reference
+  bearing to a new bearing) and `offset` work on the selection or ask for objects; `explode`, `join` and
+  `reverse` act on selected polylines. In the polyline tool, `a` switches to tangent arcs (`s` for a
+  three-point arc) and `l` back to lines.
+* **COGO:** `rad` (radiation: station, backsight, then `angle, distance[, dZ]`), `bb` / `bd` / `dd`
+  (bearing/distance intersections), `chainage` (report chainage & offset along a polyline, or set out by
+  `chainage[, offset]`), `traverse` (angles or bearings, misclosures, Bowditch/Transit), `list` (legs of
+  selected polylines). Results collect in View → Reports (copy or save as text).
+* **Field-to-finish:** `codes` opens the feature code library (layers, colours, line or point features,
+  control codes such as `ST`, `END`, `CL`, `PC`/`PT`; CSV import/export). Process linework joins coded
+  points (`KB1`, `KB2`, `BLD CL` …) into strings on feature layers; running it again replaces them.
+* **Points table:** `points` (View → Points table) — filter, sort, double-click a cell to edit, click to select.
 * **Point input:** pick with snapping, or type `E,N[,Z]`, `@dE,dN[,dZ]`, `@dist<bearing`, or an existing point name.
   Order, units and angle format follow the project conventions (Project → Conventions).
 * **Snapping & drafting:** Settings (gear) → Drafting holds snap modes, aperture, ortho/polar, grid and working

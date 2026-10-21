@@ -22,6 +22,7 @@ egui-cad.workspace = true
 cad-render.workspace = true
 eframe.workspace = true
 egui.workspace = true
+egui_extras.workspace = true
 glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true

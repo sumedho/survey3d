@@ -28,6 +28,8 @@ enum Action {
     ImportDxf,
     ExportDxf,
     Labels,
+    Points,
+    Reports,
     Palette,
     #[cfg(not(target_arch = "wasm32"))]
     Quit,
@@ -41,6 +43,8 @@ enum Action {
     ToggleGrid,
     Theme(ThemeMode),
     Tool(&'static str),
+    /// An application command by name.
+    Run(&'static str),
     Conventions,
     DraftingSettings,
     Settings,
@@ -199,6 +203,8 @@ impl SurveyApp {
                     &mut action,
                 );
                 item(ui, "Labels…", None, Action::Labels, &mut action);
+                item(ui, "Points table", None, Action::Points, &mut action);
+                item(ui, "Reports", None, Action::Reports, &mut action);
                 ui.separator();
                 item(
                     ui,
@@ -224,6 +230,18 @@ impl SurveyApp {
                         Action::Tool(t.id),
                         &mut action,
                     );
+                }
+                ui.separator();
+                for (label, command) in [
+                    ("Traverse…", "traverse"),
+                    ("Feature codes…", "codes"),
+                    ("Process linework", "linework"),
+                    ("List selection", "list"),
+                    ("Explode", "explode"),
+                    ("Join", "join"),
+                    ("Reverse direction", "reverse"),
+                ] {
+                    item(ui, label, Some(command.into()), Action::Run(command), &mut action);
                 }
             });
             ui.menu_button("Project", |ui| {
@@ -326,6 +344,8 @@ impl SurveyApp {
             Action::ImportDxf => self.platform.pick_file(ctx, FileKind::Dxf),
             Action::ExportDxf => self.export_dxf(),
             Action::Labels => self.settings_window.open_at_display(),
+            Action::Points => self.points_window.open = true,
+            Action::Reports => self.reports.open = true,
             Action::Palette => self.palette.open(),
             #[cfg(not(target_arch = "wasm32"))]
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
@@ -339,6 +359,9 @@ impl SurveyApp {
             Action::ToggleGrid => self.settings.show_grid = !self.settings.show_grid,
             Action::Theme(mode) => self.settings.theme = mode,
             Action::Tool(id) => self.set_tool(id),
+            Action::Run(command) => {
+                self.run_app_command(ctx, command);
+            }
             Action::Conventions => self.settings_window.open_at_conventions(),
             Action::DraftingSettings => self.settings_window.open_at_drafting(),
             Action::Settings => self.settings_window.open = true,
@@ -982,6 +1005,27 @@ impl SurveyApp {
                 self.toasts.success(summary);
             }
             Some(TraverseAction::Report(title, text)) => self.reports.add(title, text),
+            None => {}
+        }
+        match self
+            .points_window
+            .show(ctx, &self.project.doc, &self.project.selection)
+        {
+            Some(PointsAction::Select { id, toggle }) => {
+                if toggle {
+                    self.project.selection.toggle(id);
+                } else {
+                    self.project.selection.set([id]);
+                }
+            }
+            Some(PointsAction::ZoomTo(id)) => {
+                if let Some(e) = self.project.doc.entity(id) {
+                    self.viewport.camera.target = e.bounds().center();
+                    self.project.selection.set([id]);
+                }
+            }
+            Some(PointsAction::Edit(cmd)) => self.execute(cmd),
+            Some(PointsAction::Error(e)) => self.command_line.error(e),
             None => {}
         }
         let has_selection = !self.project.selection.is_empty();

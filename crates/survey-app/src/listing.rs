@@ -18,7 +18,9 @@ pub fn polyline_listing(l: &Polyline, conv: &Conventions) -> String {
         if l.code.is_empty() { "—" } else { &l.code },
         if l.closed { "closed" } else { "open" }
     );
-    let _ = writeln!(s, "  start  {}", conv.format_coord(l.vertices[0], true));
+    // Polylines do not record whether heights are known; show them only when present.
+    let has_heights = l.vertices.iter().any(|v| v.z != 0.0);
+    let _ = writeln!(s, "  start  {}", conv.format_coord(l.vertices[0], has_heights));
     for (i, (a, b, bulge)) in l.segments().enumerate() {
         let chord = inverse(a, b);
         let brg = chord
