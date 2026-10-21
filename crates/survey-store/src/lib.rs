@@ -162,6 +162,9 @@ impl ProjectStore {
         if let Some(conv) = conv {
             meta.conventions = serde_json::from_str(&conv)?;
         }
+        if let Some(codes) = self.meta_value("feature_codes")? {
+            meta.feature_codes = serde_json::from_str(&codes)?;
+        }
         Ok(meta)
     }
 
@@ -424,6 +427,10 @@ fn write_meta(tx: &Transaction<'_>, meta: &ProjectMeta) -> Result<()> {
     )?;
     put.execute(params!["name", meta.name])?;
     put.execute(params!["description", meta.description])?;
+    put.execute(params![
+        "feature_codes",
+        serde_json::to_string(&meta.feature_codes)?
+    ])?;
     tx.execute(
         "INSERT OR REPLACE INTO coord_system (id, definition_json) VALUES (1, ?1)",
         [serde_json::to_string(&meta.coord_system)?],

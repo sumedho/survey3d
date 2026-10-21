@@ -40,9 +40,10 @@ enum Op {
         before: Option<Layer>,
         after: Option<Layer>,
     },
+    // Boxed: project settings are much larger than an entity record.
     Meta {
-        before: Option<ProjectMeta>,
-        after: ProjectMeta,
+        before: Option<Box<ProjectMeta>>,
+        after: Box<ProjectMeta>,
     },
 }
 
@@ -138,7 +139,7 @@ impl ChangeSet {
     pub fn set_meta(mut self, meta: ProjectMeta) -> Self {
         self.ops.push(Op::Meta {
             before: None,
-            after: meta,
+            after: Box::new(meta),
         });
         self
     }
@@ -179,7 +180,7 @@ impl Command for ChangeSet {
                     *before = doc.set_layer(id, after.clone());
                 }
                 Op::Meta { before, after } => {
-                    *before = Some(doc.set_meta(after.clone()));
+                    *before = Some(Box::new(doc.set_meta((**after).clone())));
                 }
             }
         }
@@ -201,7 +202,7 @@ impl Command for ChangeSet {
                 Op::Meta {
                     before: Some(before), ..
                 } => {
-                    doc.set_meta(before.clone());
+                    doc.set_meta((**before).clone());
                 }
                 _ => {}
             }

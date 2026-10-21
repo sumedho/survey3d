@@ -1,8 +1,8 @@
-//! Imports as a single undoable, audited command — including creating any new
-//! layers the imported entities need.
+//! Imports (and other bulk edits such as field-to-finish) as a single undoable,
+//! audited command — including creating any new layers the entities need.
 
 use serde_json::Value;
-use survey_model::{ChangeSet, Color, Command, Document, Entity, Layer, LayerId};
+use survey_model::{ChangeSet, Color, Command, Document, Entity, EntityId, Layer, LayerId};
 
 /// Which layer an imported entity goes on.
 #[derive(Clone, Copy, Debug)]
@@ -12,10 +12,16 @@ pub enum LayerRef {
     New(usize),
 }
 
+enum Item {
+    Insert(LayerRef, Entity),
+    Update(EntityId, LayerRef, Entity),
+    Delete(EntityId),
+}
+
 pub struct ImportEntities {
     label: String,
     new_layers: Vec<(String, Color, bool)>,
-    items: Vec<(LayerRef, Entity)>,
+    items: Vec<Item>,
     /// Built on first apply (when ids are allocated) and replayed on redo.
     inner: Option<ChangeSet>,
 }
@@ -37,11 +43,28 @@ impl ImportEntities {
     }
 
     pub fn add(&mut self, layer: LayerRef, entity: Entity) {
-        self.items.push((layer, entity));
+        self.items.push(Item::Insert(layer, entity));
     }
 
+    /// Replaces an existing entity (placing it on `layer`).
+    pub fn update(&mut self, id: EntityId, layer: LayerRef, entity: Entity) {
+        self.items.push(Item::Update(id, layer, entity));
+    }
+
+    pub fn delete(&mut self, id: EntityId) {
+        self.items.push(Item::Delete(id));
+    }
+
+    /// Number of entities added.
     pub fn len(&self) -> usize {
-        self.items.len()
+        self.items
+            .iter()
+            .filter(|i| matches!(i, Item::Insert(..)))
+            .count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
     }
 }
 
@@ -61,12 +84,22 @@ impl Command for ImportEntities {
                 cs = cs.update_layer(layer);
                 ids.push(id);
             }
-            for (layer, mut entity) in std::mem::take(&mut self.items) {
-                entity.set_layer(match layer {
-                    LayerRef::Existing(id) => id,
-                    LayerRef::New(i) => ids[i],
-                });
-                cs.push_insert_entity(entity);
+            let resolve = |layer: LayerRef| match layer {
+                LayerRef::Existing(id) => id,
+                LayerRef::New(i) => ids[i],
+            };
+            for item in std::mem::take(&mut self.items) {
+                match item {
+                    Item::Insert(layer, mut entity) => {
+                        entity.set_layer(resolve(layer));
+                        cs.push_insert_entity(entity);
+                    }
+                    Item::Update(id, layer, mut entity) => {
+                        entity.set_layer(resolve(layer));
+                        cs.push_update_entity(id, entity);
+                    }
+                    Item::Delete(id) => cs.push_delete_entity(id),
+                }
             }
             cs
         });

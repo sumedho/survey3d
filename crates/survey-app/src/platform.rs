@@ -12,6 +12,8 @@ pub enum FileKind {
     Dxf,
     /// Plain-text reports.
     Report,
+    /// Feature code library sheets.
+    Codes,
 }
 
 impl FileKind {
@@ -21,6 +23,7 @@ impl FileKind {
             FileKind::Points => ("Point files", &["csv", "txt", "pnt", "xyz"]),
             FileKind::Dxf => ("DXF drawing", &["dxf"]),
             FileKind::Report => ("Text report", &["txt"]),
+            FileKind::Codes => ("Feature code sheet", &["csv"]),
         }
     }
 }

@@ -32,6 +32,7 @@ use crate::tools::{
 };
 use crate::ui::audit_window::AuditWindow;
 use crate::ui::csv_import::{CsvDialogResult, CsvImportDialog};
+use crate::ui::feature_codes::{CodesAction, FeatureCodesWindow};
 use crate::ui::properties::properties_panel;
 use crate::ui::reports::{ReportAction, ReportsWindow};
 use crate::ui::settings_window::SettingsWindow;
@@ -154,6 +155,18 @@ const APP_COMMANDS: &[AppCommand] = &[
     cmd("dxfout", "Export DXF", "File", icons::EXPORT),
     cmd("traverse", "Traverse (reduce & adjust)", "COGO", icons::STEPS),
     cmd(
+        "codes",
+        "Feature codes (field-to-finish)",
+        "COGO",
+        icons::BOOK_OPEN,
+    ),
+    cmd(
+        "linework",
+        "Process field-to-finish linework",
+        "COGO",
+        icons::MAGIC_WAND,
+    ),
+    cmd(
         "list",
         "List selection (bearings, distances, coordinates)",
         "COGO",
@@ -202,6 +215,7 @@ pub struct SurveyApp {
     settings_window: SettingsWindow,
     audit_window: AuditWindow,
     traverse_window: TraverseWindow,
+    codes_window: FeatureCodesWindow,
     reports: ReportsWindow,
     about_open: bool,
     confirm_discard: Option<Discard>,
@@ -320,6 +334,7 @@ impl SurveyApp {
             settings_window: SettingsWindow::default(),
             audit_window: AuditWindow::default(),
             traverse_window: TraverseWindow::default(),
+            codes_window: FeatureCodesWindow::default(),
             reports: ReportsWindow::default(),
             about_open: false,
             confirm_discard: None,
@@ -486,6 +501,66 @@ impl SurveyApp {
         let n = self.project.selection.len();
         self.reports
             .add(format!("Listing ({})", crate::tools::objects(n)), text);
+    }
+
+    /// Stores `library` in the project if it differs (one undoable change).
+    fn apply_feature_codes(&mut self, library: survey_core::field_to_finish::FeatureLibrary) {
+        if self.project.doc.meta().feature_codes == library {
+            return;
+        }
+        let mut meta = self.project.doc.meta().clone();
+        meta.feature_codes = library;
+        self.execute(Box::new(ChangeSet::new("Edit feature codes").set_meta(meta)));
+    }
+
+    fn process_linework(
+        &mut self,
+        library: survey_core::field_to_finish::FeatureLibrary,
+        only_selected: bool,
+        assign_layers: bool,
+    ) {
+        if library.codes.is_empty() {
+            self.command_line
+                .warn("The feature code library is empty — open it with 'codes'");
+            self.codes_window.open();
+            return;
+        }
+        self.apply_feature_codes(library);
+        let selection = self.project.selection.ids().clone();
+        let options = crate::field_to_finish::LineworkOptions {
+            only: only_selected.then_some(&selection),
+            assign_layers,
+        };
+        let (cmd, summary) = crate::field_to_finish::build_linework(
+            &self.project.doc,
+            &self.project.doc.meta().feature_codes,
+            &options,
+        );
+        if !cmd.is_empty() {
+            self.execute(Box::new(cmd));
+        }
+        let text = summary.describe();
+        self.command_line.result(text.clone());
+        if summary.unknown.is_empty() {
+            self.toasts.success(format!("{} strings", summary.lines));
+        } else {
+            self.toasts
+                .warning("Some codes are not in the library — see the command line");
+        }
+    }
+
+    fn import_code_sheet(&mut self, name: &str, bytes: &[u8]) {
+        match survey_io::code_sheet::read_code_sheet(bytes) {
+            Ok((codes, warnings)) => {
+                let n = self.codes_window.merge(&self.project.doc, codes);
+                self.command_line
+                    .info(format!("Read {n} feature codes from {name} — Apply to keep them"));
+                for w in warnings {
+                    self.command_line.warn(w);
+                }
+            }
+            Err(e) => self.command_line.error(format!("Could not read {name}: {e}")),
+        }
     }
 
     fn set_tool(&mut self, id: &str) {
@@ -721,6 +796,12 @@ impl SurveyApp {
             "new" => self.request_discard(ctx, Discard::New),
             "audit" => self.audit_window.open = true,
             "traverse" | "trav" => self.traverse_window.open = true,
+            "codes" | "featurecodes" => self.codes_window.open(),
+            "linework" | "f2f" => {
+                let library = self.project.doc.meta().feature_codes.clone();
+                let only_selected = !self.project.selection.is_empty();
+                self.process_linework(library, only_selected, false);
+            }
             "reports" => self.reports.open = true,
             "list" | "li" => self.list_selection(),
             "settings" | "options" => self.settings_window.open = true,
@@ -970,6 +1051,7 @@ impl SurveyApp {
                         ));
                     }
                     FileKind::Dxf => self.import_dxf(&name, &bytes),
+                    FileKind::Codes => self.import_code_sheet(&name, &bytes),
                     // Reports are only saved, never opened.
                     FileKind::Report => {}
                 },

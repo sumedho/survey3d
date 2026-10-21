@@ -19,6 +19,7 @@ fn sample() -> (Document, History) {
     let mut meta = doc.meta().clone();
     meta.name = "Test job".into();
     meta.conventions = Conventions::north_american();
+    meta.feature_codes = survey_core::field_to_finish::FeatureLibrary::example();
     meta.coord_system = CoordinateSystem::Projected {
         name: "MGA2020 zone 56".into(),
         epsg: Some(7856),

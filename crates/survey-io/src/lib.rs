@@ -4,6 +4,7 @@
 //! linework, surfaces and raw observations). Importers return plain records in
 //! canonical units; the application turns them into document edits.
 
+pub mod code_sheet;
 pub mod csv_points;
 pub mod dxf;
 

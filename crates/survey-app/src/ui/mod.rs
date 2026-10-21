@@ -2,6 +2,7 @@
 
 pub mod audit_window;
 pub mod csv_import;
+pub mod feature_codes;
 pub mod properties;
 pub mod reports;
 pub mod settings_window;

@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use survey_core::field_to_finish::FeatureLibrary;
 use survey_core::{Aabb3, Conventions};
 
 use crate::coord_system::CoordinateSystem;
@@ -18,6 +19,9 @@ pub struct ProjectMeta {
     pub description: String,
     pub coord_system: CoordinateSystem,
     pub conventions: Conventions,
+    /// Feature codes for field-to-finish.
+    #[serde(default)]
+    pub feature_codes: FeatureLibrary,
 }
 
 impl Default for ProjectMeta {
@@ -27,6 +31,7 @@ impl Default for ProjectMeta {
             description: String::new(),
             coord_system: CoordinateSystem::Unspecified,
             conventions: Conventions::default(),
+            feature_codes: FeatureLibrary::default(),
         }
     }
 }

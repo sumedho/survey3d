@@ -984,6 +984,24 @@ impl SurveyApp {
             Some(TraverseAction::Report(title, text)) => self.reports.add(title, text),
             None => {}
         }
+        let has_selection = !self.project.selection.is_empty();
+        match self.codes_window.show(ctx, &self.project.doc, has_selection) {
+            Some(CodesAction::Apply(library)) => self.apply_feature_codes(library),
+            Some(CodesAction::Process {
+                library,
+                only_selected,
+                assign_layers,
+            }) => self.process_linework(library, only_selected, assign_layers),
+            Some(CodesAction::Import) => self.platform.pick_file(ctx, FileKind::Codes),
+            Some(CodesAction::Export(text)) => {
+                match export(&self.platform, FileKind::Codes, "feature-codes", text.as_bytes()) {
+                    Ok(Some(where_)) => self.command_line.info(format!("Saved code sheet: {where_}")),
+                    Ok(None) => {}
+                    Err(e) => self.command_line.error(format!("Could not save code sheet: {e}")),
+                }
+            }
+            None => {}
+        }
         if let Some(ReportAction::Export(title, text)) = self.reports.show(ctx) {
             match export(
                 &self.platform,
