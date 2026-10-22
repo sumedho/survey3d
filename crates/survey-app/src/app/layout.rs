@@ -156,6 +156,14 @@ const CONSTRUCTION_MENU: &[MenuEntry] = &[
     Item("Sections…", "sections"),
 ];
 
+const MINING_MENU: &[MenuEntry] = &[
+    Item("Stockpile volume…", "stockpile"),
+    Item("Period volumes…", "volume"),
+    Separator,
+    Item("Create surface…", "surface"),
+    Item("Sections…", "sections"),
+];
+
 /// A menu after View.
 struct Menu {
     title: &'static str,
@@ -188,6 +196,7 @@ const MENUS: &[Menu] = &[
     menu("Surface", SURFACE_MENU, &[], None),
     menu("Cadastral", CADASTRAL_MENU, &[], Some(Module::Cadastral)),
     menu("Construction", CONSTRUCTION_MENU, &[], Some(Module::Construction)),
+    menu("Mining", MINING_MENU, &[], Some(Module::Mining)),
 ];
 
 /// Whether any menu table lists `command`.
@@ -1716,15 +1725,16 @@ impl SurveyApp {
             Some(SubdivideAction::Report(title, text)) => self.reports.add(title, text),
             None => {}
         }
-        let closed: Vec<EntityId> = if self.surface_window.open || self.volumes_window.open {
-            self.selected_polylines()
-                .into_iter()
-                .filter(|(_, l)| l.closed)
-                .map(|(id, _)| id)
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let closed: Vec<EntityId> =
+            if self.surface_window.open || self.volumes_window.open || self.stockpile_window.open {
+                self.selected_polylines()
+                    .into_iter()
+                    .filter(|(_, l)| l.closed)
+                    .map(|(id, _)| id)
+                    .collect()
+            } else {
+                Vec::new()
+            };
         if let Some(a) = self.surface_window.show(ctx, &self.project.doc, &closed) {
             self.apply_surface_window(a);
         }
@@ -1798,6 +1808,9 @@ impl SurveyApp {
         if let Some(SectionsAction::Report(title, text)) =
             self.sections_window.show(ctx, &self.project.doc, selected_line)
         {
+            self.reports.add(title, text);
+        }
+        if let Some((title, text)) = self.stockpile_window.show(ctx, &self.project.doc, &closed) {
             self.reports.add(title, text);
         }
         match self.volumes_window.show(ctx, &self.project.doc, &closed) {

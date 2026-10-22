@@ -49,6 +49,7 @@ use crate::ui::resection_window::{ResectionAction, ResectionWindow};
 use crate::ui::sections::SectionsWindow;
 use crate::ui::settings_window::SettingsWindow;
 use crate::ui::stakeout::StakeoutWindow;
+use crate::ui::stockpile::StockpileWindow;
 use crate::ui::subdivide_window::{SubdivideAction, SubdivideWindow};
 use crate::ui::surfaces::{SurfaceAction, SurfaceWindow, SurfaceWindowAction, build_from};
 use crate::ui::traverse_window::{TraverseAction, TraverseWindow};
@@ -238,6 +239,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::TARGET,
     ),
     cmd(
+        "stockpile",
+        "Stockpile volume (toe, base, tonnes)",
+        "Mining",
+        icons::TRIANGLE,
+    ),
+    cmd(
         "mkparcel",
         "Parcels from selected closed polylines",
         "Cadastral",
@@ -331,6 +338,7 @@ pub struct SurveyApp {
     parcels_window: ParcelsWindow,
     alignments_window: AlignmentsWindow,
     stakeout_window: StakeoutWindow,
+    stockpile_window: StockpileWindow,
     active_surface: Option<SurfaceId>,
     snap_engine: SnapEngine,
     snap_override: Option<SnapMode>,
@@ -473,6 +481,7 @@ impl SurveyApp {
             parcels_window: ParcelsWindow::default(),
             alignments_window: AlignmentsWindow::default(),
             stakeout_window: StakeoutWindow::default(),
+            stockpile_window: StockpileWindow::default(),
             active_surface: None,
             snap_engine: SnapEngine::default(),
             snap_override: None,
@@ -1423,6 +1432,15 @@ impl SurveyApp {
             "alignments" | "align" => self.alignments_window.open = true,
             "mkalign" => self.alignment_from_selection(),
             "stakeout" | "setoutsheet" => self.stakeout_window.open = true,
+            "stockpile" => {
+                let toe = self
+                    .selected_polylines()
+                    .into_iter()
+                    .find(|(_, l)| l.closed)
+                    .map(|(id, _)| id);
+                self.stockpile_window
+                    .open_with(&self.project.doc, self.active_surface, toe);
+            }
             "mkparcel" | "parcel" => self.parcels_from_selection(),
             "parcelxml" => self.export_parcels_landxml(),
             "landxmlin" | "importxml" => self.platform.pick_file(ctx, FileKind::LandXml),

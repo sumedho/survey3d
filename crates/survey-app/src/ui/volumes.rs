@@ -40,6 +40,8 @@ pub struct VolumesWindow {
     base: Side,
     top: Side,
     boundary: Option<EntityId>,
+    /// Optional density (t/m³) for tonnes.
+    density: String,
     result: Option<Result<(VolumeResult, Tin, String), String>>,
 }
 
@@ -207,6 +209,16 @@ impl VolumesWindow {
                         });
                         ui.end_row();
                     });
+                ui.horizontal(|ui| {
+                    ui.label("Density");
+                    ui.add_sized(
+                        [70.0, 22.0],
+                        egui::TextEdit::singleline(&mut self.density)
+                            .hint_text("t/m³")
+                            .font(fonts::mono(12.0)),
+                    );
+                    ui.label(RichText::new("optional, for tonnes").small());
+                });
                 ui.label(
                     RichText::new("Fill is where the top is above the base; cut where it is below.")
                         .small()
@@ -251,6 +263,23 @@ impl VolumesWindow {
                                     );
                                     ui.end_row();
                                 }
+                                if let Some(d) = self.density.trim().parse::<f64>().ok().filter(|d| *d > 0.0)
+                                {
+                                    ui.label(
+                                        RichText::new("Tonnes (fill / cut / net)")
+                                            .color(theme.text_secondary),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{:.1} / {:.1} / {:.1} t",
+                                            r.fill * d,
+                                            r.cut * d,
+                                            r.net() * d
+                                        ))
+                                        .font(fonts::mono(12.0)),
+                                    );
+                                    ui.end_row();
+                                }
                                 ui.label(RichText::new("Area compared").color(theme.text_secondary));
                                 ui.label(RichText::new(conv.format_area(r.area)).font(fonts::mono(12.0)));
                                 ui.end_row();
@@ -258,7 +287,17 @@ impl VolumesWindow {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             if ui.button("Add to reports").clicked() {
-                                action = Some(VolumesAction::Report("Volume".into(), report.clone()));
+                                let mut text = report.clone();
+                                if let Some(d) = self.density.trim().parse::<f64>().ok().filter(|d| *d > 0.0)
+                                {
+                                    text.push_str(&format!(
+                                        "Density {d} t/m³: fill {:.1} t, cut {:.1} t, net {:.1} t\n",
+                                        r.fill * d,
+                                        r.cut * d,
+                                        r.net() * d
+                                    ));
+                                }
+                                action = Some(VolumesAction::Report("Volume".into(), text));
                             }
                             if ui
                                 .button("Create cut/fill surface")

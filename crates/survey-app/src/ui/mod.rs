@@ -15,6 +15,7 @@ pub mod resection_window;
 pub mod sections;
 pub mod settings_window;
 pub mod stakeout;
+pub mod stockpile;
 pub mod subdivide_window;
 pub mod surfaces;
 pub mod traverse_window;

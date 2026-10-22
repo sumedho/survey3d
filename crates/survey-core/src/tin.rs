@@ -381,6 +381,44 @@ impl TinIndex {
     }
 }
 
+/// Points along a plan polyline on the surface: every vertex and every
+/// triangle-edge crossing that lies on it (off-surface parts are skipped).
+pub fn drape(tin: &Tin, index: &TinIndex, line: &[DVec2]) -> Vec<DVec3> {
+    let mut out: Vec<DVec3> = Vec::new();
+    for w in line.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let len = a.distance(b);
+        if len <= 0.0 {
+            continue;
+        }
+        let mut ts = vec![0.0, 1.0];
+        for i in index.candidates_in(a.min(b), a.max(b)) {
+            let t = tin.triangles[i as usize];
+            for k in 0..3 {
+                let p = tin.vertices[t[k] as usize].truncate();
+                let q = tin.vertices[t[(k + 1) % 3] as usize].truncate();
+                if let Some((s, u)) = crate::geom::line_intersection_2d(a, b, p, q)
+                    && (0.0..=1.0).contains(&s)
+                    && (0.0..=1.0).contains(&u)
+                {
+                    ts.push(s);
+                }
+            }
+        }
+        ts.sort_by(f64::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y).abs() * len < 1e-6);
+        for t in ts {
+            let p = a + (b - a) * t;
+            if let Some(z) = index.height_at(tin, p)
+                && out.last().is_none_or(|q| q.truncate().distance(p) > 1e-6)
+            {
+                out.push(p.extend(z));
+            }
+        }
+    }
+    out
+}
+
 /// A profile along a plan polyline: runs of `(distance along, height)`
 /// separated where the line leaves the surface. Breaks are exact (every
 /// triangle edge crossing is included).

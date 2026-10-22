@@ -238,6 +238,68 @@ fn weld(t: Tin) -> Tin {
     out
 }
 
+/// How the base under a stockpile is defined.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StockpileBase {
+    /// Triangulated from the surface heights along the toe.
+    Toe,
+    /// The lowest surface height along the toe.
+    LowestToe,
+    /// A fixed level.
+    Level(f64),
+}
+
+/// A stockpile: the volume of `surface` above its base inside the `toe`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stockpile {
+    pub result: VolumeResult,
+    /// The base height range along the toe.
+    pub base_min: f64,
+    pub base_max: f64,
+}
+
+/// Measures a stockpile (or, with negative fill, a void) inside a toe polygon.
+pub fn stockpile(surface: &Tin, toe: &[DVec2], base: StockpileBase) -> Result<Stockpile, VolumeError> {
+    let index = surface.index();
+    // The toe draped on the surface, with a point wherever it crosses a triangle edge.
+    let mut ring = toe.to_vec();
+    if let Some(first) = toe.first() {
+        ring.push(*first);
+    }
+    let mut toe_points = crate::tin::drape(surface, &index, &ring);
+    if toe_points.len() > 1
+        && toe_points[0]
+            .truncate()
+            .distance(toe_points[toe_points.len() - 1].truncate())
+            < 1e-6
+    {
+        toe_points.pop();
+    }
+    if toe_points.len() < 3 {
+        return Err(VolumeError::NoOverlap);
+    }
+    let base_min = toe_points.iter().map(|p| p.z).fold(f64::MAX, f64::min);
+    let base_max = toe_points.iter().map(|p| p.z).fold(f64::MIN, f64::max);
+    let result = match base {
+        StockpileBase::Toe => {
+            let base_tin = crate::tin::build(&crate::tin::TinInput {
+                points: toe_points,
+                boundary: Some(toe.to_vec()),
+                ..Default::default()
+            })
+            .map_err(|_| VolumeError::NoOverlap)?;
+            volume(Datum::Surface(&base_tin), Datum::Surface(surface), Some(toe))?.0
+        }
+        StockpileBase::LowestToe => volume(Datum::Level(base_min), Datum::Surface(surface), Some(toe))?.0,
+        StockpileBase::Level(z) => volume(Datum::Level(z), Datum::Surface(surface), Some(toe))?.0,
+    };
+    Ok(Stockpile {
+        result,
+        base_min,
+        base_max,
+    })
+}
+
 /// Volume of a stockpile or depression against a level, as a convenience.
 pub fn against_level(
     surface: &Tin,
@@ -329,5 +391,43 @@ mod tests {
             volume(Datum::Level(1.0), Datum::Level(2.0), None).map(|x| x.0),
             Err(VolumeError::NoSurface)
         );
+    }
+
+    #[test]
+    fn stockpile_cone() {
+        // A cone 10 m high, radius 30, on flat ground at 100: volume π r² h / 3 ≈ 9425 m³
+        // (less a little for the faceted TIN). The toe is a 40 m square around it.
+        let mut points = vec![O + DVec3::new(0.0, 0.0, 110.0)];
+        for i in 0..72 {
+            let a = i as f64 * std::f64::consts::TAU / 72.0;
+            points.push(O + DVec3::new(30.0 * a.cos(), 30.0 * a.sin(), 100.0));
+        }
+        for (x, y) in [(-40.0, -40.0), (40.0, -40.0), (40.0, 40.0), (-40.0, 40.0)] {
+            points.push(O + DVec3::new(x, y, 100.0));
+        }
+        let tin = build(&TinInput {
+            points,
+            ..Default::default()
+        })
+        .expect("tin");
+        let toe: Vec<DVec2> = [(-35.0, -35.0), (35.0, -35.0), (35.0, 35.0), (-35.0, 35.0)]
+            .iter()
+            .map(|(x, y)| O.truncate() + DVec2::new(*x, *y))
+            .collect();
+        let cone = std::f64::consts::PI * 900.0 * 10.0 / 3.0;
+        for base in [
+            StockpileBase::Toe,
+            StockpileBase::LowestToe,
+            StockpileBase::Level(100.0),
+        ] {
+            let s = stockpile(&tin, &toe, base).expect("stockpile");
+            assert!(
+                (s.result.fill - cone).abs() / cone < 0.01,
+                "{base:?}: {}",
+                s.result.fill
+            );
+            assert!(s.result.cut < 1e-6);
+            assert!((s.base_min - 100.0).abs() < 1e-9 && (s.base_max - 100.0).abs() < 1e-9);
+        }
     }
 }
