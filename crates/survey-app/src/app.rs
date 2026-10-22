@@ -25,7 +25,7 @@ use survey_store::ProjectStore;
 
 use crate::cloud_view::CloudSceneCache;
 use crate::import_command::{ImportEntities, LayerRef};
-use crate::interchange::{dxf_export, dxf_import};
+use crate::interchange::{DxfExportOptions, dxf_export, dxf_import};
 use crate::platform::{FileEvent, FileKind, Platform, export};
 use crate::project::{APP_VERSION, Project};
 use crate::scene_build::{DocSnapProvider, SceneCache, color32, hit_test};
@@ -1902,11 +1902,20 @@ impl SurveyApp {
     }
 
     fn export_dxf(&mut self) {
-        let text = survey_io::dxf::write_dxf(&dxf_export(&self.project.doc));
+        // Symbols and text are sized for the current plan sheet's scale.
+        let sheets = &self.project.doc.meta().sheets;
+        let opts = sheets
+            .get(self.sheets_window.current)
+            .or_else(|| sheets.first())
+            .map_or_else(DxfExportOptions::default, DxfExportOptions::from_sheet);
+        let text = survey_io::dxf::write_dxf(&dxf_export(&self.project.doc, &opts));
         let stem = file_stem(&self.project.doc.meta().name);
         match export(&self.platform, FileKind::Dxf, &stem, text.as_bytes()) {
             Ok(Some(where_)) => {
-                self.command_line.info(format!("Exported DXF: {where_}"));
+                self.command_line.info(format!(
+                    "Exported DXF: {where_} (symbols and names sized for 1:{})",
+                    opts.scale
+                ));
                 self.toasts.success("Exported DXF");
             }
             Ok(None) => {}

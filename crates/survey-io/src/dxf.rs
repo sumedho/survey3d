@@ -7,7 +7,9 @@
 //!
 //! Writes R12 (`AC1009`) DXF, which virtually every CAD and GIS package reads:
 //! points as `POINT`, straight polylines as 3D `POLYLINE`s (preserving heights),
-//! and polylines with arcs as 2D `POLYLINE`s with bulges.
+//! and polylines with arcs as 2D `POLYLINE`s with bulges. Point symbols can be
+//! written as blocks (`BLOCK` + `INSERT`), line types as `LTYPE`s, and point
+//! names as `TEXT`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -26,6 +28,22 @@ pub struct DxfLayer {
 #[derive(Clone, Debug, PartialEq)]
 pub enum DxfGeometry {
     Point(DVec3),
+    /// A reference to one of the drawing's blocks.
+    Insert {
+        block: String,
+        at: DVec3,
+        scale: f64,
+        /// Degrees anticlockwise.
+        rotation: f64,
+    },
+    /// Single-line text; `at` is the left end of the baseline.
+    Text {
+        at: DVec3,
+        height: f64,
+        text: String,
+        /// Degrees anticlockwise.
+        rotation: f64,
+    },
     Polyline {
         vertices: Vec<DVec3>,
         /// Bulge of the segment starting at each vertex (empty = all straight).
@@ -34,10 +52,60 @@ pub enum DxfGeometry {
     },
 }
 
+/// How an entity is drawn where it differs from its layer.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DxfStyle {
+    /// One of the drawing's line types; `None` is by layer.
+    pub linetype: Option<String>,
+    /// `None` is by layer.
+    pub color: Option<[u8; 3]>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DxfEntity {
     pub layer: String,
     pub geometry: DxfGeometry,
+    pub style: DxfStyle,
+}
+
+impl DxfEntity {
+    pub fn new(layer: impl Into<String>, geometry: DxfGeometry) -> Self {
+        Self {
+            layer: layer.into(),
+            geometry,
+            style: DxfStyle::default(),
+        }
+    }
+}
+
+/// A shape inside a block definition, in block units. Blocks are drawn in the
+/// colour of the `INSERT` that places them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlockShape {
+    Line([f64; 2], [f64; 2]),
+    Circle {
+        center: [f64; 2],
+        radius: f64,
+        filled: bool,
+    },
+    /// A closed outline.
+    Polygon(Vec<[f64; 2]>),
+    /// A filled triangle or quadrilateral (corners in order around it).
+    Solid(Vec<[f64; 2]>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DxfBlock {
+    pub name: String,
+    pub shapes: Vec<BlockShape>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DxfLinetype {
+    pub name: String,
+    pub description: String,
+    /// Dash lengths (positive), gaps (negative) and dots (zero) in drawing units.
+    pub pattern: Vec<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -46,6 +114,10 @@ pub struct DxfDrawing {
     pub entities: Vec<DxfEntity>,
     /// Non-fatal problems (skipped entity types, unsupported orientations).
     pub warnings: Vec<String>,
+    /// Block definitions (written only).
+    pub blocks: Vec<DxfBlock>,
+    /// Line types beyond `CONTINUOUS` (written only).
+    pub linetypes: Vec<DxfLinetype>,
 }
 
 // ====================================================================== reading
@@ -188,10 +260,7 @@ pub fn read_dxf(bytes: &[u8]) -> Result<DxfDrawing, IoError> {
                     _ => None,
                 };
                 match parsed {
-                    Some(Some(geometry)) => drawing.entities.push(DxfEntity {
-                        layer: r.layer(),
-                        geometry,
-                    }),
+                    Some(Some(geometry)) => drawing.entities.push(DxfEntity::new(r.layer(), geometry)),
                     Some(None) => {
                         *skipped
                             .entry(format!("{kind} (unsupported orientation)"))
@@ -363,10 +432,35 @@ pub fn write_dxf(drawing: &DxfDrawing) -> String {
     pair(2, &"HEADER");
     pair(9, &"$ACADVER");
     pair(1, &"AC1009");
+    pair(9, &"$LTSCALE");
+    pair(40, &1.0);
     pair(0, &"ENDSEC");
 
     pair(0, &"SECTION");
     pair(2, &"TABLES");
+    pair(0, &"TABLE");
+    pair(2, &"LTYPE");
+    pair(70, &(drawing.linetypes.len() + 1));
+    pair(0, &"LTYPE");
+    pair(2, &"CONTINUOUS");
+    pair(70, &0);
+    pair(3, &"Solid line");
+    pair(72, &65);
+    pair(73, &0);
+    pair(40, &0.0);
+    for lt in &drawing.linetypes {
+        pair(0, &"LTYPE");
+        pair(2, &lt.name);
+        pair(70, &0);
+        pair(3, &lt.description);
+        pair(72, &65);
+        pair(73, &lt.pattern.len());
+        pair(40, &lt.pattern.iter().map(|v| v.abs()).sum::<f64>());
+        for v in &lt.pattern {
+            pair(49, v);
+        }
+    }
+    pair(0, &"ENDTAB");
     pair(0, &"TABLE");
     pair(2, &"LAYER");
     pair(70, &drawing.layers.len());
@@ -379,18 +473,188 @@ pub fn write_dxf(drawing: &DxfDrawing) -> String {
         pair(6, &"CONTINUOUS");
     }
     pair(0, &"ENDTAB");
+    pair(0, &"TABLE");
+    pair(2, &"STYLE");
+    pair(70, &1);
+    pair(0, &"STYLE");
+    pair(2, &"STANDARD");
+    pair(70, &0);
+    pair(40, &0.0);
+    pair(41, &1.0);
+    pair(50, &0.0);
+    pair(71, &0);
+    pair(42, &2.5);
+    pair(3, &"txt");
+    pair(4, &"");
+    pair(0, &"ENDTAB");
     pair(0, &"ENDSEC");
+
+    if !drawing.blocks.is_empty() {
+        pair(0, &"SECTION");
+        pair(2, &"BLOCKS");
+        for b in &drawing.blocks {
+            pair(0, &"BLOCK");
+            pair(8, &"0");
+            pair(2, &b.name);
+            pair(70, &0);
+            pair(10, &0.0);
+            pair(20, &0.0);
+            pair(30, &0.0);
+            pair(3, &b.name);
+            for shape in &b.shapes {
+                // Layer 0 and colour BYBLOCK: the INSERT decides both.
+                let mut head = |kind: &str| {
+                    pair(0, &kind);
+                    pair(8, &"0");
+                    pair(62, &0);
+                };
+                match shape {
+                    BlockShape::Line(a, b) => {
+                        head("LINE");
+                        for (code, v) in [
+                            (10, a[0]),
+                            (20, a[1]),
+                            (30, 0.0),
+                            (11, b[0]),
+                            (21, b[1]),
+                            (31, 0.0),
+                        ] {
+                            pair(code, &v);
+                        }
+                    }
+                    BlockShape::Circle {
+                        center,
+                        radius,
+                        filled: false,
+                    } => {
+                        head("CIRCLE");
+                        pair(10, &center[0]);
+                        pair(20, &center[1]);
+                        pair(30, &0.0);
+                        pair(40, radius);
+                    }
+                    BlockShape::Circle {
+                        center,
+                        radius,
+                        filled: true,
+                    } => {
+                        // A donut: a closed two-arc polyline as wide as the radius.
+                        head("POLYLINE");
+                        pair(66, &1);
+                        pair(10, &0.0);
+                        pair(20, &0.0);
+                        pair(30, &0.0);
+                        pair(70, &1);
+                        pair(40, radius);
+                        pair(41, radius);
+                        for dx in [-radius / 2.0, radius / 2.0] {
+                            pair(0, &"VERTEX");
+                            pair(8, &"0");
+                            pair(10, &(center[0] + dx));
+                            pair(20, &center[1]);
+                            pair(30, &0.0);
+                            pair(42, &1.0);
+                        }
+                        pair(0, &"SEQEND");
+                        pair(8, &"0");
+                    }
+                    BlockShape::Polygon(points) => {
+                        head("POLYLINE");
+                        pair(66, &1);
+                        pair(10, &0.0);
+                        pair(20, &0.0);
+                        pair(30, &0.0);
+                        pair(70, &1);
+                        for p in points {
+                            pair(0, &"VERTEX");
+                            pair(8, &"0");
+                            pair(10, &p[0]);
+                            pair(20, &p[1]);
+                            pair(30, &0.0);
+                        }
+                        pair(0, &"SEQEND");
+                        pair(8, &"0");
+                    }
+                    BlockShape::Solid(points) => {
+                        if points.len() < 3 {
+                            continue;
+                        }
+                        // SOLID corners run 1, 2, 4, 3 (a zigzag); a triangle repeats its last.
+                        let order = if points.len() >= 4 {
+                            [points[0], points[1], points[3], points[2]]
+                        } else {
+                            [points[0], points[1], points[2], points[2]]
+                        };
+                        head("SOLID");
+                        for (k, p) in order.iter().enumerate() {
+                            let k = k as i32;
+                            pair(10 + k, &p[0]);
+                            pair(20 + k, &p[1]);
+                            pair(30 + k, &0.0);
+                        }
+                    }
+                }
+            }
+            pair(0, &"ENDBLK");
+            pair(8, &"0");
+        }
+        pair(0, &"ENDSEC");
+    }
 
     pair(0, &"SECTION");
     pair(2, &"ENTITIES");
     for e in &drawing.entities {
+        let style = |pair: &mut dyn FnMut(i32, &dyn std::fmt::Display)| {
+            if let Some(lt) = &e.style.linetype {
+                pair(6, lt);
+            }
+            if let Some(c) = e.style.color {
+                pair(62, &rgb_to_aci(c));
+            }
+        };
         match &e.geometry {
             DxfGeometry::Point(p) => {
                 pair(0, &"POINT");
                 pair(8, &e.layer);
+                style(&mut pair);
                 pair(10, &p.x);
                 pair(20, &p.y);
                 pair(30, &p.z);
+            }
+            DxfGeometry::Insert {
+                block,
+                at,
+                scale,
+                rotation,
+            } => {
+                pair(0, &"INSERT");
+                pair(8, &e.layer);
+                style(&mut pair);
+                pair(2, block);
+                pair(10, &at.x);
+                pair(20, &at.y);
+                pair(30, &at.z);
+                pair(41, scale);
+                pair(42, scale);
+                pair(43, scale);
+                pair(50, rotation);
+            }
+            DxfGeometry::Text {
+                at,
+                height,
+                text,
+                rotation,
+            } => {
+                pair(0, &"TEXT");
+                pair(8, &e.layer);
+                style(&mut pair);
+                pair(10, &at.x);
+                pair(20, &at.y);
+                pair(30, &at.z);
+                pair(40, height);
+                pair(1, text);
+                pair(50, rotation);
+                pair(7, &"STANDARD");
             }
             DxfGeometry::Polyline {
                 vertices,
@@ -400,6 +664,7 @@ pub fn write_dxf(drawing: &DxfDrawing) -> String {
                 let has_arcs = bulges.iter().any(|b| *b != 0.0);
                 pair(0, &"POLYLINE");
                 pair(8, &e.layer);
+                style(&mut pair);
                 pair(66, &1);
                 pair(10, &0.0);
                 pair(20, &0.0);
@@ -568,10 +833,12 @@ mod tests {
             entities: vec![
                 DxfEntity {
                     layer: "BDY".into(),
+                    style: DxfStyle::default(),
                     geometry: DxfGeometry::Point(DVec3::new(512345.678901, 6912345.123456, 101.25)),
                 },
                 DxfEntity {
                     layer: "BDY".into(),
+                    style: DxfStyle::default(),
                     geometry: DxfGeometry::Polyline {
                         vertices: vec![DVec3::new(1.0, 2.0, 3.0), DVec3::new(4.0, 5.0, 6.5)],
                         bulges: vec![],
@@ -580,6 +847,7 @@ mod tests {
                 },
                 DxfEntity {
                     layer: "HIDDEN".into(),
+                    style: DxfStyle::default(),
                     geometry: DxfGeometry::Polyline {
                         vertices: vec![DVec3::new(0.0, 0.0, 2.0), DVec3::new(10.0, 0.0, 2.0)],
                         bulges: vec![1.0, 1.0],
@@ -587,12 +855,100 @@ mod tests {
                     },
                 },
             ],
-            warnings: vec![],
+            ..Default::default()
         };
         let text = write_dxf(&drawing);
         let back = read_dxf(text.as_bytes()).expect("parse");
         assert_eq!(back.entities, drawing.entities);
         assert_eq!(back.layers, drawing.layers);
+    }
+
+    #[test]
+    fn blocks_linetypes_and_text() {
+        let mut kerb = DxfEntity::new(
+            "ROAD",
+            DxfGeometry::Polyline {
+                vertices: vec![DVec3::new(0.0, 0.0, 1.0), DVec3::new(10.0, 0.0, 1.0)],
+                bulges: vec![],
+                closed: false,
+            },
+        );
+        kerb.style = DxfStyle {
+            linetype: Some("S3D_DASHED".into()),
+            color: Some([255, 0, 0]),
+        };
+        let drawing = DxfDrawing {
+            layers: vec![DxfLayer {
+                name: "ROAD".into(),
+                color: [255, 255, 255],
+                visible: true,
+            }],
+            entities: vec![
+                kerb,
+                DxfEntity::new(
+                    "ROAD",
+                    DxfGeometry::Insert {
+                        block: "S3D_CIRCLE_X".into(),
+                        at: DVec3::new(5.0, 5.0, 1.0),
+                        scale: 0.25,
+                        rotation: 0.0,
+                    },
+                ),
+                DxfEntity::new(
+                    "NAMES",
+                    DxfGeometry::Text {
+                        at: DVec3::new(5.5, 4.9, 1.0),
+                        height: 0.5,
+                        text: "MH1".into(),
+                        rotation: 0.0,
+                    },
+                ),
+            ],
+            blocks: vec![DxfBlock {
+                name: "S3D_CIRCLE_X".into(),
+                shapes: vec![
+                    BlockShape::Circle {
+                        center: [0.0, 0.0],
+                        radius: 0.9,
+                        filled: false,
+                    },
+                    BlockShape::Circle {
+                        center: [0.0, 0.0],
+                        radius: 0.3,
+                        filled: true,
+                    },
+                    BlockShape::Line([-0.6, -0.6], [0.6, 0.6]),
+                    BlockShape::Solid(vec![[0.0, 1.0], [-0.8, -0.5], [0.8, -0.5]]),
+                    BlockShape::Polygon(vec![[0.0, 1.0], [-0.8, -0.5], [0.8, -0.5]]),
+                ],
+            }],
+            linetypes: vec![DxfLinetype {
+                name: "S3D_DASHED".into(),
+                description: "Dashed".into(),
+                pattern: vec![0.75, -0.5],
+            }],
+            ..Default::default()
+        };
+        let text = write_dxf(&drawing);
+        for needle in [
+            "BLOCKS",
+            "S3D_CIRCLE_X",
+            "INSERT",
+            "SOLID",
+            "ENDBLK",
+            "LTYPE",
+            "S3D_DASHED",
+            "TEXT",
+            "MH1",
+        ] {
+            assert!(text.contains(needle), "{needle}");
+        }
+        // Total pattern length.
+        assert!(text.contains(" 40\n1.25\n"));
+        // Reading it back keeps the linework and skips blocks, inserts and text.
+        let back = read_dxf(text.as_bytes()).expect("parse");
+        assert_eq!(back.entities.len(), 1);
+        assert!(back.warnings.iter().any(|w| w.contains("INSERT")));
     }
 
     #[test]

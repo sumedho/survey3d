@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 
-use survey_io::dxf::{DxfDrawing, DxfEntity, DxfGeometry, DxfLayer};
+use survey_core::style::{LineStyle, Prim, Symbol, outline};
+use survey_io::dxf::{BlockShape, DxfBlock, DxfDrawing, DxfEntity, DxfGeometry, DxfLayer, DxfLinetype};
 use survey_model::{Color, Document, Entity, Polyline, SurveyPoint};
 
 use crate::import_command::{ImportEntities, LayerRef};
@@ -35,6 +36,9 @@ pub fn dxf_import(doc: &Document, drawing: &DxfDrawing, file_name: &str) -> Impo
                     cmd.add_layer(e.layer.clone(), Color::rgb(color[0], color[1], color[2]), visible)
                 }
             });
+        if matches!(e.geometry, DxfGeometry::Insert { .. } | DxfGeometry::Text { .. }) {
+            continue;
+        }
         let entity = match &e.geometry {
             DxfGeometry::Point(p) => {
                 next += 1;
@@ -59,15 +63,115 @@ pub fn dxf_import(doc: &Document, drawing: &DxfDrawing, file_name: &str) -> Impo
                 code: String::new(),
                 layer: doc.current_layer(),
             }),
+            DxfGeometry::Insert { .. } | DxfGeometry::Text { .. } => continue,
         };
         cmd.add(layer, entity);
     }
     cmd
 }
 
-/// The whole document as a DXF drawing.
-pub fn dxf_export(doc: &Document) -> DxfDrawing {
-    let layers = doc
+/// Sizes for symbols, line types and text in an exported DXF, which (unlike
+/// the screen) has to fix them in drawing units: they are the paper sizes of
+/// a plan at `scale`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DxfExportOptions {
+    /// Plan scale denominator.
+    pub scale: f64,
+    /// Paper millimetres per screen point of symbol size.
+    pub symbol_scale: f64,
+    /// Point name height on paper (millimetres); 0 leaves names out.
+    pub text_size: f64,
+}
+
+impl Default for DxfExportOptions {
+    fn default() -> Self {
+        let sheet = survey_model::SheetRecord::default();
+        Self {
+            scale: sheet.scale,
+            symbol_scale: sheet.symbol_scale,
+            text_size: sheet.text_size,
+        }
+    }
+}
+
+impl DxfExportOptions {
+    /// Sizes from a plan sheet.
+    pub fn from_sheet(sheet: &survey_model::SheetRecord) -> Self {
+        Self {
+            scale: sheet.scale,
+            symbol_scale: sheet.symbol_scale,
+            text_size: sheet.text_size,
+        }
+    }
+
+    /// Drawing units (metres) per paper millimetre.
+    fn metres_per_mm(&self) -> f64 {
+        self.scale / 1000.0
+    }
+}
+
+/// Layer for point names.
+pub const NAMES_LAYER: &str = "POINT_NAMES";
+
+fn block_name(symbol: Symbol) -> String {
+    format!("S3D_{}", symbol.key().to_uppercase())
+}
+
+fn linetype_name(style: LineStyle) -> String {
+    format!("S3D_{}", style.key().to_uppercase())
+}
+
+/// A symbol's primitives as block shapes (unit radius).
+fn symbol_block(symbol: Symbol) -> DxfBlock {
+    let p = |c: [f32; 2]| [f64::from(c[0]), f64::from(c[1])];
+    let mut shapes = Vec::new();
+    for prim in symbol.prims() {
+        match *prim {
+            Prim::Circle { c, r, fill } => shapes.push(BlockShape::Circle {
+                center: p(c),
+                radius: f64::from(r),
+                filled: fill,
+            }),
+            Prim::Square { c, h, fill } => {
+                let ring = vec![
+                    p([c[0] - h, c[1] - h]),
+                    p([c[0] + h, c[1] - h]),
+                    p([c[0] + h, c[1] + h]),
+                    p([c[0] - h, c[1] + h]),
+                ];
+                shapes.push(if fill {
+                    BlockShape::Solid(ring)
+                } else {
+                    BlockShape::Polygon(ring)
+                });
+            }
+            Prim::Polygon { c, fill, .. } | Prim::Star { c, fill, .. } => {
+                let ring: Vec<[f64; 2]> = outline(prim).into_iter().map(p).collect();
+                if !fill {
+                    shapes.push(BlockShape::Polygon(ring));
+                } else if ring.len() <= 4 {
+                    shapes.push(BlockShape::Solid(ring));
+                } else {
+                    // A fan of triangles from the centre (stars are not convex).
+                    for k in 0..ring.len() {
+                        shapes.push(BlockShape::Solid(vec![p(c), ring[k], ring[(k + 1) % ring.len()]]));
+                    }
+                }
+            }
+            Prim::Segment { a, b } => shapes.push(BlockShape::Line(p(a), p(b))),
+        }
+    }
+    DxfBlock {
+        name: block_name(symbol),
+        shapes,
+    }
+}
+
+/// The whole document as a DXF drawing: layers, points (with their code's
+/// symbol as a block and their name as text) and linework (with its code's
+/// line type and colour).
+pub fn dxf_export(doc: &Document, opts: &DxfExportOptions) -> DxfDrawing {
+    let mut layers: Vec<DxfLayer> = doc
         .layers()
         .iter()
         .map(|l| DxfLayer {
@@ -76,26 +180,123 @@ pub fn dxf_export(doc: &Document) -> DxfDrawing {
             visible: l.visible,
         })
         .collect();
-    let entities = doc
-        .entities()
-        .map(|(_, e)| DxfEntity {
-            layer: doc
-                .layer(e.layer())
-                .map_or_else(|| "0".to_string(), |l| l.name.clone()),
-            geometry: match e {
-                Entity::Point(p) => DxfGeometry::Point(p.position),
-                Entity::Polyline(l) => DxfGeometry::Polyline {
-                    vertices: l.vertices.clone(),
-                    bulges: l.bulges.clone(),
-                    closed: l.closed,
-                },
-            },
+    let library = &doc.meta().feature_codes;
+    let k = opts.metres_per_mm();
+    // A code's style and the colour it draws in when not by layer.
+    let style_of = |code: &str| {
+        let f = library.feature_for(code)?;
+        let own = match doc.layer_by_name(&f.layer) {
+            Some(_) if f.style.by_layer => None,
+            _ => Some(f.color),
+        };
+        Some((f.style, own))
+    };
+    // In order of first use.
+    let mut symbols: Vec<Symbol> = Vec::new();
+    let mut linetypes: Vec<LineStyle> = Vec::new();
+    let mut entities = Vec::new();
+    let mut names = false;
+    for (_, e) in doc.entities() {
+        let layer = doc
+            .layer(e.layer())
+            .map_or_else(|| "0".to_string(), |l| l.name.clone());
+        match e {
+            Entity::Point(p) => {
+                let style = style_of(&p.code);
+                let color = style.and_then(|(_, c)| c);
+                let mut point = DxfEntity::new(layer.clone(), DxfGeometry::Point(p.position));
+                point.style.color = color;
+                entities.push(point);
+                let mut radius = 0.0;
+                if let Some((s, _)) = style {
+                    radius = f64::from(s.symbol_size) / 2.0 * opts.symbol_scale * k;
+                    if !symbols.contains(&s.symbol) {
+                        symbols.push(s.symbol);
+                    }
+                    let mut insert = DxfEntity::new(
+                        layer.clone(),
+                        DxfGeometry::Insert {
+                            block: block_name(s.symbol),
+                            at: p.position,
+                            scale: radius,
+                            rotation: 0.0,
+                        },
+                    );
+                    insert.style.color = color;
+                    entities.push(insert);
+                }
+                if opts.text_size > 0.0 && !p.name.is_empty() {
+                    let height = opts.text_size * survey_io::plot::CAP_HEIGHT * k;
+                    let gap = radius + 0.6 * k;
+                    entities.push(DxfEntity::new(
+                        NAMES_LAYER,
+                        DxfGeometry::Text {
+                            at: p.position + glam::DVec3::new(gap, -height / 2.0, 0.0),
+                            height,
+                            text: p.name.clone(),
+                            rotation: 0.0,
+                        },
+                    ));
+                    names = true;
+                }
+            }
+            Entity::Polyline(l) => {
+                let mut line = DxfEntity::new(
+                    layer,
+                    DxfGeometry::Polyline {
+                        vertices: l.vertices.clone(),
+                        bulges: l.bulges.clone(),
+                        closed: l.closed,
+                    },
+                );
+                if let Some((s, color)) = style_of(&l.code) {
+                    line.style.color = color;
+                    if s.line_style != LineStyle::Solid {
+                        line.style.linetype = Some(linetype_name(s.line_style));
+                        if !linetypes.contains(&s.line_style) {
+                            linetypes.push(s.line_style);
+                        }
+                    }
+                }
+                entities.push(line);
+            }
+        }
+    }
+    if names && !layers.iter().any(|l| l.name.eq_ignore_ascii_case(NAMES_LAYER)) {
+        layers.push(DxfLayer {
+            name: NAMES_LAYER.into(),
+            color: [255, 255, 255],
+            visible: true,
+        });
+    }
+    // Dash lengths on paper (0.3 mm units, as plan sheets draw them) in metres.
+    let unit = 0.3 * k;
+    let linetypes = linetypes
+        .into_iter()
+        .map(|s| DxfLinetype {
+            name: linetype_name(s),
+            description: s.label().into(),
+            pattern: s
+                .pattern()
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let v = f64::from(*v);
+                    match (i % 2 == 0, v <= 1.0) {
+                        (true, true) => 0.0,
+                        (true, false) => v * unit,
+                        (false, _) => -v * unit,
+                    }
+                })
+                .collect(),
         })
         .collect();
     DxfDrawing {
         layers,
         entities,
         warnings: Vec::new(),
+        blocks: symbols.into_iter().map(symbol_block).collect(),
+        linetypes,
     }
 }
 
@@ -119,6 +320,7 @@ mod tests {
             entities: vec![
                 DxfEntity {
                     layer: "KERB".into(),
+                    style: Default::default(),
                     geometry: DxfGeometry::Polyline {
                         vertices: vec![
                             DVec3::new(500_000.0, 7_000_000.0, 1.0),
@@ -130,17 +332,19 @@ mod tests {
                 },
                 DxfEntity {
                     layer: "0".into(),
+                    style: Default::default(),
                     geometry: DxfGeometry::Point(DVec3::new(500_005.0, 7_000_002.0, 3.0)),
                 },
             ],
-            warnings: vec![],
+            ..Default::default()
         };
         history.execute(Box::new(dxf_import(&doc, &drawing, "test.dxf")), &mut doc);
         assert_eq!(doc.entity_count(), 2);
         assert!(doc.layer_by_name("KERB").is_some());
         assert_eq!(doc.layers().len(), 2, "layer 0 reused, KERB created");
 
-        let back = read_dxf(write_dxf(&dxf_export(&doc)).as_bytes()).expect("parse");
+        let back =
+            read_dxf(write_dxf(&dxf_export(&doc, &DxfExportOptions::default())).as_bytes()).expect("parse");
         let mut kinds: Vec<_> = back.entities.iter().map(|e| e.layer.clone()).collect();
         kinds.sort();
         assert_eq!(kinds, vec!["0".to_string(), "KERB".to_string()]);
@@ -149,5 +353,69 @@ mod tests {
                 .iter()
                 .any(|e| e.geometry == drawing.entities[0].geometry)
         );
+    }
+
+    #[test]
+    fn dxf_export_symbols_linetypes_and_names() {
+        use survey_core::field_to_finish::FeatureCode;
+        use survey_model::{ChangeSet, SurveyPoint};
+        let mut doc = Document::new();
+        let mut history = History::new("t");
+        let layer = doc.layers()[0].id;
+        let mut meta = doc.meta().clone();
+        let mut mh = FeatureCode::new("MH", "Manhole", "SERVICES", [200, 0, 200], false);
+        mh.style.symbol = Symbol::CircleX;
+        mh.style.by_layer = false;
+        let mut kb = FeatureCode::new("KB", "Kerb", "ROAD", [255, 255, 0], true);
+        kb.style.line_style = LineStyle::Dashed;
+        meta.feature_codes.codes.extend([mh, kb]);
+        let cmd = ChangeSet::new("seed")
+            .set_meta(meta)
+            .insert_entity(Entity::Point(SurveyPoint {
+                name: "MH1".into(),
+                position: DVec3::new(10.0, 20.0, 5.0),
+                height_known: true,
+                code: "MH".into(),
+                description: String::new(),
+                layer,
+            }))
+            .insert_entity(Entity::Polyline(Polyline {
+                name: String::new(),
+                vertices: vec![DVec3::ZERO, DVec3::new(10.0, 0.0, 0.0)],
+                bulges: Vec::new(),
+                closed: false,
+                code: "KB".into(),
+                layer,
+            }));
+        history.execute(Box::new(cmd), &mut doc);
+        let opts = DxfExportOptions {
+            scale: 500.0,
+            symbol_scale: 0.2,
+            text_size: 2.0,
+        };
+        let d = dxf_export(&doc, &opts);
+        assert_eq!(d.blocks.len(), 1);
+        assert_eq!(d.blocks[0].name, "S3D_CIRCLE_X");
+        assert_eq!(d.linetypes.len(), 1);
+        // Dashed is 6 on, 4 off in 0.3 mm units: 0.9 m and 0.6 m at 1:500.
+        assert!((d.linetypes[0].pattern[0] - 0.9).abs() < 1e-9);
+        assert!((d.linetypes[0].pattern[1] + 0.6).abs() < 1e-9);
+        let insert = d.entities.iter().find_map(|e| match &e.geometry {
+            DxfGeometry::Insert { scale, .. } => Some((*scale, e.style.color)),
+            _ => None,
+        });
+        // 7 pt symbol: 0.7 mm radius on paper, 0.35 m at 1:500, in the code's own colour.
+        let (scale, color) = insert.expect("insert");
+        assert!((scale - 0.35).abs() < 1e-9);
+        assert_eq!(color, Some([200, 0, 200]));
+        assert!(d.entities.iter().any(|e| e.layer == NAMES_LAYER
+            && matches!(&e.geometry, DxfGeometry::Text { text, .. } if text == "MH1")));
+        assert!(d.layers.iter().any(|l| l.name == NAMES_LAYER));
+        let kerb = d
+            .entities
+            .iter()
+            .find(|e| matches!(e.geometry, DxfGeometry::Polyline { .. }))
+            .expect("kerb");
+        assert_eq!(kerb.style.linetype.as_deref(), Some("S3D_DASHED"));
     }
 }
