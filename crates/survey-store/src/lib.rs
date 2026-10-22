@@ -159,13 +159,15 @@ impl ProjectStore {
         for row in rows {
             let (id, name, origin, style, points, colors) = row?;
             let points = points
-                .chunks_exact(12)
+                .as_chunks::<12>()
+                .0
+                .iter()
                 .map(|c| {
                     let f = |i: usize| f32::from_le_bytes(c[i * 4..i * 4 + 4].try_into().unwrap_or_default());
                     [f(0), f(1), f(2)]
                 })
                 .collect();
-            let colors = colors.map(|c| c.chunks_exact(3).map(|x| [x[0], x[1], x[2]]).collect());
+            let colors = colors.map(|c| c.as_chunks::<3>().0.iter().map(|x| [x[0], x[1], x[2]]).collect());
             out.push((
                 PointCloudId(id),
                 PointCloud {
@@ -199,7 +201,9 @@ impl ProjectStore {
             let (id, name, definition, style, vertices, triangles) = row?;
             let tin = Tin {
                 vertices: vertices
-                    .chunks_exact(24)
+                    .as_chunks::<24>()
+                    .0
+                    .iter()
                     .map(|c| {
                         let f =
                             |i: usize| f64::from_le_bytes(c[i * 8..i * 8 + 8].try_into().unwrap_or_default());
@@ -207,7 +211,9 @@ impl ProjectStore {
                     })
                     .collect(),
                 triangles: triangles
-                    .chunks_exact(12)
+                    .as_chunks::<12>()
+                    .0
+                    .iter()
                     .map(|c| {
                         let u =
                             |i: usize| u32::from_le_bytes(c[i * 4..i * 4 + 4].try_into().unwrap_or_default());

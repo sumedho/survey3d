@@ -80,8 +80,10 @@ fn chords(poly: &[DVec2], p: DVec2, n: DVec2, offset: f64) -> Vec<(DVec2, DVec2)
         }
     }
     ts.sort_by(f64::total_cmp);
-    ts.chunks_exact(2)
-        .map(|c| (base + dir * c[0], base + dir * c[1]))
+    ts.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[a, b]| (base + dir * *a, base + dir * *b))
         .filter(|(a, b)| a.distance(*b) > 1e-9)
         .collect()
 }
