@@ -13,7 +13,8 @@ use egui_cad::viewport::{NavAction, view_controls};
 use crate::platform::FileKind;
 use crate::scene_build::select_in_box;
 use crate::tools::ToolGroup;
-use crate::ui::surfaces::{SurfaceAction, surfaces_panel};
+use crate::ui::surfaces::{SurfaceAction, SurfaceWindowAction, surfaces_panel};
+use crate::ui::volumes::VolumesAction;
 use egui_cad::ThemeMode;
 use survey_core::style::LabelSet;
 
@@ -114,6 +115,7 @@ const COGO_MENU: &[MenuEntry] = &[
 const SURFACE_MENU: &[MenuEntry] = &[
     Item("Create surface…", "surface"),
     Separator,
+    Item("Volumes…", "volume"),
     Item("Contours to polylines", "contours"),
 ];
 
@@ -1443,7 +1445,7 @@ impl SurveyApp {
             Some(SubdivideAction::Report(title, text)) => self.reports.add(title, text),
             None => {}
         }
-        let closed: Vec<EntityId> = if self.surface_window.open {
+        let closed: Vec<EntityId> = if self.surface_window.open || self.volumes_window.open {
             self.selected_polylines()
                 .into_iter()
                 .filter(|(_, l)| l.closed)
@@ -1454,6 +1456,13 @@ impl SurveyApp {
         };
         if let Some(a) = self.surface_window.show(ctx, &self.project.doc, &closed) {
             self.apply_surface_window(a);
+        }
+        match self.volumes_window.show(ctx, &self.project.doc, &closed) {
+            Some(VolumesAction::Report(title, text)) => self.reports.add(title, text),
+            Some(VolumesAction::CreateSurface(surface)) => {
+                self.apply_surface_window(SurfaceWindowAction::Create(*surface));
+            }
+            None => {}
         }
         self.legend.show(ctx, &self.project.doc);
         if let Some((title, text)) = self.calculator.show(ctx, self.project.doc.conventions()) {

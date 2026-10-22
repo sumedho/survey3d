@@ -70,6 +70,8 @@ pub struct SurfaceStyle {
     pub triangles: bool,
     pub color: Color,
     pub contours: ContourStyle,
+    /// Colour by sign around zero (cut blue, fill red), for difference surfaces.
+    pub isopach: bool,
 }
 
 impl Default for SurfaceStyle {
@@ -81,6 +83,7 @@ impl Default for SurfaceStyle {
             triangles: false,
             color: Color::rgb(148, 163, 184),
             contours: ContourStyle::default(),
+            isopach: false,
         }
     }
 }
@@ -125,8 +128,8 @@ fn on_layers(doc: &Document, names: &[String], layer: crate::ids::LayerId) -> bo
         .is_some_and(|l| names.iter().any(|n| n.eq_ignore_ascii_case(&l.name)))
 }
 
-/// Plan outline of a polyline (arcs tessellated).
-fn outline(doc: &Document, id: EntityId) -> Option<Vec<DVec2>> {
+/// Plan outline of a closed polyline (arcs tessellated), e.g. a boundary.
+pub fn outline(doc: &Document, id: EntityId) -> Option<Vec<DVec2>> {
     match doc.entity(id) {
         Some(Entity::Polyline(l)) => {
             let mut pts: Vec<DVec2> = Vec::new();

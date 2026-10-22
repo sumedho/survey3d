@@ -48,6 +48,7 @@ use crate::ui::settings_window::SettingsWindow;
 use crate::ui::subdivide_window::{SubdivideAction, SubdivideWindow};
 use crate::ui::surfaces::{SurfaceAction, SurfaceWindow, SurfaceWindowAction, build_from};
 use crate::ui::traverse_window::{TraverseAction, TraverseWindow};
+use crate::ui::volumes::VolumesWindow;
 
 const SETTINGS_KEY: &str = "survey3d.settings";
 
@@ -197,6 +198,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::MAP_TRIFOLD,
     ),
     cmd(
+        "volume",
+        "Volumes (surface to surface or level)",
+        "Surface",
+        icons::CUBE,
+    ),
+    cmd(
         "contours",
         "Contours of the active surface to polylines",
         "Surface",
@@ -261,6 +268,7 @@ pub struct SurveyApp {
     surface_cache: SurfaceSceneCache,
     surface_indexes: SurfaceIndexes,
     surface_window: SurfaceWindow,
+    volumes_window: VolumesWindow,
     active_surface: Option<SurfaceId>,
     snap_engine: SnapEngine,
     snap_override: Option<SnapMode>,
@@ -392,6 +400,7 @@ impl SurveyApp {
             surface_cache: SurfaceSceneCache::default(),
             surface_indexes: SurfaceIndexes::default(),
             surface_window: SurfaceWindow::default(),
+            volumes_window: VolumesWindow::default(),
             active_surface: None,
             snap_engine: SnapEngine::default(),
             snap_override: None,
@@ -1110,6 +1119,7 @@ impl SurveyApp {
             "legend" => self.legend.open = true,
             "surface" | "tin" => self.surface_window.create(&self.project.doc),
             "contours" => self.contours_to_polylines(),
+            "volume" | "volumes" | "vol" => self.volumes_window.open(&self.project.doc, self.active_surface),
             "accuracy" | "tolerances" => self.settings_window.open_at_accuracy(),
             "codes" | "featurecodes" => self.codes_window.open(),
             "linework" | "f2f" => {

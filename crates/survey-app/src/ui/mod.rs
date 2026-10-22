@@ -14,3 +14,4 @@ pub mod settings_window;
 pub mod subdivide_window;
 pub mod surfaces;
 pub mod traverse_window;
+pub mod volumes;

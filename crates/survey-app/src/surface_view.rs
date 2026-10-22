@@ -33,6 +33,23 @@ fn ramp(t: f64) -> [f32; 3] {
     ]
 }
 
+/// Cut (negative, blue) to fill (positive, red) through white at zero.
+fn isopach(d: f64, max: f64) -> [f32; 3] {
+    let t = (d / max.max(1e-9)).clamp(-1.0, 1.0) as f32;
+    let white = [235.0, 235.0, 235.0];
+    let end = if t < 0.0 {
+        [40.0, 110.0, 220.0]
+    } else {
+        [215.0, 50.0, 45.0]
+    };
+    let k = t.abs();
+    [
+        white[0] + (end[0] - white[0]) * k,
+        white[1] + (end[1] - white[1]) * k,
+        white[2] + (end[2] - white[2]) * k,
+    ]
+}
+
 /// Lambert shade from a light in the north-west, 45° up (as on hillshade maps).
 fn shade(normal: DVec3) -> f32 {
     let light = DVec3::new(-1.0, 1.0, 2f64.sqrt()).normalize();
@@ -146,9 +163,16 @@ fn add_surface(b: &mut SceneBuilder, s: &Surface, theme: &CadTheme, labels: &mut
         for i in 0..tin.triangles.len() {
             let corners = tin.triangle(i);
             let [a, bb, c] = corners;
-            let k = shade((bb - a).cross(c - a).normalize_or_zero());
+            // Difference surfaces show cut/fill flat; their heights are not terrain.
+            let k = if s.style.isopach {
+                1.0
+            } else {
+                shade((bb - a).cross(c - a).normalize_or_zero())
+            };
             let colors = corners.map(|p| {
-                let base = if s.style.elevation_colors {
+                let base = if s.style.isopach {
+                    isopach(p.z, zmin.abs().max(zmax.abs()))
+                } else if s.style.elevation_colors {
                     ramp((p.z - zmin) / span)
                 } else {
                     plain
