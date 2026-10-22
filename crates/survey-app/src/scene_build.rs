@@ -22,26 +22,57 @@ pub(crate) const LINE_WIDTH: f32 = 1.5;
 /// tessellation is capped per arc, so large radii stay cheap.
 const ARC_TOLERANCE: f64 = 0.001;
 
-/// Rebuilds the GPU scene only when the document, selection or theme change.
+/// Rebuilds the drawing's GPU scene only when the document or theme change.
 #[derive(Default)]
 pub struct SceneCache {
-    key: Option<(u64, u64, ThemeMode)>,
+    key: Option<(u64, ThemeMode)>,
     revision: u64,
     scene: Arc<Scene>,
 }
 
 impl SceneCache {
-    pub fn get(&mut self, doc: &Document, selection: &Selection, theme: &CadTheme) -> Arc<Scene> {
-        let key = (doc.revision(), selection.revision(), theme.mode);
+    pub fn get(&mut self, doc: &Document, theme: &CadTheme) -> Arc<Scene> {
+        let key = (doc.revision(), theme.mode);
         if self.key != Some(key) {
             self.revision += 1;
-            self.scene = Arc::new(build_scene(doc, selection, theme, self.revision));
+            self.scene = Arc::new(build_scene(doc, None, theme, self.revision));
             self.key = Some(key);
         }
         self.scene.clone()
     }
 
     /// Forces a rebuild (e.g. after opening another project).
+    pub fn invalidate(&mut self) {
+        self.key = None;
+    }
+}
+
+/// The selected objects again, highlighted and drawn over the drawing's scene,
+/// so selecting rebuilds only the selection, not the whole drawing.
+#[derive(Default)]
+pub struct SelectionCache {
+    key: Option<(u64, u64, ThemeMode)>,
+    revision: u64,
+    scene: Option<Arc<Scene>>,
+}
+
+impl SelectionCache {
+    /// `None` when nothing is selected.
+    pub fn get(&mut self, doc: &Document, selection: &Selection, theme: &CadTheme) -> Option<Arc<Scene>> {
+        let key = (doc.revision(), selection.revision(), theme.mode);
+        if self.key != Some(key) {
+            self.revision += 1;
+            self.scene = (!selection.is_empty()).then(|| {
+                // A revision of its own (see the surface and cloud scenes).
+                let mut scene = build_scene(doc, Some(selection), theme, self.revision | (1 << 60));
+                scene.on_top = true;
+                Arc::new(scene)
+            });
+            self.key = Some(key);
+        }
+        self.scene.clone()
+    }
+
     pub fn invalidate(&mut self) {
         self.key = None;
     }
@@ -75,7 +106,8 @@ impl<'a> Styles<'a> {
     }
 }
 
-fn build_scene(doc: &Document, selection: &Selection, theme: &CadTheme, revision: u64) -> Scene {
+/// The drawing (`highlight` is `None`) or the highlighted copy of the selected objects.
+fn build_scene(doc: &Document, highlight: Option<&Selection>, theme: &CadTheme, revision: u64) -> Scene {
     let mut b = SceneBuilder::default();
     let selected = theme.selection.to_srgba_unmultiplied();
     let mut styles = Styles {
@@ -83,14 +115,18 @@ fn build_scene(doc: &Document, selection: &Selection, theme: &CadTheme, revision
         library: &doc.meta().feature_codes,
         cache: HashMap::new(),
     };
-    for (id, entity) in doc.entities() {
+    let entities: Box<dyn Iterator<Item = (EntityId, &Entity)>> = match highlight {
+        None => Box::new(doc.entities()),
+        Some(sel) => Box::new(sel.ids().iter().filter_map(|id| Some((*id, doc.entity(*id)?)))),
+    };
+    let is_selected = highlight.is_some();
+    for (_, entity) in entities {
         let Some(layer) = doc.layer(entity.layer()) else {
             continue;
         };
         if !layer.visible {
             continue;
         }
-        let is_selected = selection.contains(id);
         let code = match entity {
             Entity::Point(p) => p.code.as_str(),
             Entity::Polyline(l) => l.code.as_str(),
@@ -116,9 +152,14 @@ fn build_scene(doc: &Document, selection: &Selection, theme: &CadTheme, revision
                 b.add_point(p.position, color, size, symbol);
             }
             Entity::Polyline(l) => {
-                let (line_style, weight) = style.map_or((Default::default(), LINE_WIDTH), |(s, _)| {
+                let (mut line_style, weight) = style.map_or((Default::default(), LINE_WIDTH), |(s, _)| {
                     (s.line_style, s.line_weight)
                 });
+                // Highlights are solid: a wider dashed copy would not line up with
+                // the dashes of the line underneath.
+                if is_selected {
+                    line_style = Default::default();
+                }
                 let width = if is_selected { weight + 1.5 } else { weight };
                 // Distance along the polyline, so dash patterns run on across vertices.
                 let mut along = 0.0;
@@ -267,5 +308,45 @@ mod tests {
         assert!(green[1] <= 160, "{green:?}");
         assert_eq!(layer_color([200, 0, 0, 255], &light), [200, 0, 0, 255]);
         assert_eq!(layer_color([0, 255, 0, 255], &CadTheme::dark()), [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn selecting_rebuilds_only_the_selection() {
+        use survey_model::{ChangeSet, Command, SurveyPoint};
+        let mut doc = Document::new();
+        let mut add = ChangeSet::new("add");
+        for i in 0..50 {
+            add.push_insert_entity(Entity::Point(SurveyPoint {
+                name: i.to_string(),
+                position: glam::DVec3::new(f64::from(i), 0.0, 0.0),
+                height_known: true,
+                code: String::new(),
+                description: String::new(),
+                layer: doc.current_layer(),
+            }));
+        }
+        add.apply(&mut doc);
+        let theme = CadTheme::dark();
+        let (mut drawing, mut highlight) = (SceneCache::default(), SelectionCache::default());
+        let mut selection = Selection::default();
+
+        let base = drawing.get(&doc, &theme);
+        assert_eq!(base.point_count(), 50);
+        assert!(highlight.get(&doc, &selection, &theme).is_none());
+
+        let ids: Vec<EntityId> = doc.entities().map(|(id, _)| id).take(3).collect();
+        selection.set(ids);
+        assert!(
+            Arc::ptr_eq(&base, &drawing.get(&doc, &theme)),
+            "the drawing is not rebuilt"
+        );
+        let sel = highlight.get(&doc, &selection, &theme).expect("highlight");
+        assert_eq!(sel.point_count(), 3);
+        assert!(sel.on_top && !base.on_top);
+        assert_ne!(sel.revision, base.revision);
+        assert!(Arc::ptr_eq(
+            &sel,
+            &highlight.get(&doc, &selection, &theme).expect("cached")
+        ));
     }
 }

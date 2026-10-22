@@ -69,6 +69,9 @@ pub struct Scene {
     /// Points in each chunk are shuffled, so the renderer may draw only a
     /// prefix of them (an even sample) when the chunk is small on screen.
     pub lod: bool,
+    /// Drawn in front of other scenes' lines and points at the same place:
+    /// for highlights (selection) laid over a copy in another scene.
+    pub on_top: bool,
 }
 
 impl Scene {
@@ -198,6 +201,7 @@ impl SceneBuilder {
             bounds: self.bounds,
             revision,
             lod: false,
+            on_top: false,
         }
     }
 

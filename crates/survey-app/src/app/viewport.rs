@@ -17,9 +17,11 @@ impl SurveyApp {
 
     pub(super) fn viewport_ui(&mut self, ui: &mut egui::Ui) {
         let theme = self.theme.clone();
-        let scene = self
-            .scene_cache
-            .get(&self.session.project.doc, &self.session.project.selection, &theme);
+        let doc = &self.session.project.doc;
+        let scene = self.scene_cache.get(doc, &theme);
+        let selection = self
+            .selection_cache
+            .get(doc, &self.session.project.selection, &theme);
         let surfaces = self.surface_cache.get(&self.session.project.doc, &theme);
         let clouds = self.cloud_cache.get(&self.session.project.doc, &theme);
         let conv = self.session.project.doc.conventions().clone();
@@ -52,6 +54,7 @@ impl SurveyApp {
         let out = Viewport::new(&mut self.viewport, scene)
             .overlay_scene(surfaces)
             .overlay_scene(clouds)
+            .overlay_scene(selection)
             .grid(grid)
             .anchor(anchor)
             .extra_bounds(extra)

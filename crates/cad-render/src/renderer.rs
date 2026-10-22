@@ -181,6 +181,8 @@ struct GpuChunk {
     lines: Option<(wgpu::Buffer, u32)>,
     /// Vertex buffer and vertex count.
     triangles: Option<(wgpu::Buffer, u32)>,
+    /// From a scene drawn on top of the others.
+    on_top: bool,
 }
 
 /// The uploaded chunks of one scene.
@@ -491,6 +493,7 @@ impl ViewResources {
                         last_used: 0,
                         lines: instance_buffer(device, "cad_render_lines", &c.lines),
                         triangles: instance_buffer(device, "cad_render_triangles", &c.triangles),
+                        on_top: scene.on_top,
                     })
                     .collect(),
             };
@@ -860,9 +863,11 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
             put(0, g);
         }
         // params.w flags plan view: surfaces then sit behind everything drawn on them.
+        // params.z flags highlight scenes, drawn in front of the same geometry elsewhere.
         let plan = if camera.is_plan() { 1.0 } else { 0.0 };
         for (i, chunk) in view.chunks().enumerate() {
             let mut u = uniforms(camera.chunk_mvp(chunk.origin), viewport);
+            u.params[2] = if chunk.on_top { 1.0 } else { 0.0 };
             u.params[3] = plan;
             put(i + 1, &u);
         }

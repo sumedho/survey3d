@@ -153,8 +153,9 @@ fn vs_point(@builtin(vertex_index) vi: u32, inst: PointIn) -> PointOut {
     // Room for strokes on the unit circle plus a pixel for anti-aliasing.
     let half = radius + stroke_px(radius) * 0.5 + 1.0;
     var out: PointOut;
-    // Nudge markers slightly towards the camera so they sit on top of lines.
-    let z = min(clip.z + 1e-5 * clip.w, clip.w);
+    // Nudge markers slightly towards the camera so they sit on top of lines,
+    // and highlighted ones on top of the markers they highlight.
+    let z = min(clip.z + (1e-5 + 2e-5 * u.params.z) * clip.w, clip.w);
     out.pos = vec4<f32>(clip.xy + px_to_ndc(corner * half) * clip.w, z, clip.w);
     out.color = inst.color;
     out.local_px = corner * half;
@@ -229,8 +230,18 @@ fn vs_line(@builtin(vertex_index) vi: u32, inst: LineIn) -> LineOut {
     let world = length(inst.b - inst.a);
     let scale = select(0.0, len / world, world > 1e-9);
 
+    // Depth along the extended quad continues the segment's own depth (depth is
+    // linear in screen space), so it does not depend on the line's width: a
+    // wider copy drawn over a line has the same depth at every pixel.
+    let ext = select(0.0, half_width / len, len > 1e-6);
+    let t = end + (end * 2.0 - 1.0) * ext;
+    let za = ca.z / ca.w;
+    let zb = cb.z / cb.w;
+    // Highlighted lines sit on the lines they highlight (but under point markers).
+    let z = min(mix(za, zb, t) + 5e-6 * u.params.z, 1.0);
+
     var out: LineOut;
-    out.pos = vec4<f32>(clip.xy + px_to_ndc(offset_px) * clip.w, clip.z, clip.w);
+    out.pos = vec4<f32>(clip.xy + px_to_ndc(offset_px) * clip.w, z * clip.w, clip.w);
     out.color = inst.color;
     out.across_px = side * half;
     out.half_width_px = half_width;

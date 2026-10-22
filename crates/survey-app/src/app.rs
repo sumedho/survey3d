@@ -32,7 +32,7 @@ use survey_store::ProjectStore;
 use crate::cloud_view::CloudSceneCache;
 use crate::platform::{FileEvent, FileKind, Platform, export};
 use crate::project::{APP_VERSION, Project};
-use crate::scene_build::{DocSnapProvider, SceneCache, color32, hit_test};
+use crate::scene_build::{DocSnapProvider, SceneCache, SelectionCache, color32, hit_test};
 use crate::session::{Event, Panel, Session, Toast};
 use crate::settings::AppSettings;
 use crate::surface_view::{SurfaceIndexes, SurfaceSceneCache};
@@ -375,6 +375,7 @@ pub struct SurveyApp {
     session: Session,
     viewport: ViewportState,
     scene_cache: SceneCache,
+    selection_cache: SelectionCache,
     surface_cache: SurfaceSceneCache,
     cloud_cache: CloudSceneCache,
     cloud_panel: CloudPanel,
@@ -510,6 +511,7 @@ impl SurveyApp {
             session,
             viewport,
             scene_cache: SceneCache::default(),
+            selection_cache: SelectionCache::default(),
             surface_cache: SurfaceSceneCache::default(),
             cloud_cache: CloudSceneCache::default(),
             cloud_panel: CloudPanel::default(),
@@ -907,6 +909,7 @@ impl SurveyApp {
     fn replace_project(&mut self, project: Project) {
         self.session.replace_project(project);
         self.scene_cache.invalidate();
+        self.selection_cache.invalidate();
         self.surface_cache.invalidate();
         self.cloud_cache.invalidate();
         self.cloud_panel.active = None;
