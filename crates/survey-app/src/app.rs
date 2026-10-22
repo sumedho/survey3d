@@ -44,6 +44,7 @@ use crate::ui::points_table::{PointsAction, PointsWindow};
 use crate::ui::properties::properties_panel;
 use crate::ui::reports::{ReportAction, ReportsWindow};
 use crate::ui::resection_window::{ResectionAction, ResectionWindow};
+use crate::ui::sections::SectionsWindow;
 use crate::ui::settings_window::SettingsWindow;
 use crate::ui::subdivide_window::{SubdivideAction, SubdivideWindow};
 use crate::ui::surfaces::{SurfaceAction, SurfaceWindow, SurfaceWindowAction, build_from};
@@ -204,6 +205,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::CUBE,
     ),
     cmd(
+        "sections",
+        "Sections (long and cross sections through surfaces)",
+        "Surface",
+        icons::CHART_LINE,
+    ),
+    cmd(
         "contours",
         "Contours of the active surface to polylines",
         "Surface",
@@ -269,6 +276,7 @@ pub struct SurveyApp {
     surface_indexes: SurfaceIndexes,
     surface_window: SurfaceWindow,
     volumes_window: VolumesWindow,
+    sections_window: SectionsWindow,
     active_surface: Option<SurfaceId>,
     snap_engine: SnapEngine,
     snap_override: Option<SnapMode>,
@@ -401,6 +409,7 @@ impl SurveyApp {
             surface_indexes: SurfaceIndexes::default(),
             surface_window: SurfaceWindow::default(),
             volumes_window: VolumesWindow::default(),
+            sections_window: SectionsWindow::default(),
             active_surface: None,
             snap_engine: SnapEngine::default(),
             snap_override: None,
@@ -1119,6 +1128,10 @@ impl SurveyApp {
             "legend" => self.legend.open = true,
             "surface" | "tin" => self.surface_window.create(&self.project.doc),
             "contours" => self.contours_to_polylines(),
+            "sections" | "section" | "profile" => {
+                let line = self.selected_polylines().first().map(|(id, _)| *id);
+                self.sections_window.open_with(line);
+            }
             "volume" | "volumes" | "vol" => self.volumes_window.open(&self.project.doc, self.active_surface),
             "accuracy" | "tolerances" => self.settings_window.open_at_accuracy(),
             "codes" | "featurecodes" => self.codes_window.open(),

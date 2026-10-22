@@ -22,6 +22,7 @@ pub const CALCULATOR: &str = "\u{E538}";
 pub const CARET_DOWN: &str = "\u{E136}";
 pub const CARET_RIGHT: &str = "\u{E13A}";
 pub const CARET_UP: &str = "\u{E13C}";
+pub const CHART_LINE: &str = "\u{E154}";
 pub const CHECK: &str = "\u{E182}";
 pub const CHECK_CIRCLE: &str = "\u{E184}";
 pub const CIRCLE: &str = "\u{E18A}";

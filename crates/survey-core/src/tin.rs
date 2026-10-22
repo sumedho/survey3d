@@ -381,6 +381,67 @@ impl TinIndex {
     }
 }
 
+/// A profile along a plan polyline: runs of `(distance along, height)`
+/// separated where the line leaves the surface. Breaks are exact (every
+/// triangle edge crossing is included).
+pub fn profile(tin: &Tin, index: &TinIndex, line: &[DVec2]) -> Vec<Vec<(f64, f64)>> {
+    let mut runs: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut current: Vec<(f64, f64)> = Vec::new();
+    let mut start = 0.0;
+    for w in line.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let len = a.distance(b);
+        if len <= 0.0 {
+            continue;
+        }
+        let mut ts = vec![0.0, 1.0];
+        for i in index.candidates_in(a.min(b), a.max(b)) {
+            let t = tin.triangles[i as usize];
+            for k in 0..3 {
+                let p = tin.vertices[t[k] as usize].truncate();
+                let q = tin.vertices[t[(k + 1) % 3] as usize].truncate();
+                if let Some((s, u)) = crate::geom::line_intersection_2d(a, b, p, q)
+                    && (-1e-12..=1.0 + 1e-12).contains(&s)
+                    && (-1e-12..=1.0 + 1e-12).contains(&u)
+                {
+                    ts.push(s.clamp(0.0, 1.0));
+                }
+            }
+        }
+        ts.sort_by(f64::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y).abs() * len < 1e-9);
+        let at = |t: f64| index.height_at(tin, a + (b - a) * t);
+        for (k, t) in ts.iter().enumerate() {
+            // A gap between two points on the surface (e.g. across a hole).
+            if k > 0 {
+                let mid = 0.5 * (ts[k - 1] + t);
+                if at(mid).is_none() && !current.is_empty() {
+                    runs.push(std::mem::take(&mut current));
+                }
+            }
+            match at(*t) {
+                Some(z) => {
+                    let d = start + t * len;
+                    if current.last().is_none_or(|(x, _)| (d - x).abs() > 1e-9) {
+                        current.push((d, z));
+                    }
+                }
+                None => {
+                    if !current.is_empty() {
+                        runs.push(std::mem::take(&mut current));
+                    }
+                }
+            }
+        }
+        start += len;
+    }
+    if !current.is_empty() {
+        runs.push(current);
+    }
+    runs.retain(|r| r.len() > 1);
+    runs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,5 +559,46 @@ mod tests {
             }),
             Err(TinError::TooFewPoints)
         );
+    }
+
+    #[test]
+    fn profiles_are_exact_and_gapped() {
+        // A plane cut along a diagonal line, extending beyond the surface.
+        let tin = build(&TinInput {
+            points: plane(),
+            ..Default::default()
+        })
+        .expect("tin");
+        let index = tin.index();
+        let o = O.truncate();
+        let line = [o + DVec2::new(-10.0, 45.0), o + DVec2::new(100.0, 45.0)];
+        let runs = profile(&tin, &index, &line);
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        // Starts where the line enters the surface (x = 0, 10 m along) and ends at x = 90.
+        assert!((run[0].0 - 10.0).abs() < 1e-9 && (run.last().expect("end").0 - 100.0).abs() < 1e-9);
+        for (d, z) in run {
+            let x = d - 10.0;
+            assert!((z - (100.0 + 0.1 * x + 0.2 * 45.0)).abs() < 1e-9);
+        }
+        // Every vertical grid line and diagonal crossed is a break (more than 10 points).
+        assert!(run.len() > 10);
+
+        // A hole splits the profile into two runs.
+        let b = |pts: &[(f64, f64)]| {
+            pts.iter()
+                .map(|(x, y)| o + DVec2::new(*x, *y))
+                .collect::<Vec<_>>()
+        };
+        let holed = build(&TinInput {
+            points: plane(),
+            holes: vec![b(&[(40.0, 40.0), (60.0, 40.0), (60.0, 60.0), (40.0, 60.0)])],
+            ..Default::default()
+        })
+        .expect("tin");
+        let runs = profile(&holed, &holed.index(), &line);
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        assert!((runs[0].last().expect("end").0 - 50.0).abs() < 1e-6);
+        assert!((runs[1][0].0 - 70.0).abs() < 1e-6);
     }
 }

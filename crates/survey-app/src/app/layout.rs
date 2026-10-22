@@ -13,6 +13,7 @@ use egui_cad::viewport::{NavAction, view_controls};
 use crate::platform::FileKind;
 use crate::scene_build::select_in_box;
 use crate::tools::ToolGroup;
+use crate::ui::sections::SectionsAction;
 use crate::ui::surfaces::{SurfaceAction, SurfaceWindowAction, surfaces_panel};
 use crate::ui::volumes::VolumesAction;
 use egui_cad::ThemeMode;
@@ -116,6 +117,7 @@ const SURFACE_MENU: &[MenuEntry] = &[
     Item("Create surface…", "surface"),
     Separator,
     Item("Volumes…", "volume"),
+    Item("Sections…", "sections"),
     Item("Contours to polylines", "contours"),
 ];
 
@@ -1456,6 +1458,16 @@ impl SurveyApp {
         };
         if let Some(a) = self.surface_window.show(ctx, &self.project.doc, &closed) {
             self.apply_surface_window(a);
+        }
+        let selected_line = self
+            .sections_window
+            .open
+            .then(|| self.selected_polylines().first().map(|(id, _)| *id))
+            .flatten();
+        if let Some(SectionsAction::Report(title, text)) =
+            self.sections_window.show(ctx, &self.project.doc, selected_line)
+        {
+            self.reports.add(title, text);
         }
         match self.volumes_window.show(ctx, &self.project.doc, &closed) {
             Some(VolumesAction::Report(title, text)) => self.reports.add(title, text),
