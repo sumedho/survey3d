@@ -220,6 +220,24 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::POLYGON,
     ),
     cmd(
+        "alignments",
+        "Alignments (chainage, elements, set-out)",
+        "Construction",
+        icons::PATH,
+    ),
+    cmd(
+        "mkalign",
+        "Alignment from the selected polyline",
+        "Construction",
+        icons::SIGNPOST,
+    ),
+    cmd(
+        "stakeout",
+        "Stake-out sheet (angles and distances from a station)",
+        "Construction",
+        icons::TARGET,
+    ),
+    cmd(
         "mkparcel",
         "Parcels from selected closed polylines",
         "Cadastral",
