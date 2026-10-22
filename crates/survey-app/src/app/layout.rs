@@ -304,6 +304,7 @@ impl SurveyApp {
                     &mut action,
                 );
                 item(ui, "Export DXF…", None, Action::ExportDxf, &mut action);
+                item(ui, "Export GeoPackage…", None, Action::Run("gpkg"), &mut action);
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     ui.separator();

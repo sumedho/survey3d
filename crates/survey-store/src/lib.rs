@@ -8,6 +8,7 @@
 //! each entry stores `sha256(prev_hash ‖ entry)`, so editing the file outside the
 //! application is detectable with [`ProjectStore::verify_audit`].
 
+pub mod geopackage;
 mod schema;
 
 use std::path::{Path, PathBuf};

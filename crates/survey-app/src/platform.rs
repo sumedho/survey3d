@@ -20,6 +20,8 @@ pub enum FileKind {
     PointCloud,
     /// Raw total-station data (Leica GSI, Trimble JobXML).
     RawData,
+    /// OGC GeoPackage (export only).
+    GeoPackage,
 }
 
 impl FileKind {
@@ -33,6 +35,7 @@ impl FileKind {
             FileKind::LandXml => ("LandXML", &["xml"]),
             FileKind::PointCloud => ("Point cloud", &["las", "xyz", "txt", "pts", "csv"]),
             FileKind::RawData => ("Raw survey data", &["gsi", "jxl", "xml", "txt"]),
+            FileKind::GeoPackage => ("GeoPackage", &["gpkg"]),
         }
     }
 }

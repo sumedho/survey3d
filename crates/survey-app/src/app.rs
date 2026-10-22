@@ -261,6 +261,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::FILE_TEXT,
     ),
     cmd(
+        "gpkg",
+        "Export GeoPackage (points, lines, parcels)",
+        "File",
+        icons::FILE_TEXT,
+    ),
+    cmd(
         "netadj",
         "Least-squares network adjustment",
         "Survey",
@@ -1611,6 +1617,7 @@ impl SurveyApp {
             "parcelxml" => self.export_parcels_landxml(),
             "cloudin" | "importcloud" | "las" => self.platform.pick_file(ctx, FileKind::PointCloud),
             "rawin" | "gsi" | "jobxml" => self.platform.pick_file(ctx, FileKind::RawData),
+            "gpkg" | "geopackage" => self.export_geopackage(),
             "landxmlin" | "importxml" => self.platform.pick_file(ctx, FileKind::LandXml),
             "landxmlout" | "exportxml" => self.export_landxml(),
             "sections" | "section" | "profile" => {
@@ -1752,6 +1759,29 @@ impl SurveyApp {
         }
     }
 
+    fn export_geopackage(&mut self) {
+        let stem = file_stem(&self.project.doc.meta().name);
+        let result = survey_store::geopackage::export_geopackage(&self.project.doc)
+            .map_err(|e| e.to_string())
+            .and_then(|(bytes, s)| {
+                export(&self.platform, FileKind::GeoPackage, &stem, &bytes)
+                    .map(|w| w.map(|w| (w, s)))
+                    .map_err(|e| e.to_string())
+            });
+        match result {
+            Ok(Some((where_, s))) => {
+                let msg = format!(
+                    "Exported GeoPackage: {} points, {} lines, {} parcels",
+                    s.points, s.lines, s.parcels
+                );
+                self.command_line.info(format!("{msg} — {where_}"));
+                self.toasts.success(msg);
+            }
+            Ok(None) => {}
+            Err(e) => self.command_line.error(format!("GeoPackage export failed: {e}")),
+        }
+    }
+
     fn export_dxf(&mut self) {
         let text = survey_io::dxf::write_dxf(&dxf_export(&self.project.doc));
         let stem = file_stem(&self.project.doc.meta().name);
@@ -1888,8 +1918,8 @@ impl SurveyApp {
                     FileKind::LandXml => self.import_landxml(&name, &bytes),
                     FileKind::PointCloud => self.import_cloud(&name, &bytes),
                     FileKind::RawData => self.import_raw(&name, &bytes),
-                    // Reports are only saved, never opened.
-                    FileKind::Report => {}
+                    // Reports and GeoPackages are only saved, never opened.
+                    FileKind::Report | FileKind::GeoPackage => {}
                 },
                 #[cfg(not(target_arch = "wasm32"))]
                 FileEvent::ProjectPath(path) => {
