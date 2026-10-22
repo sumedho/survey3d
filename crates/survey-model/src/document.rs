@@ -34,6 +34,9 @@ pub struct ProjectMeta {
     /// Cadastral parcels.
     #[serde(default)]
     pub parcels: Vec<crate::parcel::ParcelRecord>,
+    /// Construction alignments.
+    #[serde(default)]
+    pub alignments: Vec<crate::alignment::AlignmentRecord>,
 }
 
 impl Default for ProjectMeta {
@@ -47,6 +50,7 @@ impl Default for ProjectMeta {
             tolerances: Tolerances::default(),
             traverses: Vec::new(),
             parcels: Vec::new(),
+            alignments: Vec::new(),
         }
     }
 }

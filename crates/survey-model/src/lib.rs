@@ -5,6 +5,7 @@
 //! undo/redo, records audit entries and lets the document track which records
 //! are dirty for incremental saving.
 
+pub mod alignment;
 pub mod command;
 pub mod coord_system;
 pub mod document;
@@ -17,6 +18,7 @@ pub mod selection;
 pub mod spatial;
 pub mod surface;
 
+pub use alignment::AlignmentRecord;
 pub use command::{ChangeSet, Command};
 pub use coord_system::CoordinateSystem;
 pub use document::{DirtyState, Document, ProjectMeta};

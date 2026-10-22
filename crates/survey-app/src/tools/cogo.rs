@@ -518,6 +518,8 @@ impl Tool for IntersectTool {
 #[derive(Default)]
 pub struct ChainageTool {
     line: Option<Polyline>,
+    /// Chainage at the polyline's start (from an alignment, else 0).
+    start: f64,
 }
 
 impl Tool for ChainageTool {
@@ -544,16 +546,21 @@ impl Tool for ChainageTool {
         match event {
             ToolEvent::Point(pick) => {
                 match &self.line {
-                    None => match ctx.hovered.and_then(|id| ctx.doc.entity(id)) {
-                        Some(Entity::Polyline(l)) => {
+                    None => match ctx.hovered.and_then(|id| ctx.doc.entity(id).map(|e| (id, e))) {
+                        Some((id, Entity::Polyline(l))) => {
                             self.line = Some(l.clone());
+                            let alignment = ctx.doc.meta().alignments.iter().find(|a| a.polyline == id);
+                            self.start = alignment.map_or(0.0, |a| a.start_chainage);
+                            if let Some(a) = alignment {
+                                ctx.log.info(format!("Alignment {}", a.name));
+                            }
                             let (len, _, _) =
                                 survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, l.closed);
                             let conv = ctx.conventions();
                             ctx.log.info(format!(
-                                "Alignment: chainage {} to {}",
-                                conv.format_chainage(0.0),
-                                conv.format_chainage(len)
+                                "Chainage {} to {}",
+                                conv.format_chainage(self.start),
+                                conv.format_chainage(self.start + len)
                             ));
                         }
                         Some(_) => ctx.log.warn("Pick a polyline"),
@@ -566,7 +573,7 @@ impl Tool for ChainageTool {
                             let conv = ctx.conventions();
                             ctx.log.result(format!(
                                 "Ch {}  Off {}",
-                                conv.format_chainage(so.chainage),
+                                conv.format_chainage(self.start + so.chainage),
                                 conv.format_length(so.offset)
                             ));
                         }
@@ -586,21 +593,25 @@ impl Tool for ChainageTool {
                     Ok::<_, survey_core::ParseError>((ch, off.unwrap_or(0.0)))
                 })();
                 match parsed {
-                    Ok((ch, off)) => match point_at_station(&l.vertices, &l.bulges, l.closed, ch, off) {
-                        Some(p) => {
-                            let name = ctx.doc.next_point_name();
-                            let conv = ctx.conventions();
-                            ctx.log.result(format!(
-                                "Point {name}: Ch {}  Off {}  → {}",
-                                conv.format_chainage(ch),
-                                conv.format_length(off),
-                                conv.format_coord(p, false)
-                            ));
-                            let point = new_point(ctx, name.clone(), p, false, "");
-                            ctx.execute(ChangeSet::new(format!("Set out point {name}")).insert_entity(point));
+                    Ok((ch, off)) => {
+                        match point_at_station(&l.vertices, &l.bulges, l.closed, ch - self.start, off) {
+                            Some(p) => {
+                                let name = ctx.doc.next_point_name();
+                                let conv = ctx.conventions();
+                                ctx.log.result(format!(
+                                    "Point {name}: Ch {}  Off {}  → {}",
+                                    conv.format_chainage(ch),
+                                    conv.format_length(off),
+                                    conv.format_coord(p, false)
+                                ));
+                                let point = new_point(ctx, name.clone(), p, false, "");
+                                ctx.execute(
+                                    ChangeSet::new(format!("Set out point {name}")).insert_entity(point),
+                                );
+                            }
+                            None => ctx.log.error("That chainage is beyond the ends of the polyline"),
                         }
-                        None => ctx.log.error("That chainage is beyond the ends of the polyline"),
-                    },
+                    }
                     Err(e) => ctx.log.error(e.to_string()),
                 }
                 ToolOutcome::Continue
@@ -628,7 +639,7 @@ impl Tool for ChainageTool {
                 DVec2::new(14.0, 14.0),
                 format!(
                     "Ch {}  Off {}",
-                    conv.format_chainage(so.chainage),
+                    conv.format_chainage(self.start + so.chainage),
                     conv.format_length(so.offset)
                 ),
             ));

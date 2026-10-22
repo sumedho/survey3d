@@ -37,6 +37,12 @@ fn sample() -> (Document, History) {
         boundary: EntityId(3),
         ..Default::default()
     });
+    meta.alignments.push(survey_model::AlignmentRecord {
+        name: "MC01".into(),
+        polyline: EntityId(3),
+        start_chainage: 1000.0,
+        ..Default::default()
+    });
     meta.coord_system = CoordinateSystem::Projected {
         name: "MGA2020 zone 56".into(),
         epsg: Some(7856),

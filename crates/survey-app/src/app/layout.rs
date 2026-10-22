@@ -14,6 +14,7 @@ use crate::platform::FileKind;
 use crate::scene_build::select_in_box;
 use crate::settings::Module;
 use crate::tools::ToolGroup;
+use crate::ui::alignments::AlignmentsAction;
 use crate::ui::parcels::ParcelsAction;
 use crate::ui::sections::SectionsAction;
 use crate::ui::surfaces::{SurfaceAction, SurfaceWindowAction, surfaces_panel};
@@ -146,6 +147,15 @@ const CADASTRAL_MENU: &[MenuEntry] = &[
     Item("Export parcels to LandXML…", "parcelxml"),
 ];
 
+const CONSTRUCTION_MENU: &[MenuEntry] = &[
+    Item("Alignments…", "alignments"),
+    Item("Alignment from selected polyline", "mkalign"),
+    Separator,
+    Item("Chainage & offset", "chainage"),
+    Item("Stake-out sheet…", "stakeout"),
+    Item("Sections…", "sections"),
+];
+
 /// A menu after View.
 struct Menu {
     title: &'static str,
@@ -177,6 +187,7 @@ const MENUS: &[Menu] = &[
     menu("Survey", SURVEY_MENU, &[], None),
     menu("Surface", SURFACE_MENU, &[], None),
     menu("Cadastral", CADASTRAL_MENU, &[], Some(Module::Cadastral)),
+    menu("Construction", CONSTRUCTION_MENU, &[], Some(Module::Construction)),
 ];
 
 /// Whether any menu table lists `command`.
@@ -969,6 +980,16 @@ impl SurveyApp {
         if self.settings.labels.any() || code_labels {
             self.draw_labels(&painter, out.rect, &theme);
         }
+        if self
+            .project
+            .doc
+            .meta()
+            .alignments
+            .iter()
+            .any(|a| a.show_chainages)
+        {
+            self.draw_chainages(&painter, out.rect, &theme);
+        }
         if self.project.doc.meta().parcels.iter().any(|p| p.annotate) {
             self.draw_parcel_annotations(&painter, out.rect, &theme);
         }
@@ -1402,6 +1423,80 @@ impl SurveyApp {
         }
     }
 
+    /// Chainage ticks along alignments, labelled where there is room.
+    fn draw_chainages(&self, painter: &egui::Painter, rect: egui::Rect, theme: &CadTheme) {
+        let doc = &self.project.doc;
+        let conv = doc.conventions();
+        let cam = &self.viewport.camera;
+        let font = egui::FontId::proportional(10.0);
+        let screen = |p: glam::DVec3| cam.world_to_screen(p).map(|(s, _)| to_screen(rect, s));
+        let stroke = egui::Stroke::new(1.2, theme.accent);
+        for a in doc.meta().alignments.iter().filter(|a| a.show_chainages) {
+            let Some(l) = crate::ui::alignments::centreline(doc, a) else {
+                continue;
+            };
+            if !doc.is_layer_visible(l.layer) {
+                continue;
+            }
+            let (length, _, _) = survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, l.closed);
+            let step = a.tick_interval.max(0.01);
+            // Pixels per tick decide how often to label.
+            let px_per_m = 1.0 / cam.world_per_pixel().max(1e-9);
+            let every = (70.0 / (step * px_per_m)).ceil().max(1.0) as i64;
+            let first = (a.start_chainage / step).ceil() as i64;
+            let last = ((a.start_chainage + length) / step).floor() as i64;
+            if last - first > 5000 {
+                continue;
+            }
+            let mut ticks: Vec<(f64, bool)> = (first..=last)
+                .map(|k| (k as f64 * step, k % every == 0))
+                .collect();
+            ticks.push((a.start_chainage, true));
+            ticks.push((a.start_chainage + length, true));
+            for (ch, label) in ticks {
+                let along = ch - a.start_chainage;
+                let (Some(p), Some(q)) = (
+                    survey_core::cogo::point_at_station(&l.vertices, &l.bulges, l.closed, along, 0.0),
+                    survey_core::cogo::point_at_station(&l.vertices, &l.bulges, l.closed, along, 1.0),
+                ) else {
+                    continue;
+                };
+                let (Some(sp), Some(sq)) = (screen(p), screen(q)) else {
+                    continue;
+                };
+                if !rect.contains(sp) {
+                    continue;
+                }
+                // Towards the right of the alignment on screen.
+                let right = (sq - sp).normalized();
+                let len = if label { 9.0 } else { 5.0 };
+                painter.line_segment([sp - right * len, sp + right * len], stroke);
+                if label {
+                    let mut angle = right.y.atan2(right.x);
+                    if angle > std::f32::consts::FRAC_PI_2 {
+                        angle -= std::f32::consts::PI;
+                    } else if angle < -std::f32::consts::FRAC_PI_2 {
+                        angle += std::f32::consts::PI;
+                    }
+                    let text = conv.format_chainage(ch);
+                    let w = painter
+                        .layout_no_wrap(text.clone(), font.clone(), theme.text)
+                        .size()
+                        .x;
+                    halo_text(
+                        painter,
+                        sp + right * (len + 4.0 + w / 2.0),
+                        text,
+                        &font,
+                        angle,
+                        theme.accent,
+                        theme.viewport_bg,
+                    );
+                }
+            }
+        }
+    }
+
     /// Cadastral annotation for parcels that ask for it: bearing above and
     /// distance below each line (radius and arc length on arcs), and the lot's
     /// name and area at its centre.
@@ -1659,6 +1754,41 @@ impl SurveyApp {
             Some(ParcelsAction::CreateFromSelection) => self.parcels_from_selection(),
             Some(ParcelsAction::ExportLandXml) => self.export_parcels_landxml(),
             Some(ParcelsAction::Select(_)) | None => {}
+        }
+        let one_line = self.alignments_window.open && !self.selected_polylines().is_empty();
+        match self.alignments_window.show(ctx, &self.project.doc, one_line) {
+            Some(AlignmentsAction::Create) => self.alignment_from_selection(),
+            Some(AlignmentsAction::Update(i, record)) => {
+                let mut meta = self.project.doc.meta().clone();
+                if let Some(slot) = meta.alignments.get_mut(i) {
+                    let label = format!("Edit alignment {}", record.name);
+                    *slot = record;
+                    self.execute(Box::new(ChangeSet::new(label).set_meta(meta)));
+                }
+            }
+            Some(AlignmentsAction::Delete(i)) => {
+                let mut meta = self.project.doc.meta().clone();
+                if i < meta.alignments.len() {
+                    let a = meta.alignments.remove(i);
+                    self.execute(Box::new(
+                        ChangeSet::new(format!("Remove alignment {}", a.name)).set_meta(meta),
+                    ));
+                }
+            }
+            Some(AlignmentsAction::Select(id)) if self.project.doc.contains(id) => {
+                self.project.selection.set([id]);
+            }
+            Some(AlignmentsAction::Report(title, text)) => self.reports.add(title, text),
+            Some(AlignmentsAction::SetOut(i, pts, code)) => self.create_setout(i, pts, code),
+            Some(AlignmentsAction::Select(_)) | None => {}
+        }
+        let targets: Vec<EntityId> = if self.stakeout_window.open {
+            self.project.selection.ids().iter().copied().collect()
+        } else {
+            Vec::new()
+        };
+        if let Some((title, text)) = self.stakeout_window.show(ctx, &self.project.doc, &targets) {
+            self.reports.add(title, text);
         }
         let selected_line = self
             .sections_window

@@ -6,6 +6,7 @@
 //! or formatting output — see [`conventions::Conventions`].
 
 pub mod accuracy;
+pub mod alignment;
 pub mod angle;
 pub mod arc;
 pub mod closure;

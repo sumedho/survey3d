@@ -34,6 +34,7 @@ use crate::tools::grips::Grip;
 use crate::tools::{
     CoreModule, DomainModule, Preview, SELECT_TOOL_ID, Tool, ToolCtx, ToolEvent, ToolOutcome, ToolRegistry,
 };
+use crate::ui::alignments::AlignmentsWindow;
 use crate::ui::audit_window::AuditWindow;
 use crate::ui::calculator::{CalcTab, CalculatorWindow};
 use crate::ui::closure_window::{ClosureAction, ClosureWindow};
@@ -47,6 +48,7 @@ use crate::ui::reports::{ReportAction, ReportsWindow};
 use crate::ui::resection_window::{ResectionAction, ResectionWindow};
 use crate::ui::sections::SectionsWindow;
 use crate::ui::settings_window::SettingsWindow;
+use crate::ui::stakeout::StakeoutWindow;
 use crate::ui::subdivide_window::{SubdivideAction, SubdivideWindow};
 use crate::ui::surfaces::{SurfaceAction, SurfaceWindow, SurfaceWindowAction, build_from};
 use crate::ui::traverse_window::{TraverseAction, TraverseWindow};
@@ -309,6 +311,8 @@ pub struct SurveyApp {
     volumes_window: VolumesWindow,
     sections_window: SectionsWindow,
     parcels_window: ParcelsWindow,
+    alignments_window: AlignmentsWindow,
+    stakeout_window: StakeoutWindow,
     active_surface: Option<SurfaceId>,
     snap_engine: SnapEngine,
     snap_override: Option<SnapMode>,
@@ -449,6 +453,8 @@ impl SurveyApp {
             volumes_window: VolumesWindow::default(),
             sections_window: SectionsWindow::default(),
             parcels_window: ParcelsWindow::default(),
+            alignments_window: AlignmentsWindow::default(),
+            stakeout_window: StakeoutWindow::default(),
             active_surface: None,
             snap_engine: SnapEngine::default(),
             snap_override: None,
@@ -996,6 +1002,80 @@ impl SurveyApp {
             .result(format!("Created {n} parcel{}", if n == 1 { "" } else { "s" }));
     }
 
+    /// Makes an alignment of the first selected polyline.
+    fn alignment_from_selection(&mut self) {
+        let Some((id, line)) = self.selected_polylines().into_iter().next() else {
+            self.command_line.warn("Select the centreline polyline first");
+            return;
+        };
+        let doc = &self.project.doc;
+        if doc.meta().alignments.iter().any(|a| a.polyline == id) {
+            self.alignments_window.open = true;
+            self.command_line.info("That polyline is already an alignment");
+            return;
+        }
+        let name = if line.name.trim().is_empty() {
+            format!("MC{:02}", doc.meta().alignments.len() + 1)
+        } else {
+            line.name.trim().to_string()
+        };
+        let mut meta = doc.meta().clone();
+        meta.alignments.push(survey_model::AlignmentRecord {
+            name: name.clone(),
+            polyline: id,
+            ..Default::default()
+        });
+        self.execute(Box::new(
+            ChangeSet::new(format!("Create alignment {name}")).set_meta(meta),
+        ));
+        self.alignments_window.open = true;
+        self.command_line.result(format!("Alignment {name} created"));
+    }
+
+    /// Adds set-out points along an alignment and their table to the reports.
+    fn create_setout(&mut self, index: usize, pts: Vec<survey_core::alignment::SetoutPoint>, code: String) {
+        let doc = &self.project.doc;
+        let Some(a) = doc.meta().alignments.get(index) else {
+            return;
+        };
+        let Some(line) = crate::ui::alignments::centreline(doc, a) else {
+            return;
+        };
+        let conv = doc.conventions();
+        let heights = line.vertices.iter().any(|v| v.z != 0.0);
+        let mut names = doc.point_names();
+        let mut cs = ChangeSet::new(format!("Set out {} ({} points)", a.name, pts.len()));
+        let mut point_names = Vec::new();
+        for p in &pts {
+            let name = names.next().unwrap_or_default();
+            cs.push_insert_entity(Entity::Point(survey_model::SurveyPoint {
+                name: name.clone(),
+                position: if heights {
+                    p.position
+                } else {
+                    p.position.truncate().extend(0.0)
+                },
+                height_known: heights,
+                code: code.clone(),
+                description: format!(
+                    "{} Ch {} {}",
+                    a.name,
+                    conv.format_chainage(p.chainage),
+                    crate::ui::alignments::offset_label(conv, p.offset)
+                ),
+                layer: doc.current_layer(),
+            }));
+            point_names.push(name);
+        }
+        let text = crate::ui::alignments::setout_report(conv, &a.name, &pts, &point_names);
+        let title = format!("Set-out {}", a.name);
+        let n = pts.len();
+        self.execute(Box::new(cs));
+        self.reports.add(title, text);
+        self.command_line
+            .result(format!("Set out {n} points (table added to the reports)"));
+    }
+
     fn export_parcels_landxml(&mut self) {
         let doc = &self.project.doc;
         let geoms: Vec<(String, String, f64, &survey_model::Polyline)> = doc
@@ -1322,6 +1402,9 @@ impl SurveyApp {
             "surface" | "tin" => self.surface_window.create(&self.project.doc),
             "contours" => self.contours_to_polylines(),
             "parcels" => self.parcels_window.open = true,
+            "alignments" | "align" => self.alignments_window.open = true,
+            "mkalign" => self.alignment_from_selection(),
+            "stakeout" | "setoutsheet" => self.stakeout_window.open = true,
             "mkparcel" | "parcel" => self.parcels_from_selection(),
             "parcelxml" => self.export_parcels_landxml(),
             "landxmlin" | "importxml" => self.platform.pick_file(ctx, FileKind::LandXml),
