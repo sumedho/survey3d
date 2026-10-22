@@ -1000,10 +1000,26 @@ impl SurveyApp {
     }
 
     fn import_cloud(&mut self, name: &str, bytes: &[u8]) {
+        #[cfg(target_arch = "wasm32")]
+        const MAX_CLOUD_POINTS: usize = 15_000_000;
+        #[cfg(not(target_arch = "wasm32"))]
+        const MAX_CLOUD_POINTS: usize = 60_000_000;
         match survey_io::pointcloud::read_cloud(bytes) {
             Ok(raw) => {
                 let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
-                let cloud = survey_model::PointCloud::from_points(stem, &raw.points, raw.colors);
+                let full = survey_model::PointCloud::from_points(stem, &raw.points, raw.colors);
+                drop(raw.points);
+                // Very large clouds are thinned so they fit in memory (a browser
+                // tab has a few GB at most).
+                let (cloud, spacing) = full.thinned_to(MAX_CLOUD_POINTS);
+                if let Some(s) = spacing {
+                    self.command_line.warn(format!(
+                        "{stem} has {} points; thinned to {} (one per {s:.3} m) to fit in memory",
+                        full.len(),
+                        cloud.len()
+                    ));
+                }
+                drop(full);
                 let summary = format!(
                     "Imported point cloud {stem}: {} points{}",
                     cloud.len(),
@@ -1048,6 +1064,21 @@ impl SurveyApp {
                 self.execute(Box::new(
                     ChangeSet::new(format!("Delete point cloud {name}")).delete_cloud(id),
                 ));
+            }
+            CloudAction::Thin(id, spacing) => {
+                let Some(c) = self.project.doc.cloud(id) else {
+                    return;
+                };
+                let t = c.thinned(spacing);
+                let summary = format!("Thinned {} to {} points ({} m)", c.name, t.len(), spacing);
+                self.execute(Box::new(
+                    ChangeSet::new(format!("Thin point cloud {}", c.name))
+                        .delete_cloud(id)
+                        .insert_cloud(t),
+                ));
+                self.cloud_panel.active = self.project.doc.clouds().last().map(|(id, _)| id);
+                self.command_line.result(summary.clone());
+                self.toasts.success(summary);
             }
             CloudAction::Surface(id, cell, thin, max_edge) => {
                 let Some(c) = self.project.doc.cloud(id) else {

@@ -12,6 +12,8 @@ pub enum CloudAction {
     Delete(PointCloudId),
     /// Build a surface: cloud, cell size, method, max edge.
     Surface(PointCloudId, f64, Thin, Option<f64>),
+    /// Replace the cloud with one point per spacing cube.
+    Thin(PointCloudId, f64),
 }
 
 pub struct CloudPanel {
@@ -19,6 +21,7 @@ pub struct CloudPanel {
     cell: f64,
     thin: Thin,
     max_edge: f64,
+    spacing: f64,
 }
 
 impl Default for CloudPanel {
@@ -28,6 +31,7 @@ impl Default for CloudPanel {
             cell: 1.0,
             thin: Thin::Lowest,
             max_edge: 0.0,
+            spacing: 0.05,
         }
     }
 }
@@ -128,6 +132,22 @@ impl CloudPanel {
                             .speed(0.1)
                             .suffix(" pt"),
                     );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Thin to");
+                    ui.add(
+                        egui::DragValue::new(&mut self.spacing)
+                            .range(0.001..=100.0)
+                            .speed(0.01)
+                            .suffix(" m"),
+                    );
+                    if ui
+                        .button("Thin")
+                        .on_hover_text("Keep one point per cube of this size (undoable)")
+                        .clicked()
+                    {
+                        action = Some(CloudAction::Thin(id, self.spacing));
+                    }
                 });
                 ui.separator();
                 ui.label(

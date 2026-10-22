@@ -137,6 +137,9 @@ pub struct ViewportCallback {
     pub size_px: [u32; 2],
     pub pixels_per_point: f32,
     pub frame: ViewportFrame,
+    /// Called when level-of-detail points are still streaming in, so the
+    /// host can schedule another frame (e.g. `ctx.request_repaint()`).
+    pub request_frame: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Creates the renderer's shared GPU resources. Call once at startup.
@@ -168,7 +171,13 @@ struct Resources {
 struct GpuChunk {
     origin: DVec3,
     radius: f32,
+    /// Resident point buffer and its length. For level-of-detail scenes this
+    /// is a prefix of the chunk's shuffled points, uploaded on demand.
     points: Option<(wgpu::Buffer, u32)>,
+    /// Points the chunk has in its scene.
+    total: u32,
+    /// Frame the chunk was last drawn (for eviction).
+    last_used: u64,
     lines: Option<(wgpu::Buffer, u32)>,
     /// Vertex buffer and vertex count.
     triangles: Option<(wgpu::Buffer, u32)>,
@@ -178,6 +187,8 @@ struct GpuChunk {
 struct Upload {
     revision: u64,
     lod: bool,
+    /// Level-of-detail scenes are kept to stream points from.
+    scene: Option<Arc<Scene>>,
     chunks: Vec<GpuChunk>,
 }
 
@@ -185,6 +196,17 @@ struct Upload {
 const LOD_DENSITY: f64 = 0.35;
 /// Most level-of-detail points drawn in one frame.
 const LOD_BUDGET: f64 = 4_000_000.0;
+/// Most level-of-detail points uploaded in one frame; the rest follow over
+/// the next frames, so a huge cloud never stalls a frame.
+const STREAM_PER_FRAME: u64 = 1_500_000;
+/// Smallest streamed upload, so a chunk is not re-uploaded for every small zoom step.
+const STREAM_MIN: u32 = 16_384;
+/// Level-of-detail points kept resident on the GPU per viewport before
+/// chunks that are off screen are evicted (least recently drawn first).
+#[cfg(target_arch = "wasm32")]
+const RESIDENT_BUDGET: u64 = 8_000_000;
+#[cfg(not(target_arch = "wasm32"))]
+const RESIDENT_BUDGET: u64 = 24_000_000;
 
 struct ViewResources {
     size: [u32; 2],
@@ -198,6 +220,7 @@ struct ViewResources {
     uploads: Vec<Upload>,
     /// Points to draw per chunk this frame (all, or a level-of-detail prefix).
     point_counts: Vec<u32>,
+    frame: u64,
 }
 
 impl Resources {
@@ -388,6 +411,7 @@ impl ViewResources {
             uniform_bind_group,
             uploads: Vec::new(),
             point_counts: Vec::new(),
+            frame: 0,
         }
     }
 
@@ -400,7 +424,7 @@ impl ViewResources {
         let mut lod_slots = Vec::new();
         for u in &self.uploads {
             for c in &u.chunks {
-                let n = c.points.as_ref().map_or(0, |(_, n)| *n);
+                let n = c.total;
                 if !u.lod || n == 0 {
                     counts.push(n);
                     continue;
@@ -450,13 +474,21 @@ impl ViewResources {
             let upload = Upload {
                 revision: scene.revision,
                 lod: scene.lod,
+                scene: scene.lod.then(|| scene.clone()),
                 chunks: scene
                     .chunks
                     .iter()
                     .map(|c| GpuChunk {
                         origin: c.origin,
                         radius: c.radius,
-                        points: instance_buffer(device, "cad_render_points", &c.points),
+                        // Level-of-detail points stream in as the view needs them.
+                        points: if scene.lod {
+                            None
+                        } else {
+                            instance_buffer(device, "cad_render_points", &c.points)
+                        },
+                        total: c.points.len() as u32,
+                        last_used: 0,
                         lines: instance_buffer(device, "cad_render_lines", &c.lines),
                         triangles: instance_buffer(device, "cad_render_triangles", &c.triangles),
                     })
@@ -468,6 +500,86 @@ impl ViewResources {
                 self.uploads.push(upload);
             }
         }
+    }
+
+    /// Uploads the level-of-detail points this frame needs (largest needs
+    /// first, within a per-frame budget) and evicts off-screen chunks when
+    /// the resident total exceeds the budget. Draw counts are clamped to
+    /// what is resident.
+    /// Returns true when some wanted points are still to be uploaded.
+    fn stream_points(&mut self, device: &wgpu::Device) -> bool {
+        self.frame += 1;
+        let frame = self.frame;
+        // (want, upload index, chunk index, flat index)
+        let mut requests = Vec::new();
+        let mut flat = 0;
+        for (ui, u) in self.uploads.iter_mut().enumerate() {
+            for (ci, c) in u.chunks.iter_mut().enumerate() {
+                let want = self.point_counts.get(flat).copied().unwrap_or(0);
+                if u.lod && want > 0 {
+                    c.last_used = frame;
+                    let resident = c.points.as_ref().map_or(0, |(_, n)| *n);
+                    if want > resident {
+                        requests.push((want, ui, ci, flat));
+                    }
+                }
+                flat += 1;
+            }
+        }
+        requests.sort_by_key(|r| std::cmp::Reverse(r.0));
+        let mut uploaded = 0u64;
+        let mut pending = false;
+        for (want, ui, ci, _) in requests {
+            if uploaded >= STREAM_PER_FRAME {
+                pending = true;
+                break;
+            }
+            let u = &mut self.uploads[ui];
+            let Some(scene) = &u.scene else { continue };
+            let src = &scene.chunks[ci].points;
+            // Over-fetch so small zooms are served from what is resident.
+            let n = (want.saturating_mul(2)).max(STREAM_MIN).min(src.len() as u32);
+            u.chunks[ci].points = instance_buffer(device, "cad_render_points_lod", &src[..n as usize]);
+            uploaded += u64::from(n);
+        }
+        // Evict least recently drawn chunks that are not needed this frame.
+        let mut resident: u64 = self
+            .uploads
+            .iter()
+            .filter(|u| u.lod)
+            .flat_map(|u| &u.chunks)
+            .map(|c| u64::from(c.points.as_ref().map_or(0, |(_, n)| *n)))
+            .sum();
+        if resident > RESIDENT_BUDGET {
+            let mut idle: Vec<(u64, usize, usize)> = Vec::new();
+            for (ui, u) in self.uploads.iter().enumerate().filter(|(_, u)| u.lod) {
+                for (ci, c) in u.chunks.iter().enumerate() {
+                    if c.points.is_some() && c.last_used < frame {
+                        idle.push((c.last_used, ui, ci));
+                    }
+                }
+            }
+            idle.sort_unstable();
+            for (_, ui, ci) in idle {
+                if resident <= RESIDENT_BUDGET {
+                    break;
+                }
+                if let Some((_, n)) = self.uploads[ui].chunks[ci].points.take() {
+                    resident -= u64::from(n);
+                }
+            }
+        }
+        // Draw only what is resident.
+        let mut flat = 0;
+        for u in &self.uploads {
+            for c in &u.chunks {
+                if let Some(count) = self.point_counts.get_mut(flat) {
+                    *count = (*count).min(c.points.as_ref().map_or(0, |(_, n)| *n));
+                }
+                flat += 1;
+            }
+        }
+        pending
     }
 
     fn chunks(&self) -> impl Iterator<Item = &GpuChunk> {
@@ -726,6 +838,11 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
         };
         view.upload_scenes(device, &frame.scenes);
         view.plan_points(camera);
+        if view.stream_points(device)
+            && let Some(request) = &self.request_frame
+        {
+            request();
+        }
         if view.uniform_slots < needed_slots {
             let slots = needed_slots.next_power_of_two();
             let (buffer, bind_group) = create_uniforms(uniform_layout, symbols, stride, device, slots);

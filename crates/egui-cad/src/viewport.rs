@@ -338,6 +338,10 @@ impl<'a> Viewport<'a> {
                         grid,
                         background: CadTheme::rgba_f32(theme.viewport_bg),
                     },
+                    request_frame: Some({
+                        let ctx = ui.ctx().clone();
+                        std::sync::Arc::new(move || ctx.request_repaint())
+                    }),
                 },
             ));
 
