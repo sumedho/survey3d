@@ -9,6 +9,10 @@ license.workspace = true
 [lints]
 workspace = true
 
+[lib]
+name = "survey_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "survey3d"
 path = "src/main.rs"

@@ -1,12 +1,17 @@
 //! The survey3d application: input routing, tools and file handling.
-//! Panel and viewport drawing live in [`layout`].
+//! The interface is drawn by the submodules: [`menus`], [`panels`], [`viewport`],
+//! [`overlays`] and [`dialogs`].
 
-mod layout;
+mod dialogs;
+mod menus;
+mod overlays;
+mod panels;
+mod viewport;
 
 use cad_render::{GridSettings, Projection};
 use egui::{Key, KeyboardShortcut, Modifiers};
 use egui_cad::chrome::{bar_frame, panel_frame, section};
-use egui_cad::command_line::{CommandLine, CommandLineEvent, CommandLineState, Completion, LogKind};
+use egui_cad::command_line::{CommandLine, CommandLineEvent, Completion, LogKind};
 use egui_cad::command_palette::{CommandPalette, PaletteItem};
 use egui_cad::constraint::constrain_direction;
 use egui_cad::layer_panel::{LayerAction, LayerRow, layer_panel};
@@ -19,22 +24,20 @@ use egui_cad::viewport::{Viewport, ViewportState, draw_pickbox, draw_world_polyl
 use egui_cad::{CadTheme, ThemeMode, icons};
 use glam::DVec3;
 use survey_core::Aabb3;
-use survey_core::point_input::PointInput;
-use survey_model::{ChangeSet, Color, Command, Entity, EntityId, Layer, LayerId, SurfaceId};
+use survey_model::{
+    AlignmentRecord, ChangeSet, Color, Entity, EntityId, Layer, LayerId, ParcelRecord, SheetRecord,
+};
 use survey_store::ProjectStore;
 
 use crate::cloud_view::CloudSceneCache;
-use crate::import_command::{ImportEntities, LayerRef};
-use crate::interchange::{DxfExportOptions, dxf_export, dxf_import};
 use crate::platform::{FileEvent, FileKind, Platform, export};
 use crate::project::{APP_VERSION, Project};
 use crate::scene_build::{DocSnapProvider, SceneCache, color32, hit_test};
+use crate::session::{Event, Panel, Session, Toast};
 use crate::settings::AppSettings;
 use crate::surface_view::{SurfaceIndexes, SurfaceSceneCache};
 use crate::tools::grips::Grip;
-use crate::tools::{
-    CoreModule, DomainModule, Preview, SELECT_TOOL_ID, Tool, ToolCtx, ToolEvent, ToolOutcome, ToolRegistry,
-};
+use crate::tools::{Preview, SELECT_TOOL_ID, ToolEvent};
 use crate::ui::alignments::AlignmentsWindow;
 use crate::ui::audit_window::AuditWindow;
 use crate::ui::calculator::{CalcTab, CalculatorWindow};
@@ -56,14 +59,11 @@ use crate::ui::sheets::{PlotFormat, SheetsWindow, ViewInfo};
 use crate::ui::stakeout::StakeoutWindow;
 use crate::ui::stockpile::StockpileWindow;
 use crate::ui::subdivide_window::{SubdivideAction, SubdivideWindow};
-use crate::ui::surfaces::{SurfaceAction, SurfaceWindow, SurfaceWindowAction, build_from};
+use crate::ui::surfaces::{SurfaceAction, SurfaceWindow, SurfaceWindowAction};
 use crate::ui::traverse_window::{TraverseAction, TraverseWindow};
 use crate::ui::volumes::VolumesWindow;
 
 const SETTINGS_KEY: &str = "survey3d.settings";
-
-/// Polyline ends closer than this (plan, metres) are joined.
-const JOIN_TOLERANCE: f64 = 0.001;
 
 /// A command handled by the application itself (not a tool).
 struct AppCommand {
@@ -372,9 +372,7 @@ enum Discard {
 pub struct SurveyApp {
     settings: AppSettings,
     theme: CadTheme,
-    project: Project,
-    tools: ToolRegistry,
-    active_tool: Box<dyn Tool>,
+    session: Session,
     viewport: ViewportState,
     scene_cache: SceneCache,
     surface_cache: SurfaceSceneCache,
@@ -390,18 +388,13 @@ pub struct SurveyApp {
     stockpile_window: StockpileWindow,
     projection_window: ProjectionWindow,
     network_window: NetworkWindow,
-    active_surface: Option<SurfaceId>,
     snap_engine: SnapEngine,
-    snap_override: Option<SnapMode>,
-    command_line: CommandLineState,
     completions: Vec<Completion>,
     platform: Platform,
     /// Resolved cursor position this frame (snapped if possible).
     pick: Option<Pick>,
-    hovered_entity: Option<EntityId>,
     /// Grips of the selection, cached by `(document revision, selection revision)`.
     grips: (Option<(u64, u64)>, Vec<Grip>),
-    hovered_grip: Option<Grip>,
     csv_dialog: Option<CsvImportDialog>,
     palette: CommandPalette,
     toasts: Toasts,
@@ -421,7 +414,6 @@ pub struct SurveyApp {
     confirm_discard: Option<Discard>,
     allowed_to_close: bool,
     title: String,
-    shift_down: bool,
     /// Entity counts per layer, cached by document revision.
     layer_counts: (u64, std::collections::HashMap<LayerId, usize>),
     /// A crash-recovery snapshot waiting for the user to accept or discard it.
@@ -473,13 +465,10 @@ impl SurveyApp {
         let theme = CadTheme::new(settings.theme, settings.accent, settings.density);
         theme.apply(&cc.egui_ctx);
 
-        let mut tools = ToolRegistry::default();
-        // Domain modules (cadastral, construction, mining) register here as they are added.
-        let modules: Vec<Box<dyn DomainModule>> = vec![Box::new(CoreModule)];
-        for m in &modules {
-            m.register(&mut tools);
-        }
-        let mut completions: Vec<Completion> = tools
+        let project = Project::new(&settings).expect("in-memory SQLite is available");
+        let mut session = Session::new(project);
+        let mut completions: Vec<Completion> = session
+            .tools
             .tools()
             .iter()
             .flat_map(|t| {
@@ -495,24 +484,22 @@ impl SurveyApp {
         }));
         completions.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let project = Project::new(&settings).expect("in-memory SQLite is available");
-        let active_tool = (tools.get(SELECT_TOOL_ID).expect("select tool registered").create)();
         let mut viewport = ViewportState::new(1);
         viewport.camera.target = DVec3::ZERO;
 
         let platform = Platform::default();
-        let mut command_line = CommandLineState::default();
-        let mut module_names: Vec<&str> = modules.iter().map(|m| m.name()).collect();
+        let mut module_names: Vec<&str> = session.module_names().collect();
         module_names.extend(
             crate::settings::Module::ALL
                 .into_iter()
                 .filter(|m| settings.modules.is_on(*m))
                 .map(|m| m.name()),
         );
-        command_line.info(format!(
+        let banner = format!(
             "survey3d {APP_VERSION} — modules: {} — type 'help' for commands.",
             module_names.join(", ")
-        ));
+        );
+        session.log.info(banner);
 
         #[cfg(target_arch = "wasm32")]
         platform.check_recovery(&cc.egui_ctx);
@@ -520,9 +507,7 @@ impl SurveyApp {
         Self {
             settings,
             theme,
-            project,
-            tools,
-            active_tool,
+            session,
             viewport,
             scene_cache: SceneCache::default(),
             surface_cache: SurfaceSceneCache::default(),
@@ -538,16 +523,11 @@ impl SurveyApp {
             stockpile_window: StockpileWindow::default(),
             projection_window: ProjectionWindow::default(),
             network_window: NetworkWindow::default(),
-            active_surface: None,
             snap_engine: SnapEngine::default(),
-            snap_override: None,
-            command_line,
             completions,
             platform,
             pick: None,
-            hovered_entity: None,
             grips: (None, Vec::new()),
-            hovered_grip: None,
             csv_dialog: None,
             palette: CommandPalette::default(),
             toasts: Toasts::default(),
@@ -567,7 +547,6 @@ impl SurveyApp {
             confirm_discard: None,
             allowed_to_close: false,
             title: String::new(),
-            shift_down: false,
             layer_counts: (0, Default::default()),
             #[cfg(target_arch = "wasm32")]
             recovery: None,
@@ -576,846 +555,106 @@ impl SurveyApp {
         }
     }
 
-    // ------------------------------------------------------------------ editing
+    // ------------------------------------------------------------------ session
 
-    fn execute(&mut self, command: Box<dyn Command>) {
-        let p = &mut self.project;
-        p.history.execute(command, &mut p.doc);
-        let doc = &p.doc;
-        p.selection.retain(|id| doc.contains(id));
-    }
-
-    fn undo(&mut self) {
-        let p = &mut self.project;
-        match p.history.undo(&mut p.doc) {
-            Some(label) => self.command_line.info(format!("Undo: {label}")),
-            None => self.command_line.warn("Nothing to undo"),
+    /// Shows what the session asked for: toasts, reports, panels, view changes.
+    fn handle_session_events(&mut self, ctx: &egui::Context) {
+        let events = self.session.take_events();
+        if !events.is_empty() {
+            ctx.request_repaint();
         }
-        let doc = &p.doc;
-        p.selection.retain(|id| doc.contains(id));
-    }
-
-    fn redo(&mut self) {
-        let p = &mut self.project;
-        match p.history.redo(&mut p.doc) {
-            Some(label) => self.command_line.info(format!("Redo: {label}")),
-            None => self.command_line.warn("Nothing to redo"),
-        }
-        let doc = &p.doc;
-        p.selection.retain(|id| doc.contains(id));
-    }
-
-    fn delete_selection(&mut self) {
-        let ids: Vec<EntityId> = self.project.selection.ids().iter().copied().collect();
-        let ids: Vec<EntityId> = ids
-            .into_iter()
-            .filter(|id| self.project.doc.is_entity_editable(*id))
-            .collect();
-        if ids.is_empty() {
-            return;
-        }
-        let mut cs = ChangeSet::new(format!("Delete {} objects", ids.len()));
-        for id in &ids {
-            cs.push_delete_entity(*id);
-        }
-        self.execute(Box::new(cs));
-        self.command_line.info(format!("Deleted {} objects", ids.len()));
-    }
-
-    /// Editable selected polylines.
-    fn selected_polylines(&self) -> Vec<(EntityId, survey_model::Polyline)> {
-        let doc = &self.project.doc;
-        self.project
-            .selection
-            .ids()
-            .iter()
-            .filter(|id| doc.is_entity_editable(**id))
-            .filter_map(|id| match doc.entity(*id) {
-                Some(Entity::Polyline(l)) => Some((*id, l.clone())),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn explode_selection(&mut self) {
-        let lines = self.selected_polylines();
-        if lines.is_empty() {
-            self.command_line.warn("Select the polylines to explode first");
-            return;
-        }
-        let mut cs = ChangeSet::new(format!("Explode {} polylines", lines.len()));
-        let mut parts = 0;
-        for (id, l) in &lines {
-            cs.push_delete_entity(*id);
-            for part in l.explode() {
-                cs.push_insert_entity(Entity::Polyline(part));
-                parts += 1;
+        for event in events {
+            match event {
+                Event::Toast(Toast::Success, text) => self.toasts.success(text),
+                Event::Toast(Toast::Warning, text) => self.toasts.warning(text),
+                Event::Report { title, text } => self.reports.add(title, text),
+                Event::ZoomExtents => self.zoom_extents(),
+                Event::Open(Panel::Parcels) => self.parcels_window.open = true,
+                Event::Open(Panel::Alignments) => self.alignments_window.open = true,
+                Event::Open(Panel::FeatureCodes) => self.codes_window.open(),
+                Event::Open(Panel::Network { source }) => {
+                    self.network_window.open_with(&self.session.project.doc);
+                    self.network_window.select_only(source);
+                }
+                Event::SelectCloud(id) => self.cloud_panel.active = Some(id),
             }
         }
-        self.execute(Box::new(cs));
-        self.command_line.result(format!(
-            "Exploded {} polylines into {parts} segments",
-            lines.len()
-        ));
     }
 
-    fn join_selection(&mut self) {
-        let lines = self.selected_polylines();
-        if lines.len() < 2 {
-            self.command_line.warn("Select two or more polylines to join");
-            return;
+    fn submit(&mut self, ctx: &egui::Context, text: String) {
+        if !self.session.submit(&text) && !self.run_app_command(ctx, text.trim()) {
+            self.session.submit_unhandled(text.trim());
         }
-        let polylines: Vec<_> = lines.iter().map(|(_, l)| l.clone()).collect();
-        let joined = survey_model::join_polylines(&polylines, JOIN_TOLERANCE);
-        if joined.len() == lines.len() {
-            self.command_line
-                .warn("None of the selected polylines meet end to end");
-            return;
-        }
-        let mut cs = ChangeSet::new(format!("Join {} polylines", lines.len()));
-        for (id, _) in &lines {
-            cs.push_delete_entity(*id);
-        }
-        for l in &joined {
-            cs.push_insert_entity(Entity::Polyline(l.clone()));
-        }
-        self.execute(Box::new(cs));
-        self.command_line
-            .result(format!("Joined {} polylines into {}", lines.len(), joined.len()));
-    }
-
-    fn reverse_selection(&mut self) {
-        let lines = self.selected_polylines();
-        if lines.is_empty() {
-            self.command_line.warn("Select the polylines to reverse first");
-            return;
-        }
-        let mut cs = ChangeSet::new(format!("Reverse {} polylines", lines.len()));
-        for (id, mut l) in lines {
-            l.reverse();
-            cs.push_update_entity(id, Entity::Polyline(l));
-        }
-        self.execute(Box::new(cs));
-    }
-
-    /// Adds a report describing the selection: polyline legs (bearing, distance,
-    /// arcs) and point coordinates.
-    fn list_selection(&mut self) {
-        let doc = &self.project.doc;
-        let conv = doc.conventions();
-        if self.project.selection.is_empty() {
-            self.command_line.warn("Select objects to list first");
-            return;
-        }
-        let mut text = String::new();
-        for id in self.project.selection.ids() {
-            match doc.entity(*id) {
-                Some(Entity::Point(p)) => {
-                    text.push_str(&format!(
-                        "POINT {:<10} {}  {}  {}\n",
-                        p.name,
-                        conv.format_coord(p.position, p.height_known),
-                        p.code,
-                        p.description
-                    ));
-                }
-                Some(Entity::Polyline(l)) => {
-                    text.push_str(&crate::listing::polyline_listing(l, conv));
-                }
-                None => {}
-            }
-        }
-        let n = self.project.selection.len();
-        self.reports
-            .add(format!("Listing ({})", crate::tools::objects(n)), text);
     }
 
     fn apply_surface_action(&mut self, action: SurfaceAction) {
         match action {
-            SurfaceAction::New => self.surface_window.create(&self.project.doc),
-            SurfaceAction::Edit(id) => self.surface_window.edit(&self.project.doc, id),
-            SurfaceAction::Delete(id) => {
-                let name = self
-                    .project
-                    .doc
-                    .surface(id)
-                    .map(|s| s.name.clone())
-                    .unwrap_or_default();
-                self.execute(Box::new(
-                    ChangeSet::new(format!("Delete surface {name}")).delete_surface(id),
-                ));
-            }
-            SurfaceAction::Style(id, style) => {
-                let name = self
-                    .project
-                    .doc
-                    .surface(id)
-                    .map(|s| s.name.clone())
-                    .unwrap_or_default();
-                self.execute(Box::new(
-                    ChangeSet::new(format!("Surface {name} display")).set_surface_style(id, style),
-                ));
-            }
-            SurfaceAction::Rebuild(id) => {
-                let doc = &self.project.doc;
-                let Some(s) = doc.surface(id) else {
-                    return;
-                };
-                let Some(def) = &s.definition else {
-                    return;
-                };
-                match build_from(doc, def) {
-                    Ok(tin) => {
-                        let summary = format!(
-                            "Surface {}: {} points, {} triangles",
-                            s.name,
-                            tin.vertices.len(),
-                            tin.triangles.len()
-                        );
-                        let mut surface = s.clone();
-                        surface.tin = tin;
-                        let label = format!("Rebuild surface {}", s.name);
-                        self.execute(Box::new(ChangeSet::new(label).update_surface(id, surface)));
-                        self.command_line.result(summary);
-                    }
-                    Err(e) => self.command_line.error(format!("Surface {}: {e}", s.name)),
-                }
-            }
+            SurfaceAction::New => self.surface_window.create(&self.session.project.doc),
+            SurfaceAction::Edit(id) => self.surface_window.edit(&self.session.project.doc, id),
+            SurfaceAction::Delete(id) => self.session.delete_surface(id),
+            SurfaceAction::Style(id, style) => self.session.set_surface_style(id, style),
+            SurfaceAction::Rebuild(id) => self.session.rebuild_surface(id),
         }
-    }
-
-    /// The surface commands act on: the active one, else the only one.
-    fn target_surface(&mut self) -> Option<SurfaceId> {
-        let doc = &self.project.doc;
-        if let Some(id) = self.active_surface.filter(|id| doc.surface(*id).is_some()) {
-            return Some(id);
-        }
-        let mut ids = doc.surfaces().map(|(id, _)| id);
-        match (ids.next(), ids.next()) {
-            (Some(id), None) => Some(id),
-            (None, _) => {
-                self.command_line
-                    .warn("Create a surface first (Surface → Create surface…)");
-                None
-            }
-            _ => {
-                self.command_line
-                    .warn("Select a surface in the Surfaces panel first");
-                None
-            }
-        }
-    }
-
-    /// Adds the active surface's contours (at its contour interval) as polylines.
-    fn contours_to_polylines(&mut self) {
-        let Some(id) = self.target_surface() else {
-            return;
-        };
-        let doc = &self.project.doc;
-        let Some(s) = doc.surface(id) else {
-            return;
-        };
-        let contours = crate::surface_view::surface_contours(s);
-        if contours.is_empty() {
-            self.command_line.warn("No contours at this interval");
-            return;
-        }
-        let mut cmd = ImportEntities::new(format!("Contours of {}", s.name));
-        let mut layer = |name: &str, color: Color| match doc.layer_by_name(name) {
-            Some(l) => LayerRef::Existing(l.id),
-            None => cmd.add_layer(name.to_string(), color, true),
-        };
-        let minor = layer("CONTOUR MINOR", Color::rgb(160, 130, 100));
-        let major = layer("CONTOUR MAJOR", Color::rgb(200, 160, 110));
-        let n = contours.len();
-        for c in contours {
-            let line = survey_model::Polyline {
-                name: format!("Contour {}", doc.conventions().format_length(c.z)),
-                vertices: c.points,
-                bulges: Vec::new(),
-                closed: c.closed,
-                code: String::new(),
-                layer: doc.current_layer(),
-            };
-            cmd.add(if c.major { major } else { minor }, Entity::Polyline(line));
-        }
-        let summary = format!("Contours: added {n} polylines from {}", s.name);
-        self.execute(Box::new(cmd));
-        self.command_line.result(summary);
     }
 
     fn apply_surface_window(&mut self, action: SurfaceWindowAction) {
         match action {
-            SurfaceWindowAction::Create(surface) => {
-                let summary = format!(
-                    "Surface {}: {} points, {} triangles",
-                    surface.name,
-                    surface.tin.vertices.len(),
-                    surface.tin.triangles.len()
-                );
-                let cmd = ChangeSet::new(format!("Create surface {}", surface.name)).insert_surface(surface);
-                self.execute(Box::new(cmd));
-                // New surfaces get the highest id.
-                self.active_surface = self.project.doc.surfaces().last().map(|(id, _)| id);
-                self.command_line.result(summary.clone());
-                self.toasts.success(summary);
-            }
-            SurfaceWindowAction::Update(id, surface) => {
-                let label = format!("Rebuild surface {}", surface.name);
-                self.execute(Box::new(ChangeSet::new(label).update_surface(id, surface)));
-            }
-        }
-    }
-
-    /// Creates the mean of the selected points and reports their spread.
-    fn average_selection(&mut self) {
-        let doc = &self.project.doc;
-        let points: Vec<(DVec3, bool)> = self
-            .project
-            .selection
-            .ids()
-            .iter()
-            .filter_map(|id| match doc.entity(*id) {
-                Some(Entity::Point(p)) => Some((p.position, p.height_known)),
-                _ => None,
-            })
-            .collect();
-        if points.len() < 2 {
-            self.command_line.warn("Select two or more points to average");
-            return;
-        }
-        let Some(avg) = survey_core::cogo::average(&points) else {
-            return;
-        };
-        let conv = doc.conventions();
-        let name = doc.next_point_name();
-        let len = |v: f64| conv.format_length(v);
-        let (ea, nb) = conv.horizontal_labels();
-        let mut spread = format!(
-            "spread {} plan (sd {ea} {} {nb} {})",
-            len(avg.max_plan),
-            len(avg.sd.x),
-            len(avg.sd.y)
-        );
-        if avg.height_known {
-            spread.push_str(&format!(
-                ", {} height (sd {})",
-                len(avg.max_height),
-                len(avg.sd.z)
-            ));
-        }
-        let summary = format!(
-            "Average of {} points → {name}: {}; {spread}",
-            points.len(),
-            conv.format_coord(avg.position, avg.height_known)
-        );
-        let point = survey_model::SurveyPoint {
-            name: name.clone(),
-            position: avg.position,
-            height_known: avg.height_known,
-            code: "AVG".into(),
-            description: format!("Average of {} points", points.len()),
-            layer: doc.current_layer(),
-        };
-        self.execute(Box::new(
-            ChangeSet::new(format!("Average point {name}")).insert_entity(Entity::Point(point)),
-        ));
-        self.command_line.result(summary);
-    }
-
-    /// Stores `library` in the project if it differs (one undoable change).
-    fn apply_feature_codes(&mut self, library: survey_core::field_to_finish::FeatureLibrary) {
-        if self.project.doc.meta().feature_codes == library {
-            return;
-        }
-        let mut meta = self.project.doc.meta().clone();
-        meta.feature_codes = library;
-        self.execute(Box::new(ChangeSet::new("Edit feature codes").set_meta(meta)));
-    }
-
-    fn process_linework(
-        &mut self,
-        library: survey_core::field_to_finish::FeatureLibrary,
-        only_selected: bool,
-        assign_layers: bool,
-    ) {
-        if library.codes.is_empty() {
-            self.command_line
-                .warn("The feature code library is empty — open it with 'codes'");
-            self.codes_window.open();
-            return;
-        }
-        self.apply_feature_codes(library);
-        let selection = self.project.selection.ids().clone();
-        let options = crate::field_to_finish::LineworkOptions {
-            only: only_selected.then_some(&selection),
-            assign_layers,
-        };
-        let (cmd, summary) = crate::field_to_finish::build_linework(
-            &self.project.doc,
-            &self.project.doc.meta().feature_codes,
-            &options,
-        );
-        if !cmd.is_empty() {
-            self.execute(Box::new(cmd));
-        }
-        let text = summary.describe();
-        self.command_line.result(text.clone());
-        if summary.unknown.is_empty() {
-            self.toasts.success(format!("{} strings", summary.lines));
-        } else {
-            self.toasts
-                .warning("Some codes are not in the library — see the command line");
-        }
-    }
-
-    /// Raw instrument data: kept with the project for the network adjustment;
-    /// coordinates in the file add any points the project does not have.
-    fn import_raw(&mut self, name: &str, bytes: &[u8]) {
-        let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
-        match survey_io::rawdata::read_raw(stem, bytes) {
-            Ok(data) => {
-                let doc = &self.project.doc;
-                let mut meta = doc.meta().clone();
-                meta.field_data.retain(|f| f.name != data.name);
-                let mut cs = ChangeSet::new(format!("Import raw data {stem}"));
-                let mut added = 0;
-                for (pname, p) in &data.points {
-                    if doc.find_point_by_name(pname).is_none() {
-                        cs.push_insert_entity(Entity::Point(survey_model::SurveyPoint {
-                            name: pname.clone(),
-                            position: *p,
-                            height_known: p.z != 0.0,
-                            code: String::new(),
-                            description: format!("From {}", data.format),
-                            layer: doc.current_layer(),
-                        }));
-                        added += 1;
-                    }
-                }
-                let pointings: usize = data.setups.iter().map(|s| s.observations.len()).sum();
-                let summary = format!(
-                    "Imported {} {stem}: {} setups, {pointings} observations, {added} new points",
-                    data.format,
-                    data.setups.len()
-                );
-                let key = format!("f:{}", data.name);
-                meta.field_data.push(data);
-                self.execute(Box::new(cs.set_meta(meta)));
-                self.network_window.open_with(&self.project.doc);
-                self.network_window.select_only(key);
-                if added > 0 {
-                    self.zoom_extents();
-                }
-                self.command_line.result(summary.clone());
-                self.toasts.success(summary);
-            }
-            Err(e) => self.command_line.error(format!("Could not read {name}: {e}")),
-        }
-    }
-
-    fn import_cloud(&mut self, name: &str, bytes: &[u8]) {
-        #[cfg(target_arch = "wasm32")]
-        const MAX_CLOUD_POINTS: usize = 15_000_000;
-        #[cfg(not(target_arch = "wasm32"))]
-        const MAX_CLOUD_POINTS: usize = 60_000_000;
-        match survey_io::pointcloud::read_cloud(bytes) {
-            Ok(raw) => {
-                let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
-                let full = survey_model::PointCloud::from_points(stem, &raw.points, raw.colors);
-                drop(raw.points);
-                // Very large clouds are thinned so they fit in memory (a browser
-                // tab has a few GB at most).
-                let (cloud, spacing) = full.thinned_to(MAX_CLOUD_POINTS);
-                if let Some(s) = spacing {
-                    self.command_line.warn(format!(
-                        "{stem} has {} points; thinned to {} (one per {s:.3} m) to fit in memory",
-                        full.len(),
-                        cloud.len()
-                    ));
-                }
-                drop(full);
-                let summary = format!(
-                    "Imported point cloud {stem}: {} points{}",
-                    cloud.len(),
-                    if cloud.colors.is_some() {
-                        " with colours"
-                    } else {
-                        ""
-                    }
-                );
-                self.execute(Box::new(
-                    ChangeSet::new(format!("Import point cloud {stem}")).insert_cloud(cloud),
-                ));
-                self.cloud_panel.active = self.project.doc.clouds().last().map(|(id, _)| id);
-                self.zoom_extents();
-                self.command_line.result(summary.clone());
-                self.toasts.success(summary);
-            }
-            Err(e) => self.command_line.error(format!("Could not read {name}: {e}")),
+            SurfaceWindowAction::Create(surface) => self.session.create_surface(surface),
+            SurfaceWindowAction::Update(id, surface) => self.session.update_surface(id, surface),
         }
     }
 
     fn apply_cloud_action(&mut self, action: CloudAction) {
         match action {
-            CloudAction::Style(id, style) => {
-                let name = self
-                    .project
-                    .doc
-                    .cloud(id)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default();
-                self.execute(Box::new(
-                    ChangeSet::new(format!("Point cloud {name} display")).set_cloud_style(id, style),
-                ));
-            }
-            CloudAction::Delete(id) => {
-                let name = self
-                    .project
-                    .doc
-                    .cloud(id)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default();
-                self.execute(Box::new(
-                    ChangeSet::new(format!("Delete point cloud {name}")).delete_cloud(id),
-                ));
-            }
-            CloudAction::Thin(id, spacing) => {
-                let Some(c) = self.project.doc.cloud(id) else {
-                    return;
-                };
-                let t = c.thinned(spacing);
-                let summary = format!("Thinned {} to {} points ({} m)", c.name, t.len(), spacing);
-                self.execute(Box::new(
-                    ChangeSet::new(format!("Thin point cloud {}", c.name))
-                        .delete_cloud(id)
-                        .insert_cloud(t),
-                ));
-                self.cloud_panel.active = self.project.doc.clouds().last().map(|(id, _)| id);
-                self.command_line.result(summary.clone());
-                self.toasts.success(summary);
-            }
+            CloudAction::Style(id, style) => self.session.set_cloud_style(id, style),
+            CloudAction::Delete(id) => self.session.delete_cloud(id),
+            CloudAction::Thin(id, spacing) => self.session.thin_cloud(id, spacing),
             CloudAction::Surface(id, cell, thin, max_edge) => {
-                let Some(c) = self.project.doc.cloud(id) else {
-                    return;
-                };
-                let points = survey_core::tin::thin_to_grid(c.iter(), cell, thin);
-                let n = points.len();
-                let input = survey_core::tin::TinInput {
-                    points,
-                    max_edge,
-                    ..Default::default()
-                };
-                match survey_core::tin::build(&input) {
-                    Ok(tin) => {
-                        let surface = survey_model::Surface {
-                            name: format!("{} surface", c.name),
-                            definition: None,
-                            tin,
-                            style: survey_model::SurfaceStyle::default(),
-                        };
-                        self.command_line.info(format!(
-                            "Thinned {} cloud points to {n} on a {cell} m grid",
-                            c.len()
-                        ));
-                        self.apply_surface_window(SurfaceWindowAction::Create(surface));
-                    }
-                    Err(e) => self.command_line.error(format!("Surface from {}: {e}", c.name)),
-                }
+                self.session.surface_from_cloud(id, cell, thin, max_edge);
             }
-        }
-    }
-
-    fn import_landxml(&mut self, name: &str, bytes: &[u8]) {
-        match survey_io::landxml::read_surfaces(bytes) {
-            Ok((surfaces, warnings)) => {
-                let n = surfaces.len();
-                let mut cmd = ChangeSet::new(format!("Import LandXML {name}"));
-                for s in surfaces {
-                    // Keep names unique in the project.
-                    let mut surface_name = s.name.clone();
-                    let mut k = 2;
-                    while self.project.doc.surface_by_name(&surface_name).is_some() {
-                        surface_name = format!("{} ({k})", s.name);
-                        k += 1;
-                    }
-                    cmd = cmd.insert_surface(survey_model::Surface {
-                        name: surface_name,
-                        definition: None,
-                        tin: s.tin,
-                        style: survey_model::SurfaceStyle::default(),
-                    });
-                }
-                self.execute(Box::new(cmd));
-                self.zoom_extents();
-                let summary = format!(
-                    "Imported {n} surface{} from {name}",
-                    if n == 1 { "" } else { "s" }
-                );
-                self.command_line.result(summary.clone());
-                self.toasts.success(summary);
-                for w in warnings {
-                    self.command_line.warn(w);
-                }
-            }
-            Err(e) => self.command_line.error(format!("Could not read {name}: {e}")),
         }
     }
 
     /// Writes the active surface (or every surface when none is active) as LandXML.
     fn export_landxml(&mut self) {
-        let doc = &self.project.doc;
-        let chosen: Vec<(&str, &survey_core::tin::Tin)> =
-            match self.active_surface.and_then(|id| doc.surface(id)) {
-                Some(s) => vec![(s.name.as_str(), &s.tin)],
-                None => doc.surfaces().map(|(_, s)| (s.name.as_str(), &s.tin)).collect(),
-            };
-        if chosen.is_empty() {
-            self.command_line.warn("There are no surfaces to export");
+        let Some((stem, xml)) = self.session.surfaces_landxml() else {
             return;
-        }
-        let xml = survey_io::landxml::write_surfaces(&doc.meta().name, &chosen);
-        let stem = if chosen.len() == 1 {
-            chosen[0].0.to_string()
-        } else {
-            "surfaces".into()
         };
-        let n = chosen.len();
         match export(&self.platform, FileKind::LandXml, &stem, xml.as_bytes()) {
-            Ok(Some(where_)) => self
-                .command_line
-                .result(format!("Exported {n} surface(s) to {where_}")),
+            Ok(Some(where_)) => self.session.log.result(format!("Exported surfaces to {where_}")),
             Ok(None) => {}
-            Err(e) => self.command_line.error(e),
+            Err(e) => self.session.log.error(e),
         }
-    }
-
-    /// Makes a parcel of each selected closed polyline that is not one already.
-    fn parcels_from_selection(&mut self) {
-        let doc = &self.project.doc;
-        let existing: Vec<EntityId> = doc.meta().parcels.iter().map(|p| p.boundary).collect();
-        let lines: Vec<EntityId> = self
-            .selected_polylines()
-            .into_iter()
-            .filter(|(id, l)| l.closed && !existing.contains(id))
-            .map(|(id, _)| id)
-            .collect();
-        if lines.is_empty() {
-            self.command_line
-                .warn("Select closed polylines (lot boundaries) that are not parcels yet");
-            return;
-        }
-        // Continue the "Lot n" numbering.
-        let mut next = doc
-            .meta()
-            .parcels
-            .iter()
-            .filter_map(|p| {
-                p.name
-                    .strip_prefix("Lot ")
-                    .and_then(|n| n.trim().parse::<u32>().ok())
-            })
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let mut meta = doc.meta().clone();
-        let n = lines.len();
-        for id in lines {
-            let name = match doc.entity(id) {
-                Some(Entity::Polyline(l)) if !l.name.trim().is_empty() => l.name.trim().to_string(),
-                _ => {
-                    let name = format!("Lot {next}");
-                    next += 1;
-                    name
-                }
-            };
-            meta.parcels.push(survey_model::ParcelRecord {
-                name,
-                boundary: id,
-                ..Default::default()
-            });
-        }
-        self.execute(Box::new(
-            ChangeSet::new(format!("Create {n} parcels")).set_meta(meta),
-        ));
-        self.parcels_window.open = true;
-        self.command_line
-            .result(format!("Created {n} parcel{}", if n == 1 { "" } else { "s" }));
-    }
-
-    /// Makes an alignment of the first selected polyline.
-    fn alignment_from_selection(&mut self) {
-        let Some((id, line)) = self.selected_polylines().into_iter().next() else {
-            self.command_line.warn("Select the centreline polyline first");
-            return;
-        };
-        let doc = &self.project.doc;
-        if doc.meta().alignments.iter().any(|a| a.polyline == id) {
-            self.alignments_window.open = true;
-            self.command_line.info("That polyline is already an alignment");
-            return;
-        }
-        let name = if line.name.trim().is_empty() {
-            format!("MC{:02}", doc.meta().alignments.len() + 1)
-        } else {
-            line.name.trim().to_string()
-        };
-        let mut meta = doc.meta().clone();
-        meta.alignments.push(survey_model::AlignmentRecord {
-            name: name.clone(),
-            polyline: id,
-            ..Default::default()
-        });
-        self.execute(Box::new(
-            ChangeSet::new(format!("Create alignment {name}")).set_meta(meta),
-        ));
-        self.alignments_window.open = true;
-        self.command_line.result(format!("Alignment {name} created"));
-    }
-
-    /// Adds set-out points along an alignment and their table to the reports.
-    fn create_setout(&mut self, index: usize, pts: Vec<survey_core::alignment::SetoutPoint>, code: String) {
-        let doc = &self.project.doc;
-        let Some(a) = doc.meta().alignments.get(index) else {
-            return;
-        };
-        let Some(line) = crate::ui::alignments::centreline(doc, a) else {
-            return;
-        };
-        let conv = doc.conventions();
-        let heights = line.vertices.iter().any(|v| v.z != 0.0);
-        let mut names = doc.point_names();
-        let mut cs = ChangeSet::new(format!("Set out {} ({} points)", a.name, pts.len()));
-        let mut point_names = Vec::new();
-        for p in &pts {
-            let name = names.next().unwrap_or_default();
-            cs.push_insert_entity(Entity::Point(survey_model::SurveyPoint {
-                name: name.clone(),
-                position: if heights {
-                    p.position
-                } else {
-                    p.position.truncate().extend(0.0)
-                },
-                height_known: heights,
-                code: code.clone(),
-                description: format!(
-                    "{} Ch {} {}",
-                    a.name,
-                    conv.format_chainage(p.chainage),
-                    crate::ui::alignments::offset_label(conv, p.offset)
-                ),
-                layer: doc.current_layer(),
-            }));
-            point_names.push(name);
-        }
-        let text = crate::ui::alignments::setout_report(conv, &a.name, &pts, &point_names);
-        let title = format!("Set-out {}", a.name);
-        let n = pts.len();
-        self.execute(Box::new(cs));
-        self.reports.add(title, text);
-        self.command_line
-            .result(format!("Set out {n} points (table added to the reports)"));
     }
 
     fn export_parcels_landxml(&mut self) {
-        let doc = &self.project.doc;
-        let geoms: Vec<(String, String, f64, &survey_model::Polyline)> = doc
-            .meta()
-            .parcels
-            .iter()
-            .filter_map(|p| {
-                let l = crate::ui::parcels::boundary(doc, p)?;
-                let (_, _, area) = survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, true);
-                Some((p.name.clone(), p.plan.clone(), area.abs(), l))
-            })
-            .collect();
-        if geoms.is_empty() {
-            self.command_line.warn("There are no parcels to export");
+        let Some(xml) = self.session.parcels_landxml() else {
             return;
-        }
-        let parcels: Vec<survey_io::landxml::ParcelGeometry<'_>> = geoms
-            .iter()
-            .map(|(name, plan, area, l)| survey_io::landxml::ParcelGeometry {
-                name,
-                description: plan,
-                area: *area,
-                vertices: &l.vertices,
-                bulges: &l.bulges,
-            })
-            .collect();
-        let xml = survey_io::landxml::write_parcels(&doc.meta().name, &parcels);
-        let n = parcels.len();
+        };
         match export(&self.platform, FileKind::LandXml, "parcels", xml.as_bytes()) {
-            Ok(Some(where_)) => self
-                .command_line
-                .result(format!("Exported {n} parcels to {where_}")),
+            Ok(Some(where_)) => self.session.log.result(format!("Exported parcels to {where_}")),
             Ok(None) => {}
-            Err(e) => self.command_line.error(e),
+            Err(e) => self.session.log.error(e),
         }
     }
 
     fn import_code_sheet(&mut self, name: &str, bytes: &[u8]) {
         match survey_io::code_sheet::read_code_sheet(bytes) {
             Ok((codes, warnings)) => {
-                let n = self.codes_window.merge(&self.project.doc, codes);
-                self.command_line
+                let n = self.codes_window.merge(&self.session.project.doc, codes);
+                self.session
+                    .log
                     .info(format!("Read {n} feature codes from {name} — Apply to keep them"));
                 for w in warnings {
-                    self.command_line.warn(w);
+                    self.session.log.warn(w);
                 }
             }
-            Err(e) => self.command_line.error(format!("Could not read {name}: {e}")),
-        }
-    }
-
-    fn set_tool(&mut self, id: &str) {
-        let Some(create) = self.tools.get(id).map(|d| d.create) else {
-            return;
-        };
-        // Give the current tool a chance to commit work in progress. (Not the select
-        // tool: cancelling it clears the selection the next tool may work on.)
-        if self.active_tool.id() != id && self.active_tool.id() != SELECT_TOOL_ID {
-            self.dispatch(ToolEvent::Cancel);
-        }
-        self.active_tool = create();
-        self.snap_override = None;
-        self.with_tool(|tool, ctx| tool.activate(ctx));
-    }
-
-    /// Sends an event to the active tool and executes the commands it emits.
-    fn dispatch(&mut self, event: ToolEvent<'_>) {
-        let is_point = matches!(event, ToolEvent::Point(_));
-        self.with_tool(|tool, ctx| tool.on_event(ctx, event));
-        if is_point {
-            self.snap_override = None;
-        }
-    }
-
-    /// Runs `f` on the active tool with a [`ToolCtx`], then executes the commands
-    /// it emitted and returns to the select tool if it finished.
-    fn with_tool(&mut self, f: impl FnOnce(&mut dyn Tool, &mut ToolCtx<'_>) -> ToolOutcome) {
-        let mut commands: Vec<Box<dyn Command>> = Vec::new();
-        let outcome = {
-            let p = &mut self.project;
-            let mut ctx = ToolCtx::new(&p.doc, &mut p.selection, &mut self.command_line, &mut commands);
-            ctx.hovered = self.hovered_entity;
-            ctx.hovered_grip = self.hovered_grip;
-            ctx.shift = self.shift_down;
-            f(self.active_tool.as_mut(), &mut ctx)
-        };
-        for c in commands {
-            self.execute(c);
-        }
-        if outcome == ToolOutcome::Done
-            && self.active_tool.id() != SELECT_TOOL_ID
-            && let Some(desc) = self.tools.get(SELECT_TOOL_ID)
-        {
-            self.active_tool = (desc.create)();
+            Err(e) => self.session.log.error(format!("Could not read {name}: {e}")),
         }
     }
 
     fn zoom_extents(&mut self) {
-        let doc = &self.project.doc;
+        let doc = &self.session.project.doc;
         let b = doc
             .surfaces()
             .filter(|(_, s)| s.style.visible)
@@ -1435,13 +674,14 @@ impl SurveyApp {
     fn toggle_plan(&mut self) {
         let locked = !self.viewport.plan_locked;
         self.viewport.set_plan_locked(locked);
-        self.command_line
+        self.session
+            .log
             .info(if locked { "Plan view (2D lock)" } else { "3D view" });
     }
 
     fn toggle_projection(&mut self) {
         if self.viewport.plan_locked {
-            self.command_line.warn("Perspective is only available in 3D view");
+            self.session.log.warn("Perspective is only available in 3D view");
             return;
         }
         let next = match self.viewport.camera.projection {
@@ -1454,7 +694,7 @@ impl SurveyApp {
     fn toggle_snap(&mut self) {
         self.settings.snap.enabled = !self.settings.snap.enabled;
         let state = if self.settings.snap.enabled { "on" } else { "off" };
-        self.command_line.info(format!("Snap {state}"));
+        self.session.log.info(format!("Snap {state}"));
     }
 
     fn toggle_grid_snap(&mut self) {
@@ -1464,97 +704,21 @@ impl SurveyApp {
         } else {
             "off"
         };
-        self.command_line.info(format!("Grid snap {state}"));
+        self.session.log.info(format!("Grid snap {state}"));
     }
 
     fn toggle_ortho(&mut self) {
         self.settings.ortho.enabled = !self.settings.ortho.enabled;
         let state = if self.settings.ortho.enabled { "on" } else { "off" };
-        self.command_line.info(format!("Ortho {state}"));
+        self.session.log.info(format!("Ortho {state}"));
     }
 
     // ------------------------------------------------------------------ command line
 
-    fn submit(&mut self, ctx: &egui::Context, text: String) {
-        let text = text.trim();
-        let prompt = self.active_tool.prompt(self.project.doc.conventions());
-        self.command_line
-            .log(LogKind::Command, format!("{prompt} {text}"));
-        if text.is_empty() {
-            self.dispatch(ToolEvent::Finish);
-            return;
-        }
-
-        // Values the tool asks for (a radius, a bearing, an observation…) go straight to it.
-        if self.active_tool.claims_text(self.project.doc.conventions(), text) {
-            self.dispatch(ToolEvent::Text(text));
-            return;
-        }
-
-        if self.active_tool.wants_point() {
-            if let Some(mode) = SnapMode::from_code(text) {
-                self.snap_override = Some(mode);
-                self.command_line
-                    .info(format!("Snap override: {} (next point)", mode.label()));
-                return;
-            }
-            // A bare point name picks that point.
-            if !text.contains([',', ' ', '@'])
-                && let Some((_, p)) = self.project.doc.find_point_by_name(text)
-            {
-                let pick = Pick {
-                    point: p.position,
-                    height_known: p.height_known,
-                    snap: None,
-                };
-                self.dispatch(ToolEvent::Point(pick));
-                return;
-            }
-            match PointInput::parse(text, self.project.doc.conventions()) {
-                Ok(Some(input)) => {
-                    match input.resolve(self.active_tool.base_point()) {
-                        Ok(r) => self.dispatch(ToolEvent::Point(Pick {
-                            point: r.position,
-                            height_known: r.height_known,
-                            snap: None,
-                        })),
-                        Err(e) => self.command_line.error(e.to_string()),
-                    }
-                    return;
-                }
-                Err(e) => {
-                    self.command_line.error(e.to_string());
-                    return;
-                }
-                Ok(None) => {}
-            }
-        }
-
-        // A feature code wins over a command of the same name while coding points.
-        if self.active_tool.takes_codes() && self.project.doc.meta().feature_codes.feature_for(text).is_some()
-        {
-            self.dispatch(ToolEvent::Text(text));
-            return;
-        }
-        if let Some(desc) = self.tools.find_command(text) {
-            let id = desc.id;
-            self.set_tool(id);
-            return;
-        }
-        if self.run_app_command(ctx, text) {
-            return;
-        }
-        if self.active_tool.id() != SELECT_TOOL_ID || self.active_tool.wants_point() {
-            self.dispatch(ToolEvent::Text(text));
-        } else {
-            self.command_line
-                .error(format!("Unknown command '{text}' — type 'help'"));
-        }
-    }
-
     /// Everything searchable in the command palette.
     fn palette_items(&self, ctx: &egui::Context) -> Vec<PaletteItem> {
         let mut items: Vec<PaletteItem> = self
+            .session
             .tools
             .tools()
             .iter()
@@ -1585,18 +749,19 @@ impl SurveyApp {
 
     fn run_palette_choice(&mut self, ctx: &egui::Context, id: &str) {
         if let Some(tool) = id.strip_prefix("tool:") {
-            self.set_tool(tool);
+            self.session.set_tool(tool);
         } else if let Some(name) = id.strip_prefix("cmd:") {
-            self.command_line
-                .log(LogKind::Command, format!("Command: {name}"));
+            self.session.log.log(LogKind::Command, format!("Command: {name}"));
             self.run_app_command(ctx, name);
         }
     }
 
+    /// Session commands, then view, file and window commands.
     fn run_app_command(&mut self, ctx: &egui::Context, text: &str) -> bool {
+        if self.session.run_command(text) {
+            return true;
+        }
         match text.to_ascii_lowercase().as_str() {
-            "undo" => self.undo(),
-            "redo" => self.redo(),
             "ze" | "zoomextents" | "extents" => self.zoom_extents(),
             "plan" | "2d" => {
                 if !self.viewport.plan_locked {
@@ -1613,10 +778,6 @@ impl SurveyApp {
             "ortho" => self.toggle_ortho(),
             "gridsnap" | "snapgrid" => self.toggle_grid_snap(),
             "grid" => self.settings.show_grid = !self.settings.show_grid,
-            "delete" | "erase" => self.delete_selection(),
-            "explode" => self.explode_selection(),
-            "join" => self.join_selection(),
-            "reverse" => self.reverse_selection(),
             "import" => self.platform.pick_file(ctx, FileKind::Points),
             "dxfin" | "importdxf" => self.platform.pick_file(ctx, FileKind::Dxf),
             "dxfout" | "exportdxf" => self.export_dxf(),
@@ -1626,12 +787,16 @@ impl SurveyApp {
             "new" => self.request_discard(ctx, Discard::New),
             "audit" => self.audit_window.open = true,
             "traverse" | "trav" => self.traverse_window.open = true,
-            "closure" | "clo" => match self.selected_polylines().first() {
-                Some((_, line)) => self.closure_window.load_polyline(&self.project.doc, line),
+            "closure" | "clo" => match self.session.selected_polylines().first() {
+                Some((_, line)) => self.closure_window.load_polyline(&self.session.project.doc, line),
                 None => self.closure_window.open = true,
             },
             "subdivide" | "subdiv" => {
-                let parcel = self.selected_polylines().into_iter().find(|(_, l)| l.closed);
+                let parcel = self
+                    .session
+                    .selected_polylines()
+                    .into_iter()
+                    .find(|(_, l)| l.closed);
                 match parcel {
                     Some((id, line)) => {
                         self.subdivide_window.load(id, &line);
@@ -1642,26 +807,23 @@ impl SurveyApp {
             "resection" | "resect" | "freestation" => self.resection_window.open = true,
             "calc" | "calculator" | "curve" => self.calculator.open_at(CalcTab::Curve),
             "triangle" => self.calculator.open_at(CalcTab::Triangle),
-            "average" | "avg" => self.average_selection(),
             "legend" => self.legend.open = true,
             "sheets" | "sheet" | "layout" => self.sheets_window.open = true,
             "plotpdf" | "plot" | "print" => self.plot_current_sheet(),
-            "surface" | "tin" => self.surface_window.create(&self.project.doc),
-            "contours" => self.contours_to_polylines(),
+            "surface" | "tin" => self.surface_window.create(&self.session.project.doc),
             "parcels" => self.parcels_window.open = true,
             "alignments" | "align" => self.alignments_window.open = true,
-            "mkalign" => self.alignment_from_selection(),
             "stakeout" | "setoutsheet" => self.stakeout_window.open = true,
             "stockpile" => {
                 let toe = self
+                    .session
                     .selected_polylines()
                     .into_iter()
                     .find(|(_, l)| l.closed)
                     .map(|(id, _)| id);
                 self.stockpile_window
-                    .open_with(&self.project.doc, self.active_surface, toe);
+                    .open_with(&self.session.project.doc, self.session.active_surface, toe);
             }
-            "mkparcel" | "parcel" => self.parcels_from_selection(),
             "parcelxml" => self.export_parcels_landxml(),
             "cloudin" | "importcloud" | "las" => self.platform.pick_file(ctx, FileKind::PointCloud),
             "rawin" | "gsi" | "jobxml" => self.platform.pick_file(ctx, FileKind::RawData),
@@ -1669,22 +831,18 @@ impl SurveyApp {
             "landxmlin" | "importxml" => self.platform.pick_file(ctx, FileKind::LandXml),
             "landxmlout" | "exportxml" => self.export_landxml(),
             "sections" | "section" | "profile" => {
-                let line = self.selected_polylines().first().map(|(id, _)| *id);
+                let line = self.session.selected_polylines().first().map(|(id, _)| *id);
                 self.sections_window.open_with(line);
             }
-            "volume" | "volumes" | "vol" => self.volumes_window.open(&self.project.doc, self.active_surface),
+            "volume" | "volumes" | "vol" => self
+                .volumes_window
+                .open(&self.session.project.doc, self.session.active_surface),
             "projcalc" | "projection" | "geo" => self.projection_window.open = true,
-            "netadj" | "adjust" | "lsa" => self.network_window.open_with(&self.project.doc),
+            "netadj" | "adjust" | "lsa" => self.network_window.open_with(&self.session.project.doc),
             "accuracy" | "tolerances" => self.settings_window.open_at_accuracy(),
             "codes" | "featurecodes" => self.codes_window.open(),
-            "linework" | "f2f" => {
-                let library = self.project.doc.meta().feature_codes.clone();
-                let only_selected = !self.project.selection.is_empty();
-                self.process_linework(library, only_selected, false);
-            }
             "reports" => self.reports.open = true,
             "points" | "pts" | "table" => self.points_window.open = true,
-            "list" | "li" => self.list_selection(),
             "settings" | "options" => self.settings_window.open = true,
             "drafting" | "dsettings" => self.settings_window.open_at_drafting(),
             "conventions" => self.settings_window.open_at_conventions(),
@@ -1694,7 +852,7 @@ impl SurveyApp {
             "hud" | "dyn" => {
                 self.settings.dynamic_input = !self.settings.dynamic_input;
                 let state = if self.settings.dynamic_input { "on" } else { "off" };
-                self.command_line.info(format!("Dynamic input {state}"));
+                self.session.log.info(format!("Dynamic input {state}"));
             }
             "theme" => {
                 self.settings.theme = match self.settings.theme {
@@ -1704,7 +862,7 @@ impl SurveyApp {
             }
             "help" | "?" => {
                 let mut lines = vec!["Tools:".to_string()];
-                for t in self.tools.tools() {
+                for t in self.session.tools.tools() {
                     lines.push(format!("  {:<18} {}", t.commands.join(", "), t.description));
                 }
                 lines.push("Commands:".into());
@@ -1712,7 +870,7 @@ impl SurveyApp {
                     lines.push(format!("  {:<18} {}", c.name, c.title));
                 }
                 lines.push("Point input: E,N[,Z]  @dE,dN[,dZ]  @dist<bearing  or a point name".into());
-                self.command_line.info(lines.join("\n"));
+                self.session.log.info(lines.join("\n"));
             }
             _ => return false,
         }
@@ -1722,7 +880,7 @@ impl SurveyApp {
     // ------------------------------------------------------------------ files
 
     fn request_discard(&mut self, ctx: &egui::Context, action: Discard) {
-        if self.project.is_dirty() {
+        if self.session.project.is_dirty() {
             self.confirm_discard = Some(action);
         } else {
             self.perform_discard(ctx, action);
@@ -1734,9 +892,9 @@ impl SurveyApp {
             Discard::New => match Project::new(&self.settings) {
                 Ok(p) => {
                     self.replace_project(p);
-                    self.command_line.info("New project");
+                    self.session.log.info("New project");
                 }
-                Err(e) => self.command_line.error(format!("Could not create project: {e}")),
+                Err(e) => self.session.log.error(format!("Could not create project: {e}")),
             },
             Discard::Open => self.platform.pick_file(ctx, FileKind::Project),
             Discard::Quit => {
@@ -1747,16 +905,14 @@ impl SurveyApp {
     }
 
     fn replace_project(&mut self, project: Project) {
-        self.project = project;
+        self.session.replace_project(project);
         self.scene_cache.invalidate();
         self.surface_cache.invalidate();
         self.cloud_cache.invalidate();
         self.cloud_panel.active = None;
         self.surface_indexes.invalidate();
-        self.active_surface = None;
         // Revisions restart with each document, so drop caches keyed by them.
         self.layer_counts = (u64::MAX, Default::default());
-        self.set_tool(SELECT_TOOL_ID);
         if !self.restore_view() {
             self.zoom_extents();
         }
@@ -1765,6 +921,7 @@ impl SurveyApp {
     /// Restores the camera saved with the project; `false` if there is none.
     fn restore_view(&mut self) -> bool {
         let Some(view) = self
+            .session
             .project
             .store
             .read_view_state()
@@ -1801,15 +958,15 @@ impl SurveyApp {
             perspective: cam.projection == Projection::Perspective,
         };
         if let Ok(json) = serde_json::to_string(&view)
-            && let Err(e) = self.project.store.write_view_state(&json)
+            && let Err(e) = self.session.project.store.write_view_state(&json)
         {
             log::warn!("could not store view: {e}");
         }
     }
 
     fn export_geopackage(&mut self) {
-        let stem = file_stem(&self.project.doc.meta().name);
-        let result = survey_store::geopackage::export_geopackage(&self.project.doc)
+        let stem = file_stem(&self.session.project.doc.meta().name);
+        let result = survey_store::geopackage::export_geopackage(&self.session.project.doc)
             .map_err(|e| e.to_string())
             .and_then(|(bytes, s)| {
                 export(&self.platform, FileKind::GeoPackage, &stem, &bytes)
@@ -1822,19 +979,19 @@ impl SurveyApp {
                     "Exported GeoPackage: {} points, {} lines, {} parcels",
                     s.points, s.lines, s.parcels
                 );
-                self.command_line.info(format!("{msg} — {where_}"));
+                self.session.log.info(format!("{msg} — {where_}"));
                 self.toasts.success(msg);
             }
             Ok(None) => {}
-            Err(e) => self.command_line.error(format!("GeoPackage export failed: {e}")),
+            Err(e) => self.session.log.error(format!("GeoPackage export failed: {e}")),
         }
     }
 
     /// What the viewport shows, for placing plan sheets.
     pub(crate) fn view_info(&self) -> ViewInfo {
         let cam = &self.viewport.camera;
-        let bounds = (self.project.doc.entity_count() > 0).then(|| {
-            let b = self.project.doc.bounds();
+        let bounds = (self.session.project.doc.entity_count() > 0).then(|| {
+            let b = self.session.project.doc.bounds();
             (b.min.truncate(), b.max.truncate())
         });
         let mut up = cam.yaw.to_degrees().rem_euclid(360.0);
@@ -1861,7 +1018,7 @@ impl SurveyApp {
 
     /// Exports a plan sheet as PDF or SVG.
     pub(crate) fn export_sheet(&mut self, sheet: &survey_model::SheetRecord, format: PlotFormat) {
-        let plot = crate::plan::build_plot(&self.project.doc, sheet, self.plan_labels());
+        let plot = crate::plan::build_plot(&self.session.project.doc, sheet, self.plan_labels());
         let (kind, bytes, what) = match format {
             PlotFormat::Pdf => (FileKind::Pdf, survey_io::plot::write_pdf(&plot), "PDF"),
             PlotFormat::Svg => (
@@ -1870,10 +1027,14 @@ impl SurveyApp {
                 "SVG",
             ),
         };
-        let stem = file_stem(&format!("{} {}", self.project.doc.meta().name, sheet.name));
+        let stem = file_stem(&format!(
+            "{} {}",
+            self.session.project.doc.meta().name,
+            sheet.name
+        ));
         match export(&self.platform, kind, &stem, &bytes) {
             Ok(Some(where_)) => {
-                self.command_line.info(format!(
+                self.session.log.info(format!(
                     "Exported {} ({}) to {where_}",
                     sheet.name,
                     sheet.scale_label()
@@ -1881,20 +1042,26 @@ impl SurveyApp {
                 self.toasts.success(format!("Exported {what}"));
             }
             Ok(None) => {}
-            Err(e) => self.command_line.error(format!("{what} export failed: {e}")),
+            Err(e) => self.session.log.error(format!("{what} export failed: {e}")),
         }
+    }
+
+    /// The sheet chosen in the sheets window, else the first.
+    fn current_sheet(&self) -> Option<&survey_model::SheetRecord> {
+        let sheets = self.session.project.doc.sheets();
+        self.sheets_window
+            .current
+            .and_then(|id| sheets.iter().find(|s| s.id == id))
+            .or(sheets.first())
+            .map(|s| &s.record)
     }
 
     /// Exports the sheet open in the sheets window (or the first) to PDF.
     fn plot_current_sheet(&mut self) {
-        let sheets = &self.project.doc.meta().sheets;
-        let Some(sheet) = sheets
-            .get(self.sheets_window.current)
-            .or_else(|| sheets.first())
-            .cloned()
-        else {
+        let Some(sheet) = self.current_sheet().cloned() else {
             self.sheets_window.open = true;
-            self.command_line
+            self.session
+                .log
                 .warn("There are no plan sheets yet: frame the area and press “New from view”");
             return;
         };
@@ -1903,41 +1070,18 @@ impl SurveyApp {
 
     fn export_dxf(&mut self) {
         // Symbols and text are sized for the current plan sheet's scale.
-        let sheets = &self.project.doc.meta().sheets;
-        let opts = sheets
-            .get(self.sheets_window.current)
-            .or_else(|| sheets.first())
-            .map_or_else(DxfExportOptions::default, DxfExportOptions::from_sheet);
-        let text = survey_io::dxf::write_dxf(&dxf_export(&self.project.doc, &opts));
-        let stem = file_stem(&self.project.doc.meta().name);
+        let (text, opts) = self.session.dxf(self.current_sheet());
+        let stem = file_stem(&self.session.project.doc.meta().name);
         match export(&self.platform, FileKind::Dxf, &stem, text.as_bytes()) {
             Ok(Some(where_)) => {
-                self.command_line.info(format!(
+                self.session.log.info(format!(
                     "Exported DXF: {where_} (symbols and names sized for 1:{})",
                     opts.scale
                 ));
                 self.toasts.success("Exported DXF");
             }
             Ok(None) => {}
-            Err(e) => self.command_line.error(format!("DXF export failed: {e}")),
-        }
-    }
-
-    fn import_dxf(&mut self, name: &str, bytes: &[u8]) {
-        match survey_io::dxf::read_dxf(bytes) {
-            Ok(drawing) => {
-                let cmd = dxf_import(&self.project.doc, &drawing, name);
-                let n = cmd.len();
-                self.execute(Box::new(cmd));
-                self.command_line
-                    .info(format!("Imported {n} objects from {name}"));
-                self.toasts.success(format!("Imported {n} objects from {name}"));
-                for w in &drawing.warnings {
-                    self.command_line.warn(w.clone());
-                }
-                self.zoom_extents();
-            }
-            Err(e) => self.command_line.error(format!("Could not import {name}: {e}")),
+            Err(e) => self.session.log.error(format!("DXF export failed: {e}")),
         }
     }
 
@@ -1947,11 +1091,11 @@ impl SurveyApp {
             Ok(p) => {
                 let n = p.doc.entity_count();
                 self.replace_project(p);
-                self.command_line.info(format!("Opened {name} ({n} objects)"));
+                self.session.log.info(format!("Opened {name} ({n} objects)"));
                 self.toasts.success(format!("Opened {name}"));
             }
             Err(e) => {
-                self.command_line.error(format!("Could not open {name}: {e}"));
+                self.session.log.error(format!("Could not open {name}: {e}"));
                 self.toasts.error(format!("Could not open {name}"));
             }
         }
@@ -1961,16 +1105,17 @@ impl SurveyApp {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let _ = ctx;
-            if self.project.has_file() {
+            if self.session.project.has_file() {
                 self.store_view();
-                match self.project.save() {
+                match self.session.project.save() {
                     Ok(()) => {
-                        self.command_line
-                            .info(format!("Saved {}", self.project.display_name));
+                        self.session
+                            .log
+                            .info(format!("Saved {}", self.session.project.display_name));
                         self.toasts.success("Saved");
                     }
                     Err(e) => {
-                        self.command_line.error(format!("Save failed: {e}"));
+                        self.session.log.error(format!("Save failed: {e}"));
                         self.toasts.error("Save failed — see the command line");
                     }
                 }
@@ -1983,19 +1128,20 @@ impl SurveyApp {
             let _ = ctx;
             let name = format!(
                 "{}.{}",
-                file_stem(&self.project.doc.meta().name),
+                file_stem(&self.session.project.doc.meta().name),
                 survey_store::FILE_EXTENSION
             );
             self.store_view();
             match self
+                .session
                 .project
                 .save_to_bytes()
                 .map_err(|e| e.to_string())
                 .and_then(|bytes| crate::platform::download(&name, &bytes))
             {
                 Ok(()) => {
-                    self.project.display_name = name.clone();
-                    self.command_line.info(format!("Downloaded {name}"));
+                    self.session.project.display_name = name.clone();
+                    self.session.log.info(format!("Downloaded {name}"));
                     self.toasts.success(format!("Saved {name}"));
                     // The download is now the user's copy; drop the recovery snapshot.
                     self.autosave.written = None;
@@ -2004,7 +1150,7 @@ impl SurveyApp {
                     });
                 }
                 Err(e) => {
-                    self.command_line.error(format!("Save failed: {e}"));
+                    self.session.log.error(format!("Save failed: {e}"));
                     self.toasts.error("Save failed — see the command line");
                 }
             }
@@ -2013,16 +1159,16 @@ impl SurveyApp {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn save_as(&mut self) {
-        let default = file_stem(&self.project.doc.meta().name);
+        let default = file_stem(&self.session.project.doc.meta().name);
         if let Some(path) = self.platform.pick_save_path(FileKind::Project, &default) {
             self.store_view();
-            match self.project.save_as(&path) {
+            match self.session.project.save_as(&path) {
                 Ok(()) => {
-                    self.command_line.info(format!("Saved {}", path.display()));
+                    self.session.log.info(format!("Saved {}", path.display()));
                     self.toasts.success("Saved");
                 }
                 Err(e) => {
-                    self.command_line.error(format!("Save failed: {e}"));
+                    self.session.log.error(format!("Save failed: {e}"));
                     self.toasts.error("Save failed — see the command line");
                 }
             }
@@ -2041,11 +1187,11 @@ impl SurveyApp {
                             self.settings.csv_layout.clone(),
                         ));
                     }
-                    FileKind::Dxf => self.import_dxf(&name, &bytes),
+                    FileKind::Dxf => self.session.import_dxf(&name, &bytes),
                     FileKind::Codes => self.import_code_sheet(&name, &bytes),
-                    FileKind::LandXml => self.import_landxml(&name, &bytes),
-                    FileKind::PointCloud => self.import_cloud(&name, &bytes),
-                    FileKind::RawData => self.import_raw(&name, &bytes),
+                    FileKind::LandXml => self.session.import_landxml(&name, &bytes),
+                    FileKind::PointCloud => self.session.import_cloud(&name, &bytes),
+                    FileKind::RawData => self.session.import_raw(&name, &bytes),
                     // Reports and GeoPackages are only saved, never opened.
                     FileKind::Report | FileKind::GeoPackage | FileKind::Pdf | FileKind::Svg => {}
                 },
@@ -2068,12 +1214,12 @@ impl SurveyApp {
     fn autosave(&mut self, ctx: &egui::Context) {
         let now = js_sys::Date::now();
         let key = (
-            self.project.doc.revision(),
-            self.project.history.pending_audit().len(),
+            self.session.project.doc.revision(),
+            self.session.project.history.pending_audit().len(),
         );
         let due = now - self.autosave.last_ms >= AUTOSAVE_INTERVAL_MS;
         // Only real edits (which always produce audit records) are worth recovering.
-        let edited = !self.project.history.pending_audit().is_empty();
+        let edited = !self.session.project.history.pending_audit().is_empty();
         let blocked = !self.autosave.ready || self.recovery.is_some();
         if blocked || !edited || self.autosave.written == Some(key) || !due {
             if edited {
@@ -2083,7 +1229,7 @@ impl SurveyApp {
         }
         self.autosave.last_ms = now;
         self.store_view();
-        match self.project.snapshot() {
+        match self.session.project.snapshot() {
             Ok(bytes) => {
                 self.autosave.written = Some(key);
                 wasm_bindgen_futures::spawn_local(async move {
@@ -2127,7 +1273,10 @@ impl eframe::App for SurveyApp {
             self.theme = CadTheme::new(s.theme, s.accent, s.density);
             self.theme.apply(&ctx);
         }
-        self.project.history.set_user(self.settings.user_name.clone());
+        self.session
+            .project
+            .history
+            .set_user(self.settings.user_name.clone());
         self.handle_file_events();
         #[cfg(target_arch = "wasm32")]
         self.autosave(&ctx);
@@ -2160,6 +1309,7 @@ impl eframe::App for SurveyApp {
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport_ui(ui));
 
         self.dialogs(&ctx);
+        self.handle_session_events(&ctx);
         if self.palette.is_open() {
             let items = self.palette_items(&ctx);
             if let Some(id) = self.palette.show(&ctx, &items) {
@@ -2175,8 +1325,12 @@ impl eframe::App for SurveyApp {
 
 impl SurveyApp {
     fn update_title(&mut self, ctx: &egui::Context) {
-        let dirty = if self.project.is_dirty() { " •" } else { "" };
-        let title = format!("{}{dirty} — survey3d", self.project.display_name);
+        let dirty = if self.session.project.is_dirty() {
+            " •"
+        } else {
+            ""
+        };
+        let title = format!("{}{dirty} — survey3d", self.session.project.display_name);
         if title != self.title {
             #[cfg(not(target_arch = "wasm32"))]
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -2192,7 +1346,9 @@ impl SurveyApp {
     }
 
     fn handle_close_request(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.viewport().close_requested()) && !self.allowed_to_close && self.project.is_dirty()
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.allowed_to_close
+            && self.session.project.is_dirty()
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm_discard = Some(Discard::Quit);
@@ -2229,10 +1385,10 @@ impl SurveyApp {
             )
         });
         if undo {
-            self.undo();
+            self.session.undo();
         }
         if redo || redo_y {
-            self.redo();
+            self.session.redo();
         }
         if save {
             self.save(ctx);
@@ -2290,23 +1446,23 @@ impl SurveyApp {
                 // Escape dismisses the settings panel first.
                 self.settings_window.open = false;
             } else if esc {
-                self.command_line.input.clear();
-                self.snap_override = None;
-                self.dispatch(ToolEvent::Cancel);
+                self.session.log.input.clear();
+                self.session.snap_override = None;
+                self.session.dispatch(ToolEvent::Cancel);
             }
             if enter {
-                match self.command_line.take_pending_input() {
+                match self.session.log.take_pending_input() {
                     Some(text) => self.submit(ctx, text),
-                    None => self.dispatch(ToolEvent::Finish),
+                    None => self.session.dispatch(ToolEvent::Finish),
                 }
             }
             if del {
-                self.delete_selection();
+                self.session.delete_selection();
             }
             if tab {
                 self.snap_engine.cycle_next();
             }
         }
-        self.shift_down = ctx.input(|i| i.modifiers.shift);
+        self.session.pointer.shift = ctx.input(|i| i.modifiers.shift);
     }
 }

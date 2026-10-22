@@ -21,7 +21,7 @@ fn sample() -> (Document, History) {
     meta.conventions = Conventions::north_american();
     meta.feature_codes = survey_core::field_to_finish::FeatureLibrary::example();
     meta.tolerances.min_precision = Some(10_000.0);
-    meta.traverses.push(survey_core::traverse::TraverseRecord {
+    let traverse = survey_core::traverse::TraverseRecord {
         name: "Loop 1".into(),
         start: "1".into(),
         legs: vec![survey_core::traverse::Leg::new(
@@ -30,19 +30,7 @@ fn sample() -> (Document, History) {
             25.0,
         )],
         ..Default::default()
-    });
-    meta.parcels.push(survey_model::ParcelRecord {
-        name: "Lot 1".into(),
-        plan: "DP 1234".into(),
-        boundary: EntityId(3),
-        ..Default::default()
-    });
-    meta.alignments.push(survey_model::AlignmentRecord {
-        name: "MC01".into(),
-        polyline: EntityId(3),
-        start_chainage: 1000.0,
-        ..Default::default()
-    });
+    };
     meta.coord_system = CoordinateSystem::Projected {
         name: "MGA2020 zone 56".into(),
         epsg: Some(7856),
@@ -55,6 +43,21 @@ fn sample() -> (Document, History) {
         geoid_separation: 22.5,
     };
     history.execute(Box::new(ChangeSet::new("settings").set_meta(meta)), &mut doc);
+    let records = ChangeSet::new("records")
+        .insert_record(traverse)
+        .insert_record(survey_model::ParcelRecord {
+            name: "Lot 1".into(),
+            plan: "DP 1234".into(),
+            boundary: EntityId(3),
+            ..Default::default()
+        })
+        .insert_record(survey_model::AlignmentRecord {
+            name: "MC01".into(),
+            polyline: EntityId(3),
+            start_chainage: 1000.0,
+            ..Default::default()
+        });
+    history.execute(Box::new(records), &mut doc);
     let line = Entity::Polyline(Polyline {
         name: "fence".into(),
         vertices: vec![DVec3::new(1.0, 2.0, 3.0), DVec3::new(4.0, 5.0, 6.0)],
@@ -82,6 +85,7 @@ fn save(store: &mut ProjectStore, doc: &mut Document, history: &mut History) {
 
 fn assert_same(a: &Document, b: &Document) {
     assert_eq!(a.meta(), b.meta());
+    assert_eq!(a.records(), b.records());
     assert_eq!(a.layers(), b.layers());
     let ea: Vec<_> = a.entities().collect();
     let eb: Vec<_> = b.entities().collect();
@@ -137,7 +141,7 @@ fn audit_chain_verifies_and_detects_tampering() {
     history.undo(&mut doc);
     save(&mut store, &mut doc, &mut history);
 
-    assert_eq!(store.audit_count().expect("count"), 3);
+    assert_eq!(store.audit_count().expect("count"), 4);
     let v = store.verify_audit().expect("verify");
     assert!(v.is_valid(), "{v:?}");
     let latest = store.audit_entries(1).expect("entries");
@@ -257,6 +261,62 @@ fn view_state_and_migration_from_v1() {
         Some(Entity::Polyline(l)) => assert!(l.bulges.is_empty() && l.vertices.len() == 2),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn records_without_ids_get_stable_ids_and_save_per_collection() {
+    let (mut doc, mut history) = sample();
+    let mut store = ProjectStore::create_in_memory().expect("store");
+    save(&mut store, &mut doc, &mut history);
+    // As written before records had ids.
+    store
+        .conn
+        .execute_batch(
+            r#"UPDATE project_meta SET value = '[{"name":"Lot 1","boundary":3},{"name":"Lot 2","boundary":3}]' WHERE key = 'parcels';
+               INSERT OR REPLACE INTO project_meta (key, value) VALUES ('sheets', '[{"name":"S1"}]');"#,
+        )
+        .expect("old records");
+    let mut loaded = store.load_document().expect("load");
+    assert!(!loaded.is_dirty(), "assigning ids is not an edit");
+    let kinds = loaded.records_to_save();
+    assert!(
+        kinds.contains(&survey_model::RecordKind::Parcel) && kinds.contains(&survey_model::RecordKind::Sheet)
+    );
+    let ids: Vec<_> = loaded.parcels().iter().map(|p| p.id).collect();
+    let again: Vec<_> = store
+        .load_document()
+        .expect("reload")
+        .parcels()
+        .iter()
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(ids, again, "ids are the same on every load");
+    let mut all: Vec<_> = loaded.records().traverses.iter().map(|r| r.id).collect();
+    all.extend(&ids);
+    all.extend(loaded.sheets().iter().map(|s| s.id));
+    all.extend(loaded.alignments().iter().map(|a| a.id));
+    let unique: std::collections::BTreeSet<_> = all.iter().collect();
+    assert_eq!(unique.len(), all.len(), "{all:?}");
+
+    // Editing one parcel only rewrites the parcels.
+    let mut lot = loaded.parcels()[1].record.clone();
+    lot.plan = "DP 99".into();
+    let mut history = History::new("tester");
+    history.execute(
+        Box::new(ChangeSet::new("edit").update_record(ids[1], lot)),
+        &mut loaded,
+    );
+    assert_eq!(
+        loaded.dirty().records,
+        [survey_model::RecordKind::Parcel].into_iter().collect()
+    );
+    assert!(!loaded.dirty().meta);
+    save(&mut store, &mut loaded, &mut history);
+    // Every collection now has its ids in the file, edited or not.
+    let reopened = store.load_document().expect("reload");
+    assert_eq!(reopened.records(), loaded.records());
+    assert!(reopened.records_to_save().is_empty());
+    assert_eq!(reopened.parcels()[1].plan, "DP 99");
 }
 
 #[test]

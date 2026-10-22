@@ -49,11 +49,10 @@ impl NetworkWindow {
     pub fn open_with(&mut self, doc: &Document) {
         self.open = true;
         if self.sources.is_empty() {
-            let meta = doc.meta();
             self.sources
-                .extend(meta.traverses.iter().map(|t| format!("t:{}", t.name)));
+                .extend(doc.traverses().iter().map(|t| format!("t:{}", t.name)));
             self.sources
-                .extend(meta.field_data.iter().map(|f| format!("f:{}", f.name)));
+                .extend(doc.field_data().iter().map(|f| format!("f:{}", f.name)));
         }
     }
 
@@ -66,14 +65,13 @@ impl NetworkWindow {
     }
 
     fn setups(&self, doc: &Document) -> Vec<Setup> {
-        let meta = doc.meta();
         let mut out = Vec::new();
-        for t in &meta.traverses {
+        for t in doc.traverses() {
             if self.sources.contains(&format!("t:{}", t.name)) {
                 out.extend(setups_from_traverse(t));
             }
         }
-        for f in &meta.field_data {
+        for f in doc.field_data() {
             if self.sources.contains(&format!("f:{}", f.name)) {
                 out.extend(f.setups.iter().cloned());
             }
@@ -123,9 +121,8 @@ impl NetworkWindow {
             .open(&mut open)
             .default_width(460.0)
             .show(ctx, |ui| {
-                let meta = doc.meta();
                 ui.label(RichText::new("SOURCES").small().color(theme.text_secondary));
-                if meta.traverses.is_empty() && meta.field_data.is_empty() {
+                if doc.traverses().is_empty() && doc.field_data().is_empty() {
                     ui.label(
                         RichText::new(
                             "Save a traverse or import raw data (File → Import raw data) to adjust it.",
@@ -145,14 +142,14 @@ impl NetworkWindow {
                         }
                     }
                 };
-                for t in &meta.traverses {
+                for t in doc.traverses() {
                     toggle(
                         ui,
                         format!("t:{}", t.name),
                         format!("Traverse {} ({} legs)", t.name, t.legs.len()),
                     );
                 }
-                for f in &meta.field_data {
+                for f in doc.field_data() {
                     toggle(
                         ui,
                         format!("f:{}", f.name),
@@ -258,7 +255,7 @@ impl NetworkWindow {
                                 .collect();
                             let factor = (!pts.is_empty())
                                 .then(|| pts.iter().sum::<DVec3>() / pts.len() as f64)
-                                .and_then(|c| meta.coord_system.combined_factor(c.x, c.y, c.z));
+                                .and_then(|c| doc.meta().coord_system.combined_factor(c.x, c.y, c.z));
                             if ui
                                 .add_enabled(factor.is_some(), egui::Button::new("From project"))
                                 .on_hover_text("Combined factor at the centre of the known stations")

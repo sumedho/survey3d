@@ -458,7 +458,7 @@ impl TraverseWindow {
         conv: &Conventions,
         action: &mut Option<TraverseAction>,
     ) {
-        let saved = &doc.meta().traverses;
+        let saved = doc.traverses();
         let name = self.name.trim().to_string();
         let exists = saved.iter().any(|r| r.name == name);
         ui.horizontal(|ui| {
@@ -493,7 +493,7 @@ impl TraverseWindow {
                 .show_ui(ui, |ui| {
                     for rec in saved {
                         if ui.selectable_label(rec.name == name, &rec.name).clicked() {
-                            chosen = Some(rec.clone());
+                            chosen = Some(rec.record.clone());
                         }
                     }
                 });

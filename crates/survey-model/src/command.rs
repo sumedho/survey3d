@@ -8,6 +8,7 @@ use crate::document::{Document, ProjectMeta};
 use crate::entity::Entity;
 use crate::ids::{EntityId, LayerId, PointCloudId, SurfaceId};
 use crate::layer::Layer;
+use crate::records::{AnyRecord, Record, RecordId, RecordKind};
 use crate::surface::{Surface, SurfaceStyle};
 
 /// An undoable edit to a [`Document`].
@@ -62,6 +63,15 @@ enum Op {
         id: PointCloudId,
         before: Option<CloudStyle>,
         after: CloudStyle,
+    },
+    /// One project record (a traverse, parcel, sheet…), so editing one does not
+    /// copy the others into the history.
+    Record {
+        kind: RecordKind,
+        id: Option<RecordId>,
+        /// The previous value and its position in the list.
+        before: Option<Box<(usize, AnyRecord)>>,
+        after: Option<Box<AnyRecord>>,
     },
     // Boxed: project settings are much larger than an entity record.
     Meta {
@@ -237,6 +247,53 @@ impl ChangeSet {
             .collect()
     }
 
+    /// Adds a record; its id is allocated on first apply (see [`Self::inserted_record_ids`]).
+    pub fn insert_record(mut self, record: impl Record) -> Self {
+        self.ops.push(Op::Record {
+            kind: record.kind_of(),
+            id: None,
+            before: None,
+            after: Some(Box::new(record.into_any())),
+        });
+        self
+    }
+
+    pub fn update_record(mut self, id: RecordId, record: impl Record) -> Self {
+        self.ops.push(Op::Record {
+            kind: record.kind_of(),
+            id: Some(id),
+            before: None,
+            after: Some(Box::new(record.into_any())),
+        });
+        self
+    }
+
+    pub fn delete_record(mut self, kind: RecordKind, id: RecordId) -> Self {
+        self.ops.push(Op::Record {
+            kind,
+            id: Some(id),
+            before: None,
+            after: None,
+        });
+        self
+    }
+
+    /// Ids of inserted records (available after the first apply).
+    pub fn inserted_record_ids(&self) -> Vec<RecordId> {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Record {
+                    id: Some(id),
+                    before: None,
+                    after: Some(_),
+                    ..
+                } => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn set_meta(mut self, meta: ProjectMeta) -> Self {
         self.ops.push(Op::Meta {
             before: None,
@@ -294,6 +351,17 @@ impl Command for ChangeSet {
                 Op::CloudStyle { id, before, after } => {
                     *before = doc.set_cloud_style(*id, *after);
                 }
+                Op::Record {
+                    kind,
+                    id,
+                    before,
+                    after,
+                } => {
+                    let id = *id.get_or_insert_with(|| doc.alloc_record_id());
+                    *before = doc
+                        .set_record(*kind, id, after.as_deref().cloned(), None)
+                        .map(Box::new);
+                }
                 Op::Meta { before, after } => {
                     *before = Some(Box::new(doc.set_meta((**after).clone())));
                 }
@@ -337,6 +405,18 @@ impl Command for ChangeSet {
                     ..
                 } => {
                     doc.set_cloud_style(*id, *before);
+                }
+                Op::Record {
+                    kind,
+                    id: Some(id),
+                    before,
+                    ..
+                } => {
+                    let (at, record) = match before.as_deref() {
+                        Some((at, r)) => (Some(*at), Some(r.clone())),
+                        None => (None, None),
+                    };
+                    doc.set_record(*kind, *id, record, at);
                 }
                 Op::Meta {
                     before: Some(before), ..
@@ -414,6 +494,47 @@ mod tests {
         // Redo reuses the same id.
         add.apply(&mut doc);
         assert!(doc.contains(id));
+    }
+
+    #[test]
+    fn record_round_trip_keeps_ids_and_order() {
+        use crate::sheet::SheetRecord;
+        let sheet = |name: &str| SheetRecord {
+            name: name.into(),
+            ..Default::default()
+        };
+        let mut doc = Document::new();
+        let mut add = ChangeSet::new("add")
+            .insert_record(sheet("A"))
+            .insert_record(sheet("B"))
+            .insert_record(sheet("C"));
+        add.apply(&mut doc);
+        let ids = add.inserted_record_ids();
+        assert_eq!(ids.len(), 3);
+        assert!(doc.dirty().records.contains(&RecordKind::Sheet));
+
+        let mut edit = ChangeSet::new("edit").update_record(ids[1], sheet("B2"));
+        edit.apply(&mut doc);
+        let mut del = ChangeSet::new("del").delete_record(RecordKind::Sheet, ids[0]);
+        del.apply(&mut doc);
+        let names = |doc: &Document| doc.sheets().iter().map(|s| s.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&doc), ["B2", "C"]);
+        del.revert(&mut doc);
+        edit.revert(&mut doc);
+        assert_eq!(names(&doc), ["A", "B", "C"]);
+        assert_eq!(
+            doc.record::<SheetRecord>(ids[2]).map(|s| s.name.as_str()),
+            Some("C")
+        );
+
+        add.revert(&mut doc);
+        assert!(doc.sheets().is_empty());
+        add.apply(&mut doc);
+        assert_eq!(doc.sheets().iter().map(|s| s.id).collect::<Vec<_>>(), ids);
+        // Ids carry on after loaded records.
+        let mut more = ChangeSet::new("more").insert_record(sheet("D"));
+        more.apply(&mut doc);
+        assert!(more.inserted_record_ids()[0] > ids[2]);
     }
 
     #[test]

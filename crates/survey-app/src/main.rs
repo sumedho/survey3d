@@ -2,22 +2,7 @@
 
 //! survey3d — surveying CAD for cadastral, construction and mining work.
 
-mod app;
-mod cloud_view;
-mod field_to_finish;
-mod import_command;
-mod interchange;
-mod listing;
-mod plan;
-mod platform;
-mod project;
-mod scene_build;
-mod settings;
-mod surface_view;
-mod tools;
-mod ui;
-
-use app::SurveyApp;
+use survey_app::SurveyApp;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {

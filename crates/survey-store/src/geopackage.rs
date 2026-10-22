@@ -223,7 +223,7 @@ pub fn export_geopackage(doc: &Document) -> Result<(Vec<u8>, GpkgSummary)> {
             }
         }
     }
-    if !doc.meta().parcels.is_empty() {
+    if !doc.parcels().is_empty() {
         table(
             &tx,
             "parcels",
@@ -234,7 +234,7 @@ pub fn export_geopackage(doc: &Document) -> Result<(Vec<u8>, GpkgSummary)> {
         let mut stmt = tx.prepare(
             "INSERT INTO parcels (geom, name, plan, description, area) VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
-        for p in &doc.meta().parcels {
+        for p in doc.parcels() {
             let Some(Entity::Polyline(l)) = doc.entity(p.boundary) else {
                 continue;
             };
@@ -322,12 +322,14 @@ mod tests {
             .find(|(_, e)| matches!(e, Entity::Polyline(_)))
             .map(|(id, _)| id)
             .expect("line");
-        meta.parcels.push(survey_model::parcel::ParcelRecord {
-            name: "Lot 1".into(),
-            boundary,
-            ..Default::default()
-        });
-        ChangeSet::new("meta").set_meta(meta).apply(&mut doc);
+        ChangeSet::new("parcel")
+            .set_meta(meta)
+            .insert_record(survey_model::parcel::ParcelRecord {
+                name: "Lot 1".into(),
+                boundary,
+                ..Default::default()
+            })
+            .apply(&mut doc);
 
         let (bytes, summary) = export_geopackage(&doc).expect("gpkg");
         assert_eq!(

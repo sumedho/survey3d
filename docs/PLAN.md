@@ -29,8 +29,19 @@ crates/
   survey-surface/  TIN (spade CDT), contours, sections, volumes
   egui-cad/        reusable CAD widgets — no survey knowledge
   cad-render/      wgpu renderer: grid, points, lines, triangles, picking; relative-to-center encoding
-  survey-app/      eframe app; tool registry; domain modules (cadastral / construction / mining)
+  survey-app/      lib: Session (headless editing: tools, command line, edits, imports/exports);
+                   bin: eframe app over a Session; domain modules (cadastral / construction / mining)
 ```
+
+### Session and records
+- `Session` owns the project, tool registry, active tool and command-line log. Every edit the GUI makes
+  goes through it, so scripts, tests and agents get the same behaviour: `run(text)` takes command-line
+  input exactly as typed. Operations log their results and queue `Event`s (toast, report, zoom, open a
+  panel) that the GUI drains each frame and other callers may read or ignore.
+- Project records (traverses, parcels, alignments, raw field data, plan sheets) live in `Document`
+  as `Keyed<T>` lists with a stable `RecordId`; `ProjectMeta` holds settings only. A change to a record
+  is its own undo op (only that record is copied into the history) and marks only its collection for
+  saving. Files written before ids load with ids assigned in file order; the next save stores them.
 
 ### `egui-cad` widget library
 `CadTheme` (tokens, dark/light, compact density, icons) · `Viewport` (orbit / pan / zoom-to-cursor,

@@ -7,8 +7,8 @@ use egui_cad::{CadTheme, icons};
 use glam::DVec2;
 use survey_core::style::LabelSet;
 use survey_io::plot::{CAP_HEIGHT, Item, Plot, Rgb};
-use survey_model::Document;
 use survey_model::sheet::{GridMarks, Paper, STANDARD_SCALES, SheetRecord};
+use survey_model::{Document, Keyed, RecordId};
 
 use crate::plan::{build_plot, frame_size_world};
 
@@ -20,8 +20,8 @@ pub enum PlotFormat {
 
 pub enum SheetsAction {
     Add(SheetRecord),
-    Update(usize, SheetRecord),
-    Delete(usize),
+    Update(RecordId, SheetRecord),
+    Delete(RecordId),
     Export(SheetRecord, PlotFormat),
 }
 
@@ -81,9 +81,10 @@ fn rotated_size(min: DVec2, max: DVec2, rotation: f64) -> DVec2 {
 
 pub struct SheetsWindow {
     pub open: bool,
-    pub current: usize,
+    /// The sheet shown (the first one if this one has gone).
+    pub current: Option<RecordId>,
     /// The sheet being edited and the stored version it started from.
-    draft: Option<(usize, SheetRecord, SheetRecord)>,
+    draft: Option<(RecordId, SheetRecord, SheetRecord)>,
     /// Cached preview: its inputs and the plot.
     preview: Option<(u64, SheetRecord, LabelSet, Plot)>,
     /// Preview zoom (1 = whole page) and pan (page millimetres).
@@ -95,7 +96,7 @@ impl Default for SheetsWindow {
     fn default() -> Self {
         Self {
             open: false,
-            current: 0,
+            current: None,
             draft: None,
             preview: None,
             zoom: 1.0,
@@ -110,10 +111,17 @@ impl SheetsWindow {
         if !self.open {
             return None;
         }
+        let current = self.current_sheet(doc.sheets())?;
         match &self.draft {
-            Some((i, draft, _)) if *i == self.current => Some(draft.clone()),
-            _ => doc.meta().sheets.get(self.current).cloned(),
+            Some((id, draft, _)) if *id == current.id => Some(draft.clone()),
+            _ => Some(current.record.clone()),
         }
+    }
+
+    fn current_sheet<'a>(&self, sheets: &'a [Keyed<SheetRecord>]) -> Option<&'a Keyed<SheetRecord>> {
+        self.current
+            .and_then(|id| sheets.iter().find(|s| s.id == id))
+            .or(sheets.first())
     }
 
     /// A new sheet framing the current view.
@@ -142,19 +150,18 @@ impl SheetsWindow {
             return None;
         }
         let theme = CadTheme::current(ctx);
-        let sheets = &doc.meta().sheets;
-        if self.current >= sheets.len() {
-            self.current = sheets.len().saturating_sub(1);
-        }
+        let sheets = doc.sheets();
+        let stored = self.current_sheet(sheets);
+        self.current = stored.map(|s| s.id);
         // Follow the stored sheet unless it is being edited; adopt outside changes (undo).
-        match (&mut self.draft, sheets.get(self.current)) {
-            (Some((i, draft, base)), Some(stored)) if *i == self.current => {
-                if stored != base {
-                    *draft = stored.clone();
-                    *base = stored.clone();
+        match (&mut self.draft, stored) {
+            (Some((id, draft, base)), Some(stored)) if *id == stored.id => {
+                if stored.record != *base {
+                    *draft = stored.record.clone();
+                    *base = stored.record.clone();
                 }
             }
-            (_, Some(stored)) => self.draft = Some((self.current, stored.clone(), stored.clone())),
+            (_, Some(stored)) => self.draft = Some((stored.id, stored.record.clone(), stored.record.clone())),
             (_, None) => self.draft = None,
         }
 
@@ -166,16 +173,19 @@ impl SheetsWindow {
             .resizable(true)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if sheets.is_empty() {
-                        ui.label(RichText::new("No sheets yet").color(theme.text_secondary));
-                    } else {
-                        egui::ComboBox::from_id_salt("sheet_pick")
-                            .selected_text(sheets[self.current].name.clone())
-                            .show_ui(ui, |ui| {
-                                for (i, s) in sheets.iter().enumerate() {
-                                    ui.selectable_value(&mut self.current, i, s.name.clone());
-                                }
-                            });
+                    match stored {
+                        None => {
+                            ui.label(RichText::new("No sheets yet").color(theme.text_secondary));
+                        }
+                        Some(stored) => {
+                            egui::ComboBox::from_id_salt("sheet_pick")
+                                .selected_text(stored.name.clone())
+                                .show_ui(ui, |ui| {
+                                    for s in sheets {
+                                        ui.selectable_value(&mut self.current, Some(s.id), s.name.clone());
+                                    }
+                                });
+                        }
                     }
                     if ui
                         .button(format!("{} New from view", icons::PLUS))
@@ -183,23 +193,21 @@ impl SheetsWindow {
                         .clicked()
                     {
                         let sheet = Self::sheet_from_view(doc, view, sheets.len() + 1);
-                        self.current = sheets.len();
                         action = Some(SheetsAction::Add(sheet));
                     }
-                    if let Some((_, draft, _)) = &self.draft {
+                    if let Some((id, draft, _)) = &self.draft {
                         if ui.button("Duplicate").clicked() {
                             let mut copy = draft.clone();
                             copy.name = format!("{} copy", draft.name);
-                            self.current = sheets.len();
                             action = Some(SheetsAction::Add(copy));
                         }
                         if ui.button("Delete").clicked() {
-                            action = Some(SheetsAction::Delete(self.current));
+                            action = Some(SheetsAction::Delete(*id));
                         }
                     }
                 });
                 ui.separator();
-                let Some((index, draft, base)) = &mut self.draft else {
+                let Some((id, draft, base)) = &mut self.draft else {
                     ui.add_space(40.0);
                     ui.vertical_centered(|ui| {
                         ui.label(
@@ -217,7 +225,7 @@ impl SheetsWindow {
                     });
                     return;
                 };
-                let index = *index;
+                let id = *id;
                 let height = ui.available_height().max(300.0);
                 ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(
@@ -262,7 +270,7 @@ impl SheetsWindow {
                 // Commit when the user lets go (not on every keystroke or drag step).
                 let idle = !ctx.egui_wants_keyboard_input() && !ctx.input(|i| i.pointer.any_down());
                 if action.is_none() && *draft != *base && idle {
-                    action = Some(SheetsAction::Update(index, draft.clone()));
+                    action = Some(SheetsAction::Update(id, draft.clone()));
                     *base = draft.clone();
                 }
             });

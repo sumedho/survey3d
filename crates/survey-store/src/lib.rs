@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use survey_core::tin::Tin;
 use survey_model::{
     AuditAction, AuditRecord, Color, Document, Entity, EntityId, Layer, LayerId, PointCloud, PointCloudId,
-    Polyline, ProjectMeta, Surface, SurfaceId, SurveyPoint,
+    Polyline, ProjectMeta, RecordKind, Records, Surface, SurfaceId, SurveyPoint,
 };
 use thiserror::Error;
 
@@ -136,6 +136,7 @@ impl ProjectStore {
         let mut entities = self.load_points()?;
         entities.extend(self.load_polylines()?);
         let mut doc = Document::from_parts(meta, layers, entities);
+        doc.load_records(self.load_records()?);
         doc.load_surfaces(self.load_surfaces()?);
         doc.load_clouds(self.load_clouds()?);
         Ok(doc)
@@ -266,25 +267,27 @@ impl ProjectStore {
         if let Some(t) = self.meta_value("tolerances")? {
             meta.tolerances = serde_json::from_str(&t)?;
         }
-        if let Some(t) = self.meta_value("traverses")? {
-            meta.traverses = serde_json::from_str(&t)?;
-        }
-        if let Some(p) = self.meta_value("parcels")? {
-            meta.parcels = serde_json::from_str(&p)?;
-        }
-        if let Some(a) = self.meta_value("alignments")? {
-            meta.alignments = serde_json::from_str(&a)?;
-        }
-        if let Some(f) = self.meta_value("field_data")? {
-            meta.field_data = serde_json::from_str(&f)?;
-        }
         if let Some(o) = self.meta_value("network_options")? {
             meta.network_options = serde_json::from_str(&o)?;
         }
-        if let Some(s) = self.meta_value("sheets")? {
-            meta.sheets = serde_json::from_str(&s)?;
-        }
         Ok(meta)
+    }
+
+    /// Record collections, each a JSON array under its own key in `project_meta`.
+    fn load_records(&self) -> Result<Records> {
+        fn list<T: serde::de::DeserializeOwned>(store: &ProjectStore, kind: RecordKind) -> Result<Vec<T>> {
+            Ok(match store.meta_value(kind.key())? {
+                Some(json) => serde_json::from_str(&json)?,
+                None => Vec::new(),
+            })
+        }
+        Ok(Records {
+            traverses: list(self, RecordKind::Traverse)?,
+            parcels: list(self, RecordKind::Parcel)?,
+            alignments: list(self, RecordKind::Alignment)?,
+            field_data: list(self, RecordKind::FieldData)?,
+            sheets: list(self, RecordKind::Sheet)?,
+        })
     }
 
     fn meta_value(&self, key: &str) -> Result<Option<String>> {
@@ -530,6 +533,9 @@ fn write_changes(
     if dirty.meta {
         write_meta(tx, doc.meta())?;
     }
+    for kind in doc.records_to_save() {
+        write_records(tx, doc.records(), kind)?;
+    }
     if !dirty.layers.is_empty() {
         write_layers(tx, doc)?;
     }
@@ -596,6 +602,22 @@ fn write_surface(tx: &Transaction<'_>, id: SurfaceId, surface: Option<&Surface>)
     Ok(())
 }
 
+fn write_records(tx: &Transaction<'_>, records: &Records, kind: RecordKind) -> Result<()> {
+    let json = match kind {
+        RecordKind::Traverse => serde_json::to_string(&records.traverses),
+        RecordKind::Parcel => serde_json::to_string(&records.parcels),
+        RecordKind::Alignment => serde_json::to_string(&records.alignments),
+        RecordKind::FieldData => serde_json::to_string(&records.field_data),
+        RecordKind::Sheet => serde_json::to_string(&records.sheets),
+    }?;
+    tx.execute(
+        "INSERT INTO project_meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![kind.key(), json],
+    )?;
+    Ok(())
+}
+
 fn write_meta(tx: &Transaction<'_>, meta: &ProjectMeta) -> Result<()> {
     let mut put = tx.prepare_cached(
         "INSERT INTO project_meta (key, value) VALUES (?1, ?2)
@@ -608,15 +630,10 @@ fn write_meta(tx: &Transaction<'_>, meta: &ProjectMeta) -> Result<()> {
         serde_json::to_string(&meta.feature_codes)?
     ])?;
     put.execute(params!["tolerances", serde_json::to_string(&meta.tolerances)?])?;
-    put.execute(params!["traverses", serde_json::to_string(&meta.traverses)?])?;
-    put.execute(params!["parcels", serde_json::to_string(&meta.parcels)?])?;
-    put.execute(params!["alignments", serde_json::to_string(&meta.alignments)?])?;
-    put.execute(params!["field_data", serde_json::to_string(&meta.field_data)?])?;
     put.execute(params![
         "network_options",
         serde_json::to_string(&meta.network_options)?
     ])?;
-    put.execute(params!["sheets", serde_json::to_string(&meta.sheets)?])?;
     tx.execute(
         "INSERT OR REPLACE INTO coord_system (id, definition_json) VALUES (1, ?1)",
         [serde_json::to_string(&meta.coord_system)?],

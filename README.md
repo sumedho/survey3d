@@ -21,12 +21,12 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
 | Crate | Purpose |
 |---|---|
 | `survey-core` | Pure maths: angles/bearings, conventions (parse/format), geometry, arcs (bulges), offsets, COGO (intersections, chainage/offset), traverse adjustment, least-squares networks, map projections, TINs and volumes, field-to-finish, point input |
-| `survey-model` | `Document`, entities, layers, `Command`/`ChangeSet`, undo `History` with audit records, R-tree index |
+| `survey-model` | `Document`, entities, layers, project records (traverses, parcels, alignments, field data, sheets) with stable ids, `Command`/`ChangeSet`, undo `History` with audit records, R-tree index |
 | `survey-io` | Interchange formats: CSV/TXT points (configurable columns), DXF read/write (symbol blocks, line types), feature code sheets, LandXML, LAS/XYZ point clouds, Leica GSI and Trimble JobXML raw data; PDF and SVG plot writers |
 | `survey-store` | `.s3d` project files (SQLite): incremental saves, migrations, hash-chained append-only audit trail; GeoPackage export |
 | `cad-render` | wgpu renderer: f64 camera, relative-to-center chunks, reverse-Z, offscreen MSAA, egui paint callback |
 | `egui-cad` | Reusable CAD widgets: theme, viewport, snapping, box selection, label placement, command line, panels |
-| `survey-app` | The application: tools, panels, dialogs, file handling |
+| `survey-app` | The application. `Session` (library): project, tools, command line and edits with no UI — drive it with `Session::run("pl")`. `SurveyApp`: the egui interface over a session (panels, dialogs, file handling) |
 
 ## Using it
 

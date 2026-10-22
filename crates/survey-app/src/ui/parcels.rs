@@ -7,7 +7,7 @@ use survey_core::Conventions;
 use survey_core::accuracy::Tolerances;
 use survey_core::arc::polyline_metrics;
 use survey_core::closure::{Course, CourseArc, Figure, Solution, courses_from_polyline, figure, report};
-use survey_model::{Document, Entity, EntityId, ParcelRecord, Polyline};
+use survey_model::{Document, Entity, EntityId, ParcelRecord, Polyline, RecordId};
 
 /// A parcel's boundary polyline, if it still exists and is closed.
 pub fn boundary<'a>(doc: &'a Document, p: &ParcelRecord) -> Option<&'a Polyline> {
@@ -68,9 +68,8 @@ pub fn parcel_report(doc: &Document, p: &ParcelRecord, tolerances: &Tolerances) 
 }
 
 pub enum ParcelsAction {
-    /// Replace the parcel at an index.
-    Update(usize, ParcelRecord),
-    Delete(usize),
+    Update(RecordId, ParcelRecord),
+    Delete(RecordId),
     Select(EntityId),
     Report(String, String),
     CreateFromSelection,
@@ -80,8 +79,8 @@ pub enum ParcelsAction {
 #[derive(Default)]
 pub struct ParcelsWindow {
     pub open: bool,
-    /// Text being edited: (index, name, plan).
-    editing: Option<(usize, String, String)>,
+    /// Text being edited: (parcel, name, plan).
+    editing: Option<(RecordId, String, String)>,
 }
 
 impl ParcelsWindow {
@@ -92,7 +91,7 @@ impl ParcelsWindow {
         let theme = CadTheme::current(ctx);
         let conv = doc.conventions().clone();
         let tolerances = doc.meta().tolerances;
-        let parcels = &doc.meta().parcels;
+        let parcels = doc.parcels();
         let mut action = None;
         let mut open = self.open;
         egui::Window::new("Parcels")
@@ -136,7 +135,8 @@ impl ParcelsWindow {
                             ui.label(RichText::new(h).small().color(theme.text_secondary));
                         }
                         ui.end_row();
-                        for (i, p) in parcels.iter().enumerate() {
+                        for p in parcels {
+                            let i = p.id;
                             let (mut name, mut plan) = match &self.editing {
                                 Some((k, n, pl)) if *k == i => (n.clone(), pl.clone()),
                                 _ => (p.name.clone(), p.plan.clone()),
@@ -151,7 +151,7 @@ impl ParcelsWindow {
                                 && k == i
                                 && (n != p.name || pl != p.plan)
                             {
-                                action = Some(ParcelsAction::Update(i, ParcelRecord { name: n, plan: pl, ..p.clone() }));
+                                action = Some(ParcelsAction::Update(i, ParcelRecord { name: n, plan: pl, ..p.record.clone() }));
                             }
                             match boundary(doc, p) {
                                 Some(l) => {
@@ -181,7 +181,7 @@ impl ParcelsWindow {
                             }
                             let mut annotate = p.annotate;
                             if ui.checkbox(&mut annotate, "").on_hover_text("Bearings, distances and area in the drawing").changed() {
-                                action = Some(ParcelsAction::Update(i, ParcelRecord { annotate, ..p.clone() }));
+                                action = Some(ParcelsAction::Update(i, ParcelRecord { annotate, ..p.record.clone() }));
                             }
                             ui.horizontal(|ui| {
                                 if IconButton::new(icons::CROSSHAIR, "Select boundary").size(20.0).show(ui).clicked() {

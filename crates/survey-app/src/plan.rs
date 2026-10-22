@@ -614,7 +614,7 @@ impl<'a> Builder<'a> {
         let color = if self.mono { BLACK } else { [30, 30, 30] };
         let mut done: HashSet<[(i64, i64); 2]> = HashSet::new();
         let key = |p: glam::DVec3| ((p.x * 1000.0).round() as i64, (p.y * 1000.0).round() as i64);
-        for parcel in doc.meta().parcels.iter().filter(|p| p.annotate) {
+        for parcel in doc.parcels().iter().filter(|p| p.annotate) {
             let Some(l) = crate::ui::parcels::boundary(doc, parcel) else {
                 continue;
             };
@@ -717,7 +717,7 @@ impl<'a> Builder<'a> {
         let size = self.sheet.text_size * 0.9;
         let color = if self.mono { BLACK } else { [20, 90, 170] };
         let pen = Pen::solid(color, 0.2);
-        for a in doc.meta().alignments.iter().filter(|a| a.show_chainages) {
+        for a in doc.alignments().iter().filter(|a| a.show_chainages) {
             let Some(l) = crate::ui::alignments::centreline(doc, a) else {
                 continue;
             };

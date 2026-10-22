@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use survey_core::accuracy::Tolerances;
 use survey_core::field_to_finish::FeatureLibrary;
-use survey_core::traverse::TraverseRecord;
 use survey_core::{Aabb3, Conventions};
 
 use crate::cloud::{CloudStyle, PointCloud};
@@ -13,10 +12,12 @@ use crate::coord_system::CoordinateSystem;
 use crate::entity::{Entity, SurveyPoint};
 use crate::ids::{EntityId, LayerId, PointCloudId, SurfaceId};
 use crate::layer::{Color, Layer};
+use crate::records::{AnyRecord, Keyed, Record, RecordId, RecordKind, Records};
 use crate::spatial::SpatialIndex;
 use crate::surface::Surface;
 
-/// Project-wide settings that are saved with the project.
+/// Project-wide settings that are saved with the project. Collections of named
+/// records (traverses, parcels, sheets…) are kept separately in [`Records`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectMeta {
     pub name: String,
@@ -29,24 +30,9 @@ pub struct ProjectMeta {
     /// Accuracy limits for misclosure checks (none by default).
     #[serde(default)]
     pub tolerances: Tolerances,
-    /// Traverses as entered, so they can be reopened and recomputed.
-    #[serde(default)]
-    pub traverses: Vec<TraverseRecord>,
-    /// Cadastral parcels.
-    #[serde(default)]
-    pub parcels: Vec<crate::parcel::ParcelRecord>,
-    /// Construction alignments.
-    #[serde(default)]
-    pub alignments: Vec<crate::alignment::AlignmentRecord>,
-    /// Raw field observations (imported instrument files).
-    #[serde(default)]
-    pub field_data: Vec<survey_core::network::FieldData>,
     /// A priori precision used by the network adjustment.
     #[serde(default)]
     pub network_options: survey_core::network::NetworkOptions,
-    /// Plan sheets for printing.
-    #[serde(default)]
-    pub sheets: Vec<crate::sheet::SheetRecord>,
 }
 
 impl Default for ProjectMeta {
@@ -58,12 +44,7 @@ impl Default for ProjectMeta {
             conventions: Conventions::default(),
             feature_codes: FeatureLibrary::default(),
             tolerances: Tolerances::default(),
-            traverses: Vec::new(),
-            parcels: Vec::new(),
-            alignments: Vec::new(),
-            field_data: Vec::new(),
             network_options: Default::default(),
-            sheets: Vec::new(),
         }
     }
 }
@@ -76,6 +57,8 @@ pub struct DirtyState {
     pub surfaces: BTreeSet<SurfaceId>,
     pub clouds: BTreeSet<PointCloudId>,
     pub meta: bool,
+    /// Record collections with any change.
+    pub records: BTreeSet<RecordKind>,
 }
 
 impl DirtyState {
@@ -85,6 +68,7 @@ impl DirtyState {
             && self.surfaces.is_empty()
             && self.clouds.is_empty()
             && !self.meta
+            && self.records.is_empty()
     }
 }
 
@@ -95,6 +79,11 @@ impl DirtyState {
 /// [`crate::Command`]s so they are undoable and audited.
 pub struct Document {
     meta: ProjectMeta,
+    records: Records,
+    next_record_id: i64,
+    /// Collections given ids on load (saved before records had them); the next
+    /// save writes them so the ids stay the same. Not an unsaved change.
+    unsaved_record_ids: BTreeSet<RecordKind>,
     layers: Vec<Layer>,
     current_layer: LayerId,
     entities: BTreeMap<EntityId, Entity>,
@@ -139,6 +128,9 @@ impl Document {
         let current_layer = layers[0].id;
         Self {
             meta,
+            records: Records::default(),
+            next_record_id: 1,
+            unsaved_record_ids: BTreeSet::new(),
             layers,
             current_layer,
             entities: entities.into_iter().collect(),
@@ -160,6 +152,39 @@ impl Document {
 
     pub fn meta(&self) -> &ProjectMeta {
         &self.meta
+    }
+
+    pub fn records(&self) -> &Records {
+        &self.records
+    }
+
+    /// One collection, in the user's order.
+    pub fn record_list<T: Record>(&self) -> &[Keyed<T>] {
+        T::list(&self.records)
+    }
+
+    pub fn record<T: Record>(&self, id: RecordId) -> Option<&T> {
+        self.records.get(id)
+    }
+
+    pub fn traverses(&self) -> &[Keyed<survey_core::traverse::TraverseRecord>] {
+        &self.records.traverses
+    }
+
+    pub fn parcels(&self) -> &[Keyed<crate::parcel::ParcelRecord>] {
+        &self.records.parcels
+    }
+
+    pub fn alignments(&self) -> &[Keyed<crate::alignment::AlignmentRecord>] {
+        &self.records.alignments
+    }
+
+    pub fn field_data(&self) -> &[Keyed<survey_core::network::FieldData>] {
+        &self.records.field_data
+    }
+
+    pub fn sheets(&self) -> &[Keyed<crate::sheet::SheetRecord>] {
+        &self.records.sheets
     }
 
     pub fn conventions(&self) -> &Conventions {
@@ -282,6 +307,16 @@ impl Document {
 
     pub fn dirty(&self) -> &DirtyState {
         &self.dirty
+    }
+
+    /// Record collections to write on the next save: those changed, and those
+    /// whose ids were assigned on load.
+    pub fn records_to_save(&self) -> BTreeSet<RecordKind> {
+        self.dirty
+            .records
+            .union(&self.unsaved_record_ids)
+            .copied()
+            .collect()
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -426,6 +461,40 @@ impl Document {
         previous
     }
 
+    pub fn alloc_record_id(&mut self) -> RecordId {
+        let id = RecordId(self.next_record_id);
+        self.next_record_id += 1;
+        id
+    }
+
+    /// Inserts, replaces (`Some`) or removes (`None`) a record; returns the previous
+    /// value and its position. A new record goes at `at` (to restore one removed
+    /// by an undone delete) or the end of its list.
+    pub fn set_record(
+        &mut self,
+        kind: RecordKind,
+        id: RecordId,
+        record: Option<AnyRecord>,
+        at: Option<usize>,
+    ) -> Option<(usize, AnyRecord)> {
+        debug_assert!(record.as_ref().is_none_or(|r| r.kind() == kind));
+        let previous = self.records.set(kind, id, record, at);
+        self.next_record_id = self.next_record_id.max(id.0 + 1);
+        self.dirty.records.insert(kind);
+        self.revision += 1;
+        previous
+    }
+
+    /// Adds records read from storage (not dirty). Records saved before ids
+    /// existed are numbered in file order, which is the same on every load.
+    pub fn load_records(&mut self, mut records: Records) {
+        let mut next = records.max_id().max(self.next_record_id - 1) + 1;
+        self.unsaved_record_ids = records.assign_missing_ids(&mut next);
+        self.next_record_id = next;
+        self.records = records;
+        self.revision += 1;
+    }
+
     /// Replaces project settings; returns the previous value.
     pub fn set_meta(&mut self, meta: ProjectMeta) -> ProjectMeta {
         self.dirty.meta = true;
@@ -442,12 +511,14 @@ impl Document {
 
     /// Returns and clears the dirty set (called by the store after a successful save).
     pub fn take_dirty(&mut self) -> DirtyState {
+        self.unsaved_record_ids.clear();
         std::mem::take(&mut self.dirty)
     }
 
     /// Marks everything dirty, e.g. before "save as" to a brand-new file.
     pub fn mark_all_dirty(&mut self) {
         self.dirty.meta = true;
+        self.dirty.records = RecordKind::ALL.into_iter().collect();
         self.dirty.layers = self.layers.iter().map(|l| l.id).collect();
         self.dirty.entities = self.entities.keys().copied().collect();
         self.dirty.surfaces = self.surfaces.keys().copied().collect();

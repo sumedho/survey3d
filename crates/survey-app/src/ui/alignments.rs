@@ -7,7 +7,7 @@ use egui_cad::chrome::{IconButton, switch_row};
 use egui_cad::{CadTheme, fonts, icons};
 use survey_core::Conventions;
 use survey_core::alignment::{ElementKind, SetoutPoint, elements, setout};
-use survey_model::{AlignmentRecord, Document, Entity, EntityId, Polyline};
+use survey_model::{AlignmentRecord, Document, Entity, EntityId, Polyline, RecordId};
 
 /// An alignment's centreline, if it still exists.
 pub fn centreline<'a>(doc: &'a Document, a: &AlignmentRecord) -> Option<&'a Polyline> {
@@ -99,18 +99,18 @@ pub fn offset_label(conv: &Conventions, offset: f64) -> String {
 
 pub enum AlignmentsAction {
     Create,
-    Update(usize, AlignmentRecord),
-    Delete(usize),
+    Update(RecordId, AlignmentRecord),
+    Delete(RecordId),
     Select(EntityId),
     Report(String, String),
-    /// Create set-out points: alignment index, points, code.
-    SetOut(usize, Vec<SetoutPoint>, String),
+    /// Create set-out points: alignment, points, code.
+    SetOut(RecordId, Vec<SetoutPoint>, String),
 }
 
 pub struct AlignmentsWindow {
     pub open: bool,
-    active: Option<usize>,
-    editing: Option<(usize, String)>,
+    active: Option<RecordId>,
+    editing: Option<(RecordId, String)>,
     interval: f64,
     offsets: String,
     key_points: bool,
@@ -143,7 +143,7 @@ impl AlignmentsWindow {
         }
         let theme = CadTheme::current(ctx);
         let conv = doc.conventions().clone();
-        let list = &doc.meta().alignments;
+        let list = doc.alignments();
         let mut action = None;
         let mut open = self.open;
         egui::Window::new("Alignments")
@@ -165,15 +165,13 @@ impl AlignmentsWindow {
                     );
                     return;
                 }
-                if self.active.is_some_and(|i| i >= list.len()) {
-                    self.active = None;
-                }
                 egui::Grid::new("alignments").num_columns(7).spacing([10.0, 4.0]).striped(true).show(ui, |ui| {
                     for h in ["Name", "Start ch", "Length", "Ticks every", "Show", "", ""] {
                         ui.label(RichText::new(h).small().color(theme.text_secondary));
                     }
                     ui.end_row();
-                    for (i, a) in list.iter().enumerate() {
+                    for a in list {
+                        let i = a.id;
                         let mut name = match &self.editing {
                             Some((k, n)) if *k == i => n.clone(),
                             _ => a.name.clone(),
@@ -187,11 +185,11 @@ impl AlignmentsWindow {
                             && k == i
                             && n != a.name
                         {
-                            action = Some(AlignmentsAction::Update(i, AlignmentRecord { name: n, ..a.clone() }));
+                            action = Some(AlignmentsAction::Update(i, AlignmentRecord { name: n, ..a.record.clone() }));
                         }
                         let mut start = a.start_chainage;
                         if ui.add(egui::DragValue::new(&mut start).speed(1.0).max_decimals(3)).changed() {
-                            action = Some(AlignmentsAction::Update(i, AlignmentRecord { start_chainage: start, ..a.clone() }));
+                            action = Some(AlignmentsAction::Update(i, AlignmentRecord { start_chainage: start, ..a.record.clone() }));
                         }
                         let length = centreline(doc, a)
                             .map(|l| survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, l.closed).0);
@@ -204,11 +202,11 @@ impl AlignmentsWindow {
                             .add(egui::DragValue::new(&mut tick).range(0.1..=10_000.0).speed(0.5).suffix(" m"))
                             .changed()
                         {
-                            action = Some(AlignmentsAction::Update(i, AlignmentRecord { tick_interval: tick, ..a.clone() }));
+                            action = Some(AlignmentsAction::Update(i, AlignmentRecord { tick_interval: tick, ..a.record.clone() }));
                         }
                         let mut show = a.show_chainages;
                         if ui.checkbox(&mut show, "").changed() {
-                            action = Some(AlignmentsAction::Update(i, AlignmentRecord { show_chainages: show, ..a.clone() }));
+                            action = Some(AlignmentsAction::Update(i, AlignmentRecord { show_chainages: show, ..a.record.clone() }));
                         }
                         ui.horizontal(|ui| {
                             if ui.selectable_label(self.active == Some(i), "Set out").clicked() {
@@ -229,10 +227,12 @@ impl AlignmentsWindow {
                         ui.end_row();
                     }
                 });
-                let Some(i) = self.active else {
+                // The alignment may have gone (undo, delete).
+                let Some(a) = self.active.and_then(|i| list.iter().find(|a| a.id == i)) else {
+                    self.active = None;
                     return;
                 };
-                let a = &list[i];
+                let i = a.id;
                 let Some(l) = centreline(doc, a) else {
                     return;
                 };

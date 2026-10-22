@@ -549,7 +549,7 @@ impl Tool for ChainageTool {
                     None => match ctx.hovered.and_then(|id| ctx.doc.entity(id).map(|e| (id, e))) {
                         Some((id, Entity::Polyline(l))) => {
                             self.line = Some(l.clone());
-                            let alignment = ctx.doc.meta().alignments.iter().find(|a| a.polyline == id);
+                            let alignment = ctx.doc.alignments().iter().find(|a| a.polyline == id);
                             self.start = alignment.map_or(0.0, |a| a.start_chainage);
                             if let Some(a) = alignment {
                                 ctx.log.info(format!("Alignment {}", a.name));
