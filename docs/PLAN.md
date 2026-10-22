@@ -154,6 +154,40 @@ Known follow-ups: traverse observations are not yet stored in the project (only 
 scale factors / combined scale factor for traverse distances (Phase 5 projections); mirror/scale/trim/
 extend; drag-to-move grips; coordinate CSV export from the points table.
 
+## Phase 5 status (2026-10-22): complete
+
+- **5a projections:** `survey_core::projection` — Transverse Mercator by Krüger's series to n⁶ (Karney
+  2011) on GRS80, WGS84 or a custom ellipsoid; UTM zones; point scale factor, grid convergence (grid
+  bearing of true north: grid bearing = true bearing + convergence), height factor R/(R+h) from the mean
+  radius of curvature, combined factor. `CoordinateSystem::Projected` carries the projection and a geoid
+  separation (serde defaults). Settings → Coordinates presets (UTM on WGS84, UTM on GRS80, custom TM — no
+  regional default); projection calculator (`projcalc`); traverse scale factor "From project".
+- **5b network adjustment:** `survey_core::adjustment` — weighted Gauss–Newton for directions (one
+  orientation unknown per set), bearings and distances, plus a linear height-difference adjustment;
+  residuals, standardised residuals from Qvv, σ₀, χ² global test (Wilson–Hilferty quantiles), standard
+  deviations and 95 % ellipses; datum defects reported. `survey_core::network` turns instrument setups (raw
+  data or saved traverses) into observations, propagates approximate coordinates by radiation, weights from
+  directions + centring and distances mm + ppm, applies the scale factor. Network adjustment window
+  (`netadj`) with control selection, ellipses in the viewport and an undoable update of the points.
+- **5c raw data:** `survey_io::rawdata` — Leica GSI-8/16 and Trimble JobXML into `FieldData` (setups and
+  recorded coordinates) kept in `project_meta.field_data`; face-right pointings reduced to face left;
+  `rawin`.
+- **5d GeoPackage:** `survey_store::geopackage` — OGC GeoPackage 1.4 with 3D points, lines (arcs
+  tessellated to 5 mm) and parcels (anticlockwise polygons with area); EPSG code or TM WKT; checked with
+  GDAL; `gpkg`.
+- **5e cloud streaming:** the renderer uploads level-of-detail prefixes on demand (1.5M points per frame,
+  largest needs first, 2× over-fetch), clamps draws to what is resident, evicts off-screen chunks LRU over
+  a residency budget (8M web / 24M native) and requests frames until streaming settles. Voxel thinning
+  (`PointCloud::thinned`), "Thin to" in the clouds panel, automatic thinning of huge imports (15M web /
+  60M native).
+
+Follow-ups: free-network (minimally constrained) adjustment and inner constraints; GNSS baselines in the
+network; geoid model grids instead of a single separation; other projections (Lambert conformal conic,
+oblique stereographic) and datum transformations; GSI/JobXML edge cases (multiple faces averaged into
+rounds, RTK records, station setup types); GeoPackage import, attributes per feature code and an R-tree
+spatial index; out-of-core clouds (reading LAS chunks from disk rather than holding all points in RAM)
+and LAZ; sharing streamed buffers between viewports.
+
 ## Phase 4 status (2026-10-22): complete
 
 - **4a modules & cadastral:** Cadastral / Construction / Mining switch on and off (Settings → General),
@@ -171,7 +205,7 @@ extend; drag-to-move grips; coordinate CSV export from the points table.
   chunks skipped); Point clouds panel (colour by RGB/height/single, size); surface from a cloud by grid
   thinning (lowest/mean/highest).
 
-Follow-ups: LAZ; out-of-core streaming for very large clouds (Phase 5); cloud snapping and section display;
+Follow-ups: LAZ; out-of-core streaming for very large clouds (GPU streaming done in Phase 5); cloud snapping and section display;
 ePlan-specific LandXML (monuments, observations); vertical alignments and design templates; stockpile
 reports with photos/dates; parcel creation from linework regions.
 
@@ -284,5 +318,5 @@ guidance (Material dark theme, WCAG):
 - **Phase 3 — surfaces (done):** TIN with breaklines, contours, volumes, sections, LandXML surfaces.
 - **Phase 4 — domain modules (done):** cadastral (parcels, closures, areas, plan annotation, LandXML/ePlan);
   construction (alignments, chainage/offset, setout); mining (pickups, EOM volumes, stockpiles, point cloud LOD).
-- **Phase 5 — advanced:** least-squares network adjustment, JobXML/GSI raw data, projections & scale factors,
-  point cloud streaming, GeoPackage export.
+- **Phase 5 — advanced (done):** least-squares network adjustment, JobXML/GSI raw data, projections & scale
+  factors, point cloud streaming, GeoPackage export.

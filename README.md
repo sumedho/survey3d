@@ -20,10 +20,10 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
 
 | Crate | Purpose |
 |---|---|
-| `survey-core` | Pure maths: angles/bearings, conventions (parse/format), geometry, arcs (bulges), offsets, COGO (intersections, chainage/offset), traverse adjustment, field-to-finish, point input |
+| `survey-core` | Pure maths: angles/bearings, conventions (parse/format), geometry, arcs (bulges), offsets, COGO (intersections, chainage/offset), traverse adjustment, least-squares networks, map projections, TINs and volumes, field-to-finish, point input |
 | `survey-model` | `Document`, entities, layers, `Command`/`ChangeSet`, undo `History` with audit records, R-tree index |
-| `survey-io` | Interchange formats: CSV/TXT points (configurable columns), DXF read/write, feature code sheets |
-| `survey-store` | `.s3d` project files (SQLite): incremental saves, migrations, hash-chained append-only audit trail |
+| `survey-io` | Interchange formats: CSV/TXT points (configurable columns), DXF read/write, feature code sheets, LandXML, LAS/XYZ point clouds, Leica GSI and Trimble JobXML raw data |
+| `survey-store` | `.s3d` project files (SQLite): incremental saves, migrations, hash-chained append-only audit trail; GeoPackage export |
 | `cad-render` | wgpu renderer: f64 camera, relative-to-center chunks, reverse-Z, offscreen MSAA, egui paint callback |
 | `egui-cad` | Reusable CAD widgets: theme, viewport, snapping, box selection, label placement, command line, panels |
 | `survey-app` | The application: tools, panels, dialogs, file handling |
@@ -77,6 +77,15 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
   surface and a level (optionally inside a boundary) exactly, and can create a cut/fill surface; `sections`
   plots long and cross sections along a polyline; `contours` converts contours to polylines; `landxmlin` /
   `landxmlout` import and export LandXML surfaces.
+* **Projections:** Settings → Coordinates → Projected grid sets a UTM zone (WGS84 or GRS80 — MGA, ETRS89,
+  NAD83 and similar) or any Transverse Mercator, an EPSG code and a geoid separation. `projcalc` converts
+  latitude/longitude ↔ grid and gives point scale factor, convergence, height and combined factors; the
+  traverse "From project" button fills its scale factor with the combined factor at the start point.
+* **Network adjustment:** `rawin` imports Leica GSI (8/16) or Trimble JobXML observations (and adds any
+  coordinates in the file). `netadj` adjusts imported data and saved traverses together by least squares:
+  set the a priori precision, choose the fixed control, and read σ₀, the χ² test, standardised residuals
+  (|w| > 3 flags a likely blunder) and 95 % error ellipses (drawn in the view, exaggerated); Report gives
+  the full listing and Update creates or moves the adjusted points (undoable).
 * **Modules** (Settings → General → Modules; each adds a menu):
   * **Cadastral:** `mkparcel` makes parcels of selected closed polylines; `parcels` lists areas and plan
     closures, reports them and switches on bearing/distance and area annotation; `parcelxml` exports
@@ -86,7 +95,8 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
     `stakeout` lists angles and distances from an instrument station to the selected points.
   * **Mining:** `stockpile` measures a stockpile inside a toe (toe surface, lowest toe or level base) with
     tonnes; `volume` takes a density for period volumes; `cloudin` imports LAS or XYZ point clouds, drawn
-    with level of detail and convertible to a surface by grid thinning (Point clouds panel).
+    with level of detail (points stream to the GPU as you zoom), thinned to a spacing, and convertible to a
+    surface by grid thinning (Point clouds panel).
 * **Point input:** pick with snapping, or type `E,N[,Z]`, `@dE,dN[,dZ]`, `@dist<bearing`, or an existing point name.
   Order, units and angle format follow the project conventions (Project → Conventions).
 * **Snapping & drafting:** Settings (gear) → Drafting holds snap modes, aperture, ortho/polar, grid and working
@@ -95,7 +105,7 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
   Shortcuts: F3 object snap, F9 snap to grid, F8 ortho, F12 dynamic input, F7 grid display. Tab cycles overlapping candidates; typing
   `end`/`mid`/`int`/`per`/`nea`/`nod`/`gri` applies a one-shot snap. 
 * **Files:** Ctrl+S saves an `.s3d` (download on the web); File → Import points (CSV/TXT), Import / Export
-  DXF. On the web, unsaved work is autosaved to browser storage and offered for recovery on the next visit.
+  DXF, Import raw data, Export GeoPackage (`gpkg`: points, lines and parcels for GIS). On the web, unsaved work is autosaved to browser storage and offered for recovery on the next visit.
 * **Labels & appearance:** Settings → Display (or `labels`): point names, codes and heights; dark/light
   theme, accent colour and density.
   Project → Audit trail shows every edit and verifies the hash chain.
