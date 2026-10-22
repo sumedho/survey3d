@@ -119,6 +119,9 @@ const SURFACE_MENU: &[MenuEntry] = &[
     Item("Volumes…", "volume"),
     Item("Sections…", "sections"),
     Item("Contours to polylines", "contours"),
+    Separator,
+    Item("Import LandXML…", "landxmlin"),
+    Item("Export LandXML…", "landxmlout"),
 ];
 
 const SURVEY_MENU: &[MenuEntry] = &[

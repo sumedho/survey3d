@@ -14,6 +14,8 @@ pub enum FileKind {
     Report,
     /// Feature code library sheets.
     Codes,
+    /// LandXML surfaces.
+    LandXml,
 }
 
 impl FileKind {
@@ -24,6 +26,7 @@ impl FileKind {
             FileKind::Dxf => ("DXF drawing", &["dxf"]),
             FileKind::Report => ("Text report", &["txt"]),
             FileKind::Codes => ("Feature code sheet", &["csv"]),
+            FileKind::LandXml => ("LandXML", &["xml"]),
         }
     }
 }

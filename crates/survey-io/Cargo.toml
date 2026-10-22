@@ -13,5 +13,6 @@ workspace = true
 survey-core.workspace = true
 glam.workspace = true
 csv.workspace = true
+quick-xml.workspace = true
 serde.workspace = true
 thiserror.workspace = true

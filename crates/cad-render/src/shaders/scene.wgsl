@@ -279,13 +279,14 @@ struct TriOut {
 fn vs_tri(inst: TriIn) -> TriOut {
     let clip = u.mvp * vec4<f32>(inst.offset, 1.0);
     var out: TriOut;
-    // Keep lines and point markers lying on a surface visible: in plan view the
-    // surface is drawn behind everything; in 3D it is pushed a fraction of its
-    // depth away (reverse-Z: smaller is farther), so terrain still hides what
-    // is behind it.
+    // Keep lines and point markers lying on a surface visible: in plan view
+    // surfaces are squeezed into the farthest sliver of depth (keeping their
+    // order, so overlapping surfaces still sort by height); in 3D they are
+    // pushed a fraction of their depth away (reverse-Z: smaller is farther),
+    // so terrain still hides what is behind it.
     var z = clip.z * (1.0 - 3e-3);
     if u.params.w > 0.5 {
-        z = 0.0;
+        z = clip.z * 1e-3;
     }
     out.pos = vec4<f32>(clip.xy, z, clip.w);
     out.color = inst.color;

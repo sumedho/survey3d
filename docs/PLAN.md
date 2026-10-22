@@ -154,6 +154,27 @@ Known follow-ups: traverse observations are not yet stored in the project (only 
 scale factors / combined scale factor for traverse distances (Phase 5 projections); mirror/scale/trim/
 extend; drag-to-move grips; coordinate CSV export from the points table.
 
+## Phase 3 status (2026-10-22): complete
+
+- **3a** `survey_core::tin` (spade CDT: points, breaklines with crossing vertices, boundary/holes as
+  constraints with surface heights, max edge; relative coordinates; `TinIndex` grid for height lookup).
+  Surfaces live beside entities (`SurfaceId`, undoable insert/update/delete plus a style-only op; audit
+  summaries, not triangles), schema v3 `surfaces` table (JSON definition/style, binary vertices/faces),
+  `SurfaceDefinition::gather` for rebuilds. Renderer: filled-triangle pipeline and multiple scenes per
+  viewport (surfaces rebuild only when they change); plan view squeezes surfaces behind lines and points.
+  Surfaces panel, Create/Edit window, SURF pick draping.
+- **3b** `survey_core::contour` (marching triangles, chained open/closed lines, major levels); contours drawn
+  with the surface, labels along major contours, contours → polylines.
+- **3c** `survey_core::volume`: merged CDT of both TINs and the boundary, exact linear integration split at
+  zero; cut/fill/net, areas, difference (isopach) surface.
+- **3d** `survey_core::tin::profile` (exact breaks, gaps off-surface); Sections window (long and cross
+  sections, exaggeration, hover readout, report).
+- **3e** `survey_io::landxml` (quick-xml): read TIN surfaces (any ids, invisible faces, feet), write LandXML 1.2.
+
+Follow-ups: smoothing for contours; surface statistics and slope/aspect shading; volume by grid for very
+large TINs and multi-polygon boundaries; sections plotted with design templates; surfaces in DXF (3DFACE);
+LandXML alignments and points.
+
 ## Phase 2.5 status (2026-10-22): complete
 
 - **2.5a** `survey_core::closure` (figure closure, two-unknown solutions incl. ambiguous cases, arcs by
@@ -239,7 +260,7 @@ guidance (Material dark theme, WCAG):
   code library and auto-linework, points table, reports.
 - **Phase 2.5 — COGO, accuracy, code styling (done):** closures, traverse upgrade, area,
   resection, solvers, code symbols and line styles.
-- **Phase 3 — surfaces:** TIN with breaklines, contours, volumes, sections, LandXML surfaces.
+- **Phase 3 — surfaces (done):** TIN with breaklines, contours, volumes, sections, LandXML surfaces.
 - **Phase 4 — domain modules:** cadastral (parcels, closures, areas, plan annotation, LandXML/ePlan);
   construction (alignments, chainage/offset, setout); mining (pickups, EOM volumes, stockpiles, point cloud LOD).
 - **Phase 5 — advanced:** least-squares network adjustment, JobXML/GSI raw data, projections & scale factors,

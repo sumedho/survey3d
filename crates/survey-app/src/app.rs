@@ -211,6 +211,18 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::CHART_LINE,
     ),
     cmd(
+        "landxmlin",
+        "Import LandXML surfaces",
+        "Surface",
+        icons::FILE_ARROW_UP,
+    ),
+    cmd(
+        "landxmlout",
+        "Export surfaces to LandXML",
+        "Surface",
+        icons::EXPORT,
+    ),
+    cmd(
         "contours",
         "Contours of the active surface to polylines",
         "Surface",
@@ -840,6 +852,70 @@ impl SurveyApp {
         }
     }
 
+    fn import_landxml(&mut self, name: &str, bytes: &[u8]) {
+        match survey_io::landxml::read_surfaces(bytes) {
+            Ok((surfaces, warnings)) => {
+                let n = surfaces.len();
+                let mut cmd = ChangeSet::new(format!("Import LandXML {name}"));
+                for s in surfaces {
+                    // Keep names unique in the project.
+                    let mut surface_name = s.name.clone();
+                    let mut k = 2;
+                    while self.project.doc.surface_by_name(&surface_name).is_some() {
+                        surface_name = format!("{} ({k})", s.name);
+                        k += 1;
+                    }
+                    cmd = cmd.insert_surface(survey_model::Surface {
+                        name: surface_name,
+                        definition: None,
+                        tin: s.tin,
+                        style: survey_model::SurfaceStyle::default(),
+                    });
+                }
+                self.execute(Box::new(cmd));
+                self.zoom_extents();
+                let summary = format!(
+                    "Imported {n} surface{} from {name}",
+                    if n == 1 { "" } else { "s" }
+                );
+                self.command_line.result(summary.clone());
+                self.toasts.success(summary);
+                for w in warnings {
+                    self.command_line.warn(w);
+                }
+            }
+            Err(e) => self.command_line.error(format!("Could not read {name}: {e}")),
+        }
+    }
+
+    /// Writes the active surface (or every surface when none is active) as LandXML.
+    fn export_landxml(&mut self) {
+        let doc = &self.project.doc;
+        let chosen: Vec<(&str, &survey_core::tin::Tin)> =
+            match self.active_surface.and_then(|id| doc.surface(id)) {
+                Some(s) => vec![(s.name.as_str(), &s.tin)],
+                None => doc.surfaces().map(|(_, s)| (s.name.as_str(), &s.tin)).collect(),
+            };
+        if chosen.is_empty() {
+            self.command_line.warn("There are no surfaces to export");
+            return;
+        }
+        let xml = survey_io::landxml::write_surfaces(&doc.meta().name, &chosen);
+        let stem = if chosen.len() == 1 {
+            chosen[0].0.to_string()
+        } else {
+            "surfaces".into()
+        };
+        let n = chosen.len();
+        match export(&self.platform, FileKind::LandXml, &stem, xml.as_bytes()) {
+            Ok(Some(where_)) => self
+                .command_line
+                .result(format!("Exported {n} surface(s) to {where_}")),
+            Ok(None) => {}
+            Err(e) => self.command_line.error(e),
+        }
+    }
+
     fn import_code_sheet(&mut self, name: &str, bytes: &[u8]) {
         match survey_io::code_sheet::read_code_sheet(bytes) {
             Ok((codes, warnings)) => {
@@ -1128,6 +1204,8 @@ impl SurveyApp {
             "legend" => self.legend.open = true,
             "surface" | "tin" => self.surface_window.create(&self.project.doc),
             "contours" => self.contours_to_polylines(),
+            "landxmlin" | "importxml" => self.platform.pick_file(ctx, FileKind::LandXml),
+            "landxmlout" | "exportxml" => self.export_landxml(),
             "sections" | "section" | "profile" => {
                 let line = self.selected_polylines().first().map(|(id, _)| *id);
                 self.sections_window.open_with(line);
@@ -1396,6 +1474,7 @@ impl SurveyApp {
                     }
                     FileKind::Dxf => self.import_dxf(&name, &bytes),
                     FileKind::Codes => self.import_code_sheet(&name, &bytes),
+                    FileKind::LandXml => self.import_landxml(&name, &bytes),
                     // Reports are only saved, never opened.
                     FileKind::Report => {}
                 },

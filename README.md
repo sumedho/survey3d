@@ -69,6 +69,14 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
   linework joins coded points (`KB1`, `KB2`, `BLD CL` …) into strings on feature layers; running it again
   replaces them. View → Legend lists the codes in use with their symbols.
 * **Points table:** `points` (View → Points table) — filter, sort, double-click a cell to edit, click to select.
+* **Surfaces:** Surface → Create surface… (or `surface`) builds a TIN from points with heights (all layers or
+  chosen layers / code patterns), breakline polylines (by layer or code), an optional boundary and holes, and a
+  maximum edge length. The Surfaces panel shows each surface (visibility, rebuild, edit, delete) and the active
+  one's style: hill-shaded and coloured by height, triangle edges, contours with labelled major contours. The
+  SURF status toggle takes pick heights from the surface. `volume` computes cut/fill between surfaces or a
+  surface and a level (optionally inside a boundary) exactly, and can create a cut/fill surface; `sections`
+  plots long and cross sections along a polyline; `contours` converts contours to polylines; `landxmlin` /
+  `landxmlout` import and export LandXML surfaces.
 * **Point input:** pick with snapping, or type `E,N[,Z]`, `@dE,dN[,dZ]`, `@dist<bearing`, or an existing point name.
   Order, units and angle format follow the project conventions (Project → Conventions).
 * **Snapping & drafting:** Settings (gear) → Drafting holds snap modes, aperture, ortho/polar, grid and working
