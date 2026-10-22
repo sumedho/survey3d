@@ -444,6 +444,7 @@ fn combo<T: Copy + PartialEq>(
 }
 
 fn coord_system_editor(ui: &mut egui::Ui, cs: &mut CoordinateSystem) {
+    use survey_core::projection::{Ellipsoid, TransverseMercator};
     #[derive(PartialEq, Clone, Copy)]
     enum Kind {
         Unspecified,
@@ -465,9 +466,11 @@ fn coord_system_editor(ui: &mut egui::Ui, cs: &mut CoordinateSystem) {
         *cs = match new_kind {
             Kind::Unspecified => CoordinateSystem::Unspecified,
             Kind::Projected => CoordinateSystem::Projected {
-                name: "MGA2020 zone 56".into(),
-                epsg: Some(7856),
-                zone: Some(56),
+                name: String::new(),
+                epsg: None,
+                zone: None,
+                projection: None,
+                geoid_separation: 0.0,
             },
             Kind::Local => CoordinateSystem::LocalGrid {
                 name: "Site grid".into(),
@@ -475,38 +478,159 @@ fn coord_system_editor(ui: &mut egui::Ui, cs: &mut CoordinateSystem) {
             },
         };
     }
-    egui::Grid::new("crs_grid")
-        .num_columns(2)
-        .spacing([12.0, 6.0])
-        .show(ui, |ui| match cs {
-            CoordinateSystem::Unspecified => {
-                ui.label("Coordinates are stored as entered; no system is recorded.");
-                ui.end_row();
+    match cs {
+        CoordinateSystem::Unspecified => {
+            ui.label("Coordinates are stored as entered; no system is recorded.");
+        }
+        CoordinateSystem::Projected {
+            name,
+            epsg,
+            zone,
+            projection,
+            geoid_separation,
+        } => {
+            #[derive(PartialEq, Clone, Copy)]
+            enum Preset {
+                None,
+                UtmWgs84,
+                UtmGrs80,
+                Custom,
             }
-            CoordinateSystem::Projected { name, epsg, zone } => {
-                ui.label("Name");
-                ui.text_edit_singleline(name);
-                ui.end_row();
-                ui.label("EPSG code");
-                optional_u32(ui, epsg);
-                ui.end_row();
-                ui.label("Zone");
-                optional_u32(ui, zone);
-                ui.end_row();
-            }
-            CoordinateSystem::LocalGrid { name, description } => {
-                ui.label("Name");
-                ui.text_edit_singleline(name);
-                ui.end_row();
-                ui.label("Description");
-                ui.text_edit_multiline(description);
-                ui.end_row();
-            }
-        });
-    ui.label(
-        RichText::new("Recorded with the project. Transformations between systems arrive in a later phase.")
-            .small(),
-    );
+            let preset = match projection {
+                None => Preset::None,
+                Some(tm)
+                    if tm.scale == 0.9996
+                        && tm.false_easting == 500_000.0
+                        && tm.latitude_of_origin == 0.0 =>
+                {
+                    if tm.ellipsoid == Ellipsoid::WGS84 {
+                        Preset::UtmWgs84
+                    } else {
+                        Preset::UtmGrs80
+                    }
+                }
+                Some(_) => Preset::Custom,
+            };
+            let mut new_preset = preset;
+            egui::Grid::new("crs_grid")
+                .num_columns(2)
+                .spacing([12.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label("Projection");
+                    egui::ComboBox::from_id_salt("crs_preset")
+                        .selected_text(match preset {
+                            Preset::None => "Not set (record only)",
+                            Preset::UtmWgs84 => "UTM zone (WGS84)",
+                            Preset::UtmGrs80 => "UTM zone (GRS80: MGA, ETRS89, NAD83…)",
+                            Preset::Custom => "Custom Transverse Mercator",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut new_preset, Preset::None, "Not set (record only)");
+                            ui.selectable_value(&mut new_preset, Preset::UtmWgs84, "UTM zone (WGS84)");
+                            ui.selectable_value(
+                                &mut new_preset,
+                                Preset::UtmGrs80,
+                                "UTM zone (GRS80: MGA, ETRS89, NAD83…)",
+                            );
+                            ui.selectable_value(
+                                &mut new_preset,
+                                Preset::Custom,
+                                "Custom Transverse Mercator",
+                            );
+                        });
+                    ui.end_row();
+                    if new_preset != preset {
+                        let z = zone.unwrap_or(31);
+                        let south = projection.is_some_and(|p| p.false_northing > 0.0);
+                        *projection = match new_preset {
+                            Preset::None => None,
+                            Preset::UtmWgs84 => Some(TransverseMercator::utm(z, south, Ellipsoid::WGS84)),
+                            Preset::UtmGrs80 => Some(TransverseMercator::utm(z, south, Ellipsoid::GRS80)),
+                            Preset::Custom => Some(projection.unwrap_or(TransverseMercator::utm(
+                                z,
+                                south,
+                                Ellipsoid::GRS80,
+                            ))),
+                        };
+                        if matches!(new_preset, Preset::UtmWgs84 | Preset::UtmGrs80) {
+                            *zone = Some(z);
+                        }
+                    }
+                    match (new_preset, projection.as_mut()) {
+                        (Preset::UtmWgs84 | Preset::UtmGrs80, Some(tm)) => {
+                            ui.label("Zone");
+                            ui.horizontal(|ui| {
+                                let mut z = zone.unwrap_or(TransverseMercator::utm_zone(tm.central_meridian));
+                                let mut south = tm.false_northing > 0.0;
+                                let changed = ui.add(egui::DragValue::new(&mut z).range(1..=60)).changed()
+                                    | ui.checkbox(&mut south, "Southern hemisphere").changed();
+                                if changed {
+                                    *tm = TransverseMercator::utm(z, south, tm.ellipsoid);
+                                    *zone = Some(z);
+                                }
+                                ui.label(RichText::new(format!("CM {}°", tm.central_meridian)).small());
+                            });
+                            ui.end_row();
+                        }
+                        (Preset::Custom, Some(tm)) => {
+                            ui.label("Ellipsoid");
+                            egui::ComboBox::from_id_salt("crs_ellipsoid")
+                                .selected_text(tm.ellipsoid.name)
+                                .show_ui(ui, |ui| {
+                                    for e in Ellipsoid::ALL {
+                                        ui.selectable_value(&mut tm.ellipsoid, e, e.name);
+                                    }
+                                });
+                            ui.end_row();
+                            for (label, value, speed) in [
+                                ("Central meridian (°)", &mut tm.central_meridian, 0.1),
+                                ("Latitude of origin (°)", &mut tm.latitude_of_origin, 0.1),
+                                ("Scale factor", &mut tm.scale, 0.0001),
+                                ("False easting (m)", &mut tm.false_easting, 1000.0),
+                                ("False northing (m)", &mut tm.false_northing, 1000.0),
+                            ] {
+                                ui.label(label);
+                                ui.add(egui::DragValue::new(value).speed(speed).max_decimals(8));
+                                ui.end_row();
+                            }
+                        }
+                        _ => {}
+                    }
+                    ui.label("Name");
+                    ui.add(egui::TextEdit::singleline(name).hint_text("e.g. MGA2020 zone 56"));
+                    ui.end_row();
+                    ui.label("EPSG code");
+                    optional_u32(ui, epsg);
+                    ui.end_row();
+                    ui.label("Geoid separation N");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(geoid_separation).speed(0.01).suffix(" m"));
+                        ui.label(RichText::new("ellipsoidal height = height + N").small());
+                    });
+                    ui.end_row();
+                });
+            ui.label(
+                RichText::new(
+                    "With a projection set, the projection calculator converts to and from latitude/longitude, \
+                     and scale factors (point, height and combined) are available for traverses.",
+                )
+                .small(),
+            );
+        }
+        CoordinateSystem::LocalGrid { name, description } => {
+            egui::Grid::new("crs_grid")
+                .num_columns(2)
+                .spacing([12.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label("Name");
+                    ui.text_edit_singleline(name);
+                    ui.end_row();
+                    ui.label("Description");
+                    ui.text_edit_multiline(description);
+                    ui.end_row();
+                });
+        }
+    }
 }
 
 fn tolerances_editor(ui: &mut egui::Ui, t: &mut Tolerances, conv: &Conventions) {

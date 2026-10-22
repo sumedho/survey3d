@@ -47,6 +47,12 @@ fn sample() -> (Document, History) {
         name: "MGA2020 zone 56".into(),
         epsg: Some(7856),
         zone: Some(56),
+        projection: Some(survey_core::projection::TransverseMercator::utm(
+            56,
+            true,
+            survey_core::projection::Ellipsoid::GRS80,
+        )),
+        geoid_separation: 22.5,
     };
     history.execute(Box::new(ChangeSet::new("settings").set_meta(meta)), &mut doc);
     let line = Entity::Polyline(Polyline {

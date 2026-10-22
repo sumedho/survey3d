@@ -18,6 +18,7 @@ pub mod field_to_finish;
 pub mod geom;
 pub mod offset;
 pub mod point_input;
+pub mod projection;
 pub mod resection;
 pub mod solvers;
 pub mod style;

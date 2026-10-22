@@ -10,6 +10,7 @@ pub mod feature_codes;
 pub mod legend;
 pub mod parcels;
 pub mod points_table;
+pub mod projection_calc;
 pub mod properties;
 pub mod reports;
 pub mod resection_window;

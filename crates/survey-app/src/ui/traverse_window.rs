@@ -410,7 +410,7 @@ impl TraverseWindow {
                 self.saved_bar(ui, doc, &conv, &mut action);
                 ui.add_space(6.0);
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                    self.form(ui, &theme);
+                    self.form(ui, &theme, doc);
                     ui.add_space(8.0);
                     ui.separator();
                     let result = self.record(doc).and_then(|rec| {
@@ -509,7 +509,7 @@ impl TraverseWindow {
         });
     }
 
-    fn form(&mut self, ui: &mut egui::Ui, theme: &CadTheme) {
+    fn form(&mut self, ui: &mut egui::Ui, theme: &CadTheme, doc: &Document) {
         let field = |ui: &mut egui::Ui, text: &mut String, hint: &str, width: f32| {
             ui.add_sized(
                 [width, 22.0],
@@ -551,7 +551,23 @@ impl TraverseWindow {
                 );
                 ui.end_row();
                 ui.label("Scale factor");
-                field(ui, &mut self.scale, "1", 120.0);
+                ui.horizontal(|ui| {
+                    field(ui, &mut self.scale, "1", 120.0);
+                    let start = doc.find_point_by_name(self.start.trim()).map(|(_, p)| p);
+                    let factor = start.and_then(|p| {
+                        let h = if p.height_known { p.position.z } else { 0.0 };
+                        doc.meta().coord_system.combined_factor(p.position.x, p.position.y, h)
+                    });
+                    if ui
+                        .add_enabled(factor.is_some(), egui::Button::new("From project"))
+                        .on_hover_text("Combined (point × height) factor at the start point from the project's projection")
+                        .on_disabled_hover_text("Needs a projection (Settings → Coordinates) and a start point")
+                        .clicked()
+                        && let Some(k) = factor
+                    {
+                        self.scale = format!("{k:.9}");
+                    }
+                });
                 ui.end_row();
             });
         ui.add_space(6.0);

@@ -45,6 +45,7 @@ use crate::ui::feature_codes::{CodesAction, FeatureCodesWindow};
 use crate::ui::legend::LegendWindow;
 use crate::ui::parcels::ParcelsWindow;
 use crate::ui::points_table::{PointsAction, PointsWindow};
+use crate::ui::projection_calc::{ProjectionAction, ProjectionWindow};
 use crate::ui::properties::properties_panel;
 use crate::ui::reports::{ReportAction, ReportsWindow};
 use crate::ui::resection_window::{ResectionAction, ResectionWindow};
@@ -253,6 +254,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::DOTS_NINE,
     ),
     cmd(
+        "projcalc",
+        "Projection calculator (lat/long, grid, scale factors)",
+        "Project",
+        icons::GLOBE,
+    ),
+    cmd(
         "mkparcel",
         "Parcels from selected closed polylines",
         "Cadastral",
@@ -349,6 +356,7 @@ pub struct SurveyApp {
     alignments_window: AlignmentsWindow,
     stakeout_window: StakeoutWindow,
     stockpile_window: StockpileWindow,
+    projection_window: ProjectionWindow,
     active_surface: Option<SurfaceId>,
     snap_engine: SnapEngine,
     snap_override: Option<SnapMode>,
@@ -494,6 +502,7 @@ impl SurveyApp {
             alignments_window: AlignmentsWindow::default(),
             stakeout_window: StakeoutWindow::default(),
             stockpile_window: StockpileWindow::default(),
+            projection_window: ProjectionWindow::default(),
             active_surface: None,
             snap_engine: SnapEngine::default(),
             snap_override: None,
@@ -1548,6 +1557,7 @@ impl SurveyApp {
                 self.sections_window.open_with(line);
             }
             "volume" | "volumes" | "vol" => self.volumes_window.open(&self.project.doc, self.active_surface),
+            "projcalc" | "projection" | "geo" => self.projection_window.open = true,
             "accuracy" | "tolerances" => self.settings_window.open_at_accuracy(),
             "codes" | "featurecodes" => self.codes_window.open(),
             "linework" | "f2f" => {

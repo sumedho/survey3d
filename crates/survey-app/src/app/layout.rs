@@ -422,6 +422,13 @@ impl SurveyApp {
             ui.menu_button("Project", |ui| {
                 item(ui, "Conventions…", None, Action::Conventions, &mut action);
                 item(ui, "Accuracy limits…", None, Action::Run("accuracy"), &mut action);
+                item(
+                    ui,
+                    "Projection calculator…",
+                    None,
+                    Action::Run("projcalc"),
+                    &mut action,
+                );
                 item(ui, "Settings…", None, Action::Settings, &mut action);
                 item(ui, "Audit trail…", None, Action::Audit, &mut action);
             });
@@ -1833,6 +1840,24 @@ impl SurveyApp {
             self.sections_window.show(ctx, &self.project.doc, selected_line)
         {
             self.reports.add(title, text);
+        }
+        let selected_point = self
+            .project
+            .selection
+            .ids()
+            .iter()
+            .copied()
+            .find(|id| matches!(self.project.doc.entity(*id), Some(Entity::Point(_))));
+        match self
+            .projection_window
+            .show(ctx, &self.project.doc, selected_point)
+        {
+            Some(ProjectionAction::Create(cmd, summary)) => {
+                self.execute(cmd);
+                self.command_line.result(summary);
+            }
+            Some(ProjectionAction::Report(title, text)) => self.reports.add(title, text),
+            None => {}
         }
         if let Some((title, text)) = self.stockpile_window.show(ctx, &self.project.doc, &closed) {
             self.reports.add(title, text);
