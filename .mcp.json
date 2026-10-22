@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "survey3d": {
+      "type": "stdio",
+      "command": "cargo",
+      "args": [
+        "run",
+        "--release",
+        "--quiet",
+        "-p",
+        "survey-mcp",
+        "--"
+      ],
+      "env": {}
+    }
+  }
+}

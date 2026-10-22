@@ -1,16 +1,52 @@
 //! Reading files into the project and building exports. File choice and saving
 //! are the caller's: these take and return bytes and text.
 
+use glam::DVec2;
+use survey_core::style::LabelSet;
+use survey_io::plot::Plot;
+use survey_io::{CsvLayout, CsvPointImporter, ImportedPoint};
 use survey_model::{ChangeSet, Entity, SheetRecord, Surface, SurfaceStyle, SurveyPoint};
 
 use super::{Event, Panel, Session};
+use crate::import_command::ImportEntities;
 use crate::interchange::{DxfExportOptions, dxf_export, dxf_import};
+use crate::settings::LabelSettings;
+use crate::ui::sheets::{SheetsWindow, ViewInfo};
 
 fn stem(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(s, _)| s)
 }
 
 impl Session {
+    /// Adds points (one undo step) on the layer named `layer` (created if
+    /// needed), else the current layer. Unnamed points are numbered on.
+    pub fn add_points(&mut self, points: &[ImportedPoint], layer: Option<&str>, source: &str) -> usize {
+        let label = format!("Import {} points from {source}", points.len());
+        let cmd = ImportEntities::points(&self.project.doc, label, points, layer);
+        let n = cmd.len();
+        self.execute(Box::new(cmd));
+        n
+    }
+
+    /// Points from delimited text laid out as `layout` (column letters such as `PENZC`).
+    pub fn import_points_csv(&mut self, name: &str, bytes: &[u8], layout: CsvLayout, layer: Option<&str>) {
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            self.log.error(format!("Could not read {name}: not UTF-8 text"));
+            return;
+        };
+        match CsvPointImporter::new(layout).import_text(text.strip_prefix('\u{feff}').unwrap_or(text)) {
+            Ok(import) => {
+                let n = self.add_points(&import.points, layer, name);
+                self.emit(Event::ZoomExtents);
+                self.success(format!("Imported {n} points from {name}"));
+                for w in import.warnings {
+                    self.log.warn(w);
+                }
+            }
+            Err(e) => self.log.error(format!("Could not read {name}: {e}")),
+        }
+    }
+
     /// Raw instrument data: kept with the project for the network adjustment;
     /// coordinates in the file add any points the project does not have. A file
     /// of the same name replaces the earlier import.
@@ -215,6 +251,60 @@ impl Session {
             })
             .collect();
         Some(survey_io::landxml::write_parcels(&doc.meta().name, &parcels))
+    }
+
+    /// Every point as delimited text laid out as `layout`.
+    pub fn points_csv(&self, layout: &CsvLayout) -> String {
+        let points: Vec<ImportedPoint> = self
+            .project
+            .doc
+            .entities()
+            .filter_map(|(_, e)| match e {
+                Entity::Point(p) => Some(ImportedPoint {
+                    name: p.name.clone(),
+                    easting: p.position.x,
+                    northing: p.position.y,
+                    height: p.height_known.then_some(p.position.z),
+                    code: p.code.clone(),
+                    description: p.description.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+        survey_io::export_points_csv(&points, layout, 4)
+    }
+
+    /// A plan sheet drawn for printing (labels as the application's defaults).
+    pub fn plot(&self, sheet: &SheetRecord) -> Plot {
+        let l = LabelSettings::default();
+        let labels = LabelSet {
+            name: l.names,
+            code: l.codes,
+            height: l.heights,
+            description: false,
+        };
+        crate::plan::build_plot(&self.project.doc, sheet, labels)
+    }
+
+    /// A north-up A3 sheet framing the whole drawing at a standard scale.
+    pub fn overview_sheet(&self) -> SheetRecord {
+        let doc = &self.project.doc;
+        let b = doc.bounds();
+        let (min, max) = if b.is_empty() {
+            (DVec2::splat(-50.0), DVec2::splat(50.0))
+        } else {
+            (b.min.truncate(), b.max.truncate())
+        };
+        let view = ViewInfo {
+            centre: (min + max) * 0.5,
+            up_bearing: 0.0,
+            // The sheet takes 90% of this, and fits the drawing in 90% of its frame.
+            extent: (max - min).max(DVec2::splat(1.0)) / 0.9,
+            bounds: Some((min, max)),
+        };
+        let mut sheet = SheetsWindow::sheet_from_view(doc, &view, doc.sheets().len() + 1);
+        sheet.name = "Overview".into();
+        sheet
     }
 
     /// The drawing as DXF, with symbols and text sized for `sheet` (else 1:500).

@@ -15,7 +15,8 @@ use std::sync::Arc;
 use egui::epaint::text::{FontTweak, VariationCoords};
 use egui::{FontData, FontDefinitions, FontFamily, FontId, TextStyle};
 
-const INTER: &[u8] = include_bytes!("../assets/Inter.ttf");
+/// Inter (variable), the UI and plot font. Also for drawing exports outside egui.
+pub const INTER: &[u8] = include_bytes!("../assets/Inter.ttf");
 const MONO: &[u8] = include_bytes!("../assets/JetBrainsMono.ttf");
 const ICON_BYTES: &[u8] = include_bytes!("../assets/Phosphor.ttf");
 

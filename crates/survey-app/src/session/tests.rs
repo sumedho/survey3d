@@ -178,3 +178,34 @@ fn raw_data_imports_replace_by_name() {
     assert_eq!(s.project.doc.field_data().len(), 1);
     assert_eq!(s.project.doc.field_data()[0].id, id, "the same record, replaced");
 }
+
+#[test]
+fn unnamed_points_number_on_from_the_batch_and_project() {
+    let mut s = session();
+    let p = |name: &str, e: f64| survey_io::ImportedPoint {
+        name: name.into(),
+        easting: e,
+        northing: 0.0,
+        height: None,
+        code: String::new(),
+        description: String::new(),
+    };
+    s.add_points(&[p("7", 0.0)], None, "test");
+    s.add_points(&[p("", 1.0), p("20", 2.0), p("", 3.0)], Some("New"), "test");
+    let mut names: Vec<String> = s
+        .project
+        .doc
+        .entities()
+        .filter_map(|(_, e)| match e {
+            Entity::Point(p) => Some(p.name.clone()),
+            _ => None,
+        })
+        .collect();
+    names.sort_by_key(|n| n.parse::<u32>().unwrap_or(0));
+    assert_eq!(names, ["7", "20", "21", "22"]);
+    assert!(s.project.doc.layer_by_name("new").is_some());
+    assert_eq!(
+        s.project.history.undo_label().as_deref(),
+        Some("Import 3 points from test")
+    );
+}

@@ -1,0 +1,26 @@
+[package]
+name = "survey-mcp"
+description = "survey3d MCP server: lets an agent open, edit, query and render survey3d projects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "survey3d-mcp"
+path = "src/main.rs"
+
+[dependencies]
+survey-app.workspace = true
+survey-core.workspace = true
+survey-model.workspace = true
+survey-io.workspace = true
+survey-store.workspace = true
+egui-cad.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+resvg.workspace = true

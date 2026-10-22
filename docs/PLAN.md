@@ -31,6 +31,7 @@ crates/
   cad-render/      wgpu renderer: grid, points, lines, triangles, picking; relative-to-center encoding
   survey-app/      lib: Session (headless editing: tools, command line, edits, imports/exports);
                    bin: eframe app over a Session; domain modules (cadastral / construction / mining)
+  survey-mcp/      MCP server (stdio JSON-RPC) over a Session, for agents; PNG renders via resvg
 ```
 
 ### Session and records
@@ -376,3 +377,8 @@ guidance (Material dark theme, WCAG):
   factors, point cloud streaming, GeoPackage export.
 - **Phase 6 — plan output (done):** plan sheets with title block, grid, north arrow, scale bar and
   legend; PDF/SVG at true scale; DXF symbols as blocks and line types.
+- **Phase 7 — agents (in progress):** `survey3d-mcp`, an MCP server over a headless `Session`:
+  command-line input, queries, selection, structured point/polyline input, record editing, imports,
+  exports and PNG renders of sheets (done). Next: attach to a running GUI (a localhost channel the app
+  drains each frame, so edits appear live and share its undo stack); 3D viewport snapshots; feature
+  code and project settings tools.

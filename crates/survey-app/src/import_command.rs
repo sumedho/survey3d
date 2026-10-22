@@ -1,8 +1,10 @@
 //! Imports (and other bulk edits such as field-to-finish) as a single undoable,
 //! audited command — including creating any new layers the entities need.
 
+use glam::DVec3;
 use serde_json::Value;
-use survey_model::{ChangeSet, Color, Command, Document, Entity, EntityId, Layer, LayerId};
+use survey_io::ImportedPoint;
+use survey_model::{ChangeSet, Color, Command, Document, Entity, EntityId, Layer, LayerId, SurveyPoint};
 
 /// Which layer an imported entity goes on.
 #[derive(Clone, Copy, Debug)]
@@ -27,6 +29,55 @@ pub struct ImportEntities {
 }
 
 impl ImportEntities {
+    /// Points read from a file (or given by a script). They go on the layer
+    /// named `layer`, created if the project has none of that name, else on the
+    /// current layer. Points without a name are numbered on from the largest
+    /// number in use, in the project or among `points`.
+    pub fn points(doc: &Document, label: String, points: &[ImportedPoint], layer: Option<&str>) -> Self {
+        let mut cmd = Self::new(label);
+        let layer = cmd.layer_named(doc, layer);
+        let in_batch = points.iter().filter_map(|p| p.name.parse::<u64>().ok()).max();
+        let in_doc: u64 = doc.next_point_name().parse().unwrap_or(1);
+        let mut next = in_doc.max(in_batch.map_or(0, |n| n + 1));
+        for p in points {
+            let name = if p.name.is_empty() {
+                next += 1;
+                (next - 1).to_string()
+            } else {
+                p.name.clone()
+            };
+            let point = SurveyPoint {
+                name,
+                position: DVec3::new(p.easting, p.northing, p.height.unwrap_or(0.0)),
+                height_known: p.height.is_some(),
+                code: p.code.clone(),
+                description: p.description.clone(),
+                layer: doc.current_layer(),
+            };
+            cmd.add(layer, Entity::Point(point));
+        }
+        cmd
+    }
+
+    /// The layer called `name` (added by this command if the project has none),
+    /// or the current layer when `name` is `None` or blank.
+    pub fn layer_named(&mut self, doc: &Document, name: Option<&str>) -> LayerRef {
+        match name.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(name) => match doc.layer_by_name(name) {
+                Some(l) => LayerRef::Existing(l.id),
+                None => match self
+                    .new_layers
+                    .iter()
+                    .position(|(n, _, _)| n.eq_ignore_ascii_case(name))
+                {
+                    Some(i) => LayerRef::New(i),
+                    None => self.add_layer(name.to_string(), Color::rgb(0x7d, 0xd3, 0xfc), true),
+                },
+            },
+            None => LayerRef::Existing(doc.current_layer()),
+        }
+    }
+
     pub fn new(label: String) -> Self {
         Self {
             label,

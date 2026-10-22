@@ -6,7 +6,7 @@
 mod app;
 mod cloud_view;
 mod field_to_finish;
-mod import_command;
+pub mod import_command;
 mod interchange;
 mod listing;
 mod plan;

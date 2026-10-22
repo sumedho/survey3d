@@ -27,6 +27,7 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
 | `cad-render` | wgpu renderer: f64 camera, relative-to-center chunks, reverse-Z, offscreen MSAA, egui paint callback |
 | `egui-cad` | Reusable CAD widgets: theme, viewport, snapping, box selection, label placement, command line, panels |
 | `survey-app` | The application. `Session` (library): project, tools, command line and edits with no UI — drive it with `Session::run("pl")`. `SurveyApp`: the egui interface over a session (panels, dialogs, file handling) |
+| `survey-mcp` | `survey3d-mcp`: a Model Context Protocol server so an agent can open, edit, query and render projects |
 
 ## Using it
 
@@ -117,6 +118,39 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
 * **Labels & appearance:** Settings → Display (or `labels`): point names, codes and heights; dark/light
   theme, accent colour and density.
   Project → Audit trail shows every edit and verifies the hash chain.
+
+## Agents (MCP)
+
+`survey3d-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server (stdio) that gives
+an agent the same session the application uses: it types on the command line exactly as you would,
+so every tool, point-input form and convention works, and every edit is undoable and recorded in the
+project's audit trail under `<user> (agent via MCP)`.
+
+```sh
+cargo build --release -p survey-mcp
+# Claude Code (add --scope project to share it through .mcp.json):
+claude mcp add survey3d -- "$PWD/target/release/survey3d-mcp" --project /path/to/job.s3d
+```
+
+This repository's `.mcp.json` already registers it for Claude Code (as `cargo run --release -p survey-mcp`,
+so it builds on first use; Claude Code asks you to approve it once). The agent then opens a project
+with `open_project`.
+
+Other clients take the usual entry: `{"command": "/path/to/survey3d-mcp", "args": ["--project", "job.s3d"]}`.
+Options: `--project FILE` (otherwise a new project), `--read-only` (never writes the project file; edits
+stay in memory), `--user NAME` (audit trail; default `$USER`).
+
+| Tool | What it does |
+|---|---|
+| `project_info` | File, conventions, counts, layers, surfaces, clouds, records, selection, active tool and prompt, undo/redo |
+| `run_commands` | Types lines on the command line (`help`, `pl`, `1000,2000`, `@10<90`, `c`, `inverse`, `undo`…) and returns the output and reports |
+| `query` | Points, polylines, layers, surfaces, clouds, sheets/parcels/alignments/traverses/field data, selection, audit trail — filtered and paged |
+| `select` | Sets the selection that commands such as `delete`, `join`, `list`, `mkparcel`, `linework` act on |
+| `add_points`, `add_polyline` | Structured input in one undo step |
+| `set_record`, `delete_record` | Create or edit (merging fields) sheets, parcels, alignments and traverses by id |
+| `import_file`, `export_file` | CSV points, DXF, LandXML, GSI/JobXML, LAS/XYZ in; DXF, LandXML, GeoPackage, CSV, PDF, SVG out (no silent overwrites) |
+| `render` | A PNG of a plan sheet, or an overview of the whole drawing, so the agent can see its work |
+| `new_project`, `open_project`, `save_project` | Won't drop unsaved changes unless told to |
 
 ## License
 

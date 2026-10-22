@@ -17,6 +17,7 @@ survey-model = { path = "crates/survey-model" }
 survey-io = { path = "crates/survey-io" }
 survey-store = { path = "crates/survey-store" }
 egui-cad = { path = "crates/egui-cad" }
+survey-app = { path = "crates/survey-app" }
 cad-render = { path = "crates/cad-render" }
 
 # UI / rendering
@@ -47,6 +48,8 @@ miniz_oxide = "0.8"
 web-time = "1.1"
 log = "0.4"
 rusqlite = { version = "0.40.2", features = ["serialize", "backup"] }
+# SVG to PNG for the MCP server's renders (bundled font, no system fonts).
+resvg = { version = "0.48.1", default-features = false, features = ["text"] }
 
 # Platform
 rfd = "0.17"
