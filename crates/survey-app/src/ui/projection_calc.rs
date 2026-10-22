@@ -86,6 +86,9 @@ impl ProjectionWindow {
         let height = |text: &str| conv.parse_length(text).map_err(|e| format!("Height: {e}"));
         let (lat, lon, easting, northing, h, name) = match self.mode {
             Mode::ToGrid => {
+                if self.lat.trim().is_empty() || self.lon.trim().is_empty() {
+                    return Err("Enter a latitude and longitude (south and west negative).".into());
+                }
                 let lat = conv
                     .parse_angle(&self.lat)
                     .map_err(|e| format!("Latitude: {e}"))?
@@ -98,6 +101,9 @@ impl ProjectionWindow {
                 (lat, lon, g.easting, g.northing, height(&self.height)?, None)
             }
             Mode::ToGeographic => {
+                if self.easting.trim().is_empty() || self.northing.trim().is_empty() {
+                    return Err("Enter an easting and northing.".into());
+                }
                 let e = conv
                     .parse_length(&self.easting)
                     .map_err(|e| format!("Easting: {e}"))?;
@@ -233,18 +239,8 @@ fn describe(conv: &Conventions, r: &Solved) -> String {
     if let Some(n) = &r.name {
         let _ = writeln!(s, "Point            {n}");
     }
-    let _ = writeln!(
-        s,
-        "Latitude         {}  ({:.9}°)",
-        signed_angle(conv, r.lat),
-        r.lat
-    );
-    let _ = writeln!(
-        s,
-        "Longitude        {}  ({:.9}°)",
-        signed_angle(conv, r.lon),
-        r.lon
-    );
+    let _ = writeln!(s, "Latitude         {}  ({:.9}°)", geodetic(r.lat), r.lat);
+    let _ = writeln!(s, "Longitude        {}  ({:.9}°)", geodetic(r.lon), r.lon);
     let (ea, nb) = conv.horizontal_labels();
     let (a, b) = conv.horizontal_values(DVec3::new(r.easting, r.northing, 0.0));
     let _ = writeln!(s, "{ea:<16} {}", conv.format_length(a));
