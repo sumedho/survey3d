@@ -8,6 +8,7 @@ mod field_to_finish;
 mod import_command;
 mod interchange;
 mod listing;
+mod plan;
 mod platform;
 mod project;
 mod scene_build;

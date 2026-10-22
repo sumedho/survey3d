@@ -16,6 +16,7 @@ pub mod ids;
 pub mod layer;
 pub mod parcel;
 pub mod selection;
+pub mod sheet;
 pub mod spatial;
 pub mod surface;
 
@@ -30,4 +31,5 @@ pub use ids::{EntityId, LayerId, PointCloudId, SurfaceId};
 pub use layer::{Color, Layer};
 pub use parcel::ParcelRecord;
 pub use selection::Selection;
+pub use sheet::SheetRecord;
 pub use surface::{ContourStyle, Surface, SurfaceDefinition, SurfaceStyle};

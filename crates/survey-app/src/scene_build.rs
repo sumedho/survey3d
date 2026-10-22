@@ -16,8 +16,8 @@ use survey_core::field_to_finish::FeatureLibrary;
 use survey_core::style::{CodeStyle, Symbol};
 use survey_model::{Document, Entity, EntityId, Selection};
 
-const POINT_SIZE: f32 = 7.0;
-const LINE_WIDTH: f32 = 1.5;
+pub(crate) const POINT_SIZE: f32 = 7.0;
+pub(crate) const LINE_WIDTH: f32 = 1.5;
 /// Chord tolerance for drawing arcs (metres). Fine enough for survey-scale zooms;
 /// tessellation is capped per arc, so large radii stay cheap.
 const ARC_TOLERANCE: f64 = 0.001;

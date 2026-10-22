@@ -44,6 +44,9 @@ pub struct ProjectMeta {
     /// A priori precision used by the network adjustment.
     #[serde(default)]
     pub network_options: survey_core::network::NetworkOptions,
+    /// Plan sheets for printing.
+    #[serde(default)]
+    pub sheets: Vec<crate::sheet::SheetRecord>,
 }
 
 impl Default for ProjectMeta {
@@ -60,6 +63,7 @@ impl Default for ProjectMeta {
             alignments: Vec::new(),
             field_data: Vec::new(),
             network_options: Default::default(),
+            sheets: Vec::new(),
         }
     }
 }
