@@ -255,6 +255,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::DOTS_NINE,
     ),
     cmd(
+        "rawin",
+        "Import raw data (Leica GSI, Trimble JobXML)",
+        "File",
+        icons::FILE_TEXT,
+    ),
+    cmd(
         "netadj",
         "Least-squares network adjustment",
         "Survey",
@@ -942,6 +948,51 @@ impl SurveyApp {
         }
     }
 
+    /// Raw instrument data: kept with the project for the network adjustment;
+    /// coordinates in the file add any points the project does not have.
+    fn import_raw(&mut self, name: &str, bytes: &[u8]) {
+        let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+        match survey_io::rawdata::read_raw(stem, bytes) {
+            Ok(data) => {
+                let doc = &self.project.doc;
+                let mut meta = doc.meta().clone();
+                meta.field_data.retain(|f| f.name != data.name);
+                let mut cs = ChangeSet::new(format!("Import raw data {stem}"));
+                let mut added = 0;
+                for (pname, p) in &data.points {
+                    if doc.find_point_by_name(pname).is_none() {
+                        cs.push_insert_entity(Entity::Point(survey_model::SurveyPoint {
+                            name: pname.clone(),
+                            position: *p,
+                            height_known: p.z != 0.0,
+                            code: String::new(),
+                            description: format!("From {}", data.format),
+                            layer: doc.current_layer(),
+                        }));
+                        added += 1;
+                    }
+                }
+                let pointings: usize = data.setups.iter().map(|s| s.observations.len()).sum();
+                let summary = format!(
+                    "Imported {} {stem}: {} setups, {pointings} observations, {added} new points",
+                    data.format,
+                    data.setups.len()
+                );
+                let key = format!("f:{}", data.name);
+                meta.field_data.push(data);
+                self.execute(Box::new(cs.set_meta(meta)));
+                self.network_window.open_with(&self.project.doc);
+                self.network_window.select_only(key);
+                if added > 0 {
+                    self.zoom_extents();
+                }
+                self.command_line.result(summary.clone());
+                self.toasts.success(summary);
+            }
+            Err(e) => self.command_line.error(format!("Could not read {name}: {e}")),
+        }
+    }
+
     fn import_cloud(&mut self, name: &str, bytes: &[u8]) {
         match survey_io::pointcloud::read_cloud(bytes) {
             Ok(raw) => {
@@ -1559,6 +1610,7 @@ impl SurveyApp {
             "mkparcel" | "parcel" => self.parcels_from_selection(),
             "parcelxml" => self.export_parcels_landxml(),
             "cloudin" | "importcloud" | "las" => self.platform.pick_file(ctx, FileKind::PointCloud),
+            "rawin" | "gsi" | "jobxml" => self.platform.pick_file(ctx, FileKind::RawData),
             "landxmlin" | "importxml" => self.platform.pick_file(ctx, FileKind::LandXml),
             "landxmlout" | "exportxml" => self.export_landxml(),
             "sections" | "section" | "profile" => {
@@ -1835,6 +1887,7 @@ impl SurveyApp {
                     FileKind::Codes => self.import_code_sheet(&name, &bytes),
                     FileKind::LandXml => self.import_landxml(&name, &bytes),
                     FileKind::PointCloud => self.import_cloud(&name, &bytes),
+                    FileKind::RawData => self.import_raw(&name, &bytes),
                     // Reports are only saved, never opened.
                     FileKind::Report => {}
                 },

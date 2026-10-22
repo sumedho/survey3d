@@ -18,6 +18,8 @@ pub enum FileKind {
     LandXml,
     /// Point clouds (LAS, XYZ text).
     PointCloud,
+    /// Raw total-station data (Leica GSI, Trimble JobXML).
+    RawData,
 }
 
 impl FileKind {
@@ -30,6 +32,7 @@ impl FileKind {
             FileKind::Codes => ("Feature code sheet", &["csv"]),
             FileKind::LandXml => ("LandXML", &["xml"]),
             FileKind::PointCloud => ("Point cloud", &["las", "xyz", "txt", "pts", "csv"]),
+            FileKind::RawData => ("Raw survey data", &["gsi", "jxl", "xml", "txt"]),
         }
     }
 }

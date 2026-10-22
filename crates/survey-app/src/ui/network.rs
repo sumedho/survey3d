@@ -57,6 +57,14 @@ impl NetworkWindow {
         }
     }
 
+    /// Adjusts just this source next (after an import).
+    pub fn select_only(&mut self, key: String) {
+        self.sources.clear();
+        self.sources.insert(key);
+        self.stations.clear();
+        self.result = None;
+    }
+
     fn setups(&self, doc: &Document) -> Vec<Setup> {
         let meta = doc.meta();
         let mut out = Vec::new();
@@ -309,11 +317,19 @@ impl NetworkWindow {
                             .range(1.0..=100_000.0),
                     );
                 });
+                let mut refresh = false;
                 match &self.result {
                     Some(Ok((net, r))) => {
                         let (verdict, colour) = match r.chi_square {
                             Some(c) if c.pass => ("χ² test passed", theme.success),
-                            Some(_) => ("χ² test failed", theme.error),
+                            Some(c) if c.value > c.upper => (
+                                "χ² test failed: residuals larger than the a priori precision allows (σ₀ > 1) — check for blunders",
+                                theme.error,
+                            ),
+                            Some(_) => (
+                                "χ² test failed: a priori precision is pessimistic (σ₀ < 1) — tighten the standard deviations",
+                                theme.warning,
+                            ),
                             None => ("no redundancy", theme.text_secondary),
                         };
                         ui.label(
@@ -376,6 +392,7 @@ impl NetworkWindow {
                                 for &i in &net.new_stations {
                                     self.free.insert(net.stations[i].name.clone());
                                 }
+                                refresh = true;
                             }
                         });
                     }
@@ -383,6 +400,10 @@ impl NetworkWindow {
                         ui.label(RichText::new(e).color(theme.error));
                     }
                     None => {}
+                }
+                // The control list is rebuilt next frame, once the points exist.
+                if refresh {
+                    self.stations.clear();
                 }
             });
         self.options = Some(options);

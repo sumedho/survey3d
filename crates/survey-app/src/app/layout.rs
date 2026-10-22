@@ -133,6 +133,7 @@ const SURVEY_MENU: &[MenuEntry] = &[
     Item("Resection…", "resection"),
     Item("Subdivide area…", "subdivide"),
     Separator,
+    Item("Import raw data (GSI, JobXML)…", "rawin"),
     Item("Network adjustment…", "netadj"),
     Item("Projection calculator…", "projcalc"),
     Separator,
@@ -293,6 +294,13 @@ impl SurveyApp {
                     "Import point cloud…",
                     None,
                     Action::Run("cloudin"),
+                    &mut action,
+                );
+                item(
+                    ui,
+                    "Import raw data (GSI, JobXML)…",
+                    None,
+                    Action::Run("rawin"),
                     &mut action,
                 );
                 item(ui, "Export DXF…", None, Action::ExportDxf, &mut action);
