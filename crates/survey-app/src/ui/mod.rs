@@ -17,6 +17,7 @@ pub mod reports;
 pub mod resection_window;
 pub mod sections;
 pub mod settings_window;
+pub mod sheets;
 pub mod stakeout;
 pub mod stockpile;
 pub mod subdivide_window;

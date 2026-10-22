@@ -22,6 +22,9 @@ pub enum FileKind {
     RawData,
     /// OGC GeoPackage (export only).
     GeoPackage,
+    /// Plan sheets (export only).
+    Pdf,
+    Svg,
 }
 
 impl FileKind {
@@ -36,6 +39,8 @@ impl FileKind {
             FileKind::PointCloud => ("Point cloud", &["las", "xyz", "txt", "pts", "csv"]),
             FileKind::RawData => ("Raw survey data", &["gsi", "jxl", "xml", "txt"]),
             FileKind::GeoPackage => ("GeoPackage", &["gpkg"]),
+            FileKind::Pdf => ("PDF document", &["pdf"]),
+            FileKind::Svg => ("SVG drawing", &["svg"]),
         }
     }
 }

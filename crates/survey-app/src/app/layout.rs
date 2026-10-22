@@ -17,6 +17,7 @@ use crate::tools::ToolGroup;
 use crate::ui::alignments::AlignmentsAction;
 use crate::ui::parcels::ParcelsAction;
 use crate::ui::sections::SectionsAction;
+use crate::ui::sheets::SheetsAction;
 use crate::ui::surfaces::{SurfaceAction, SurfaceWindowAction, surfaces_panel};
 use crate::ui::volumes::VolumesAction;
 use egui_cad::ThemeMode;
@@ -305,6 +306,15 @@ impl SurveyApp {
                 );
                 item(ui, "Export DXF…", None, Action::ExportDxf, &mut action);
                 item(ui, "Export GeoPackage…", None, Action::Run("gpkg"), &mut action);
+                ui.separator();
+                item(ui, "Plan sheets…", None, Action::Run("sheets"), &mut action);
+                item(
+                    ui,
+                    "Export plan sheet (PDF)…",
+                    None,
+                    Action::Run("plotpdf"),
+                    &mut action,
+                );
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     ui.separator();
@@ -1047,6 +1057,9 @@ impl SurveyApp {
         if !self.surface_cache.labels().is_empty() {
             self.draw_contour_labels(&painter, out.rect, &theme);
         }
+        if let Some(sheet) = self.sheets_window.active(&self.project.doc) {
+            self.draw_sheet_frame(&painter, out.rect, &sheet, &theme);
+        }
         self.draw_overlays(&painter, out.rect, &preview, out.hover, &theme);
         if self.settings.dynamic_input
             && let Some(c) = out.hover
@@ -1591,6 +1604,42 @@ impl SurveyApp {
         }
     }
 
+    /// The plan sheet being edited: its map frame (dashed) and title block.
+    fn draw_sheet_frame(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        sheet: &survey_model::SheetRecord,
+        theme: &CadTheme,
+    ) {
+        let cam = &self.viewport.camera;
+        let z = cam.target.z;
+        let screen = |p: glam::DVec2| cam.world_to_screen(p.extend(z)).map(|(s, _)| to_screen(rect, s));
+        let (frame, title) = crate::plan::sheet_outline(sheet);
+        let ring = |corners: [glam::DVec2; 4]| -> Option<Vec<egui::Pos2>> {
+            let mut pts: Vec<egui::Pos2> = corners.iter().map(|c| screen(*c)).collect::<Option<_>>()?;
+            pts.push(pts[0]);
+            Some(pts)
+        };
+        let stroke = Stroke::new(1.5, theme.accent);
+        if let Some(pts) = ring(frame) {
+            painter.extend(egui::Shape::dashed_line(&pts, stroke, 8.0, 5.0));
+            painter.text(
+                pts[3] + egui::vec2(6.0, 6.0),
+                egui::Align2::LEFT_TOP,
+                format!("{} · {}", sheet.name, sheet.scale_label()),
+                egui::FontId::proportional(12.0),
+                theme.accent,
+            );
+        }
+        if let Some(pts) = ring(title) {
+            painter.add(egui::Shape::line(
+                pts,
+                Stroke::new(1.0, theme.accent.gamma_multiply(0.6)),
+            ));
+        }
+    }
+
     /// Cadastral annotation for parcels that ask for it: bearing above and
     /// distance below each line (radius and arc length on arcs), and the lot's
     /// name and area at its centre.
@@ -1933,6 +1982,35 @@ impl SurveyApp {
             None => {}
         }
         self.legend.show(ctx, &self.project.doc);
+        let view = self.view_info();
+        let labels = self.plan_labels();
+        match self.sheets_window.show(ctx, &self.project.doc, &view, labels) {
+            Some(SheetsAction::Add(sheet)) => {
+                let mut meta = self.project.doc.meta().clone();
+                let label = format!("Add sheet {}", sheet.name);
+                meta.sheets.push(sheet);
+                self.execute(Box::new(ChangeSet::new(label).set_meta(meta)));
+            }
+            Some(SheetsAction::Update(i, sheet)) => {
+                let mut meta = self.project.doc.meta().clone();
+                if let Some(slot) = meta.sheets.get_mut(i) {
+                    let label = format!("Edit sheet {}", sheet.name);
+                    *slot = sheet;
+                    self.execute(Box::new(ChangeSet::new(label).set_meta(meta)));
+                }
+            }
+            Some(SheetsAction::Delete(i)) => {
+                let mut meta = self.project.doc.meta().clone();
+                if i < meta.sheets.len() {
+                    let s = meta.sheets.remove(i);
+                    self.execute(Box::new(
+                        ChangeSet::new(format!("Remove sheet {}", s.name)).set_meta(meta),
+                    ));
+                }
+            }
+            Some(SheetsAction::Export(sheet, format)) => self.export_sheet(&sheet, format),
+            None => {}
+        }
         if let Some((title, text)) = self.calculator.show(ctx, self.project.doc.conventions()) {
             self.reports.add(title, text);
         }

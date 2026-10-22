@@ -157,7 +157,7 @@ impl SheetTransform {
         }
     }
 
-    pub fn to_paper(&self, w: DVec2) -> [f64; 2] {
+    pub fn to_paper(self, w: DVec2) -> [f64; 2] {
         let d = (w - self.centre) * self.k;
         [
             self.paper[0] + d.x * self.cos - d.y * self.sin,
@@ -165,28 +165,31 @@ impl SheetTransform {
         ]
     }
 
-    pub fn to_world(&self, p: [f64; 2]) -> DVec2 {
+    pub fn to_world(self, p: [f64; 2]) -> DVec2 {
         let (dx, dy) = (p[0] - self.paper[0], p[1] - self.paper[1]);
         self.centre + DVec2::new(dx * self.cos + dy * self.sin, -dx * self.sin + dy * self.cos) / self.k
     }
 
     /// A world direction on the page (unit length in, unit length out).
-    fn dir(&self, d: DVec2) -> [f64; 2] {
+    fn dir(self, d: DVec2) -> [f64; 2] {
         [d.x * self.cos - d.y * self.sin, d.x * self.sin + d.y * self.cos]
     }
 }
 
-/// The corners of a sheet's map frame in world coordinates (for drawing it in the viewport).
-pub fn frame_corners(sheet: &SheetRecord) -> [DVec2; 4] {
+/// The corners of a sheet's map frame and title block in world coordinates
+/// (counter-clockwise from bottom-left), for drawing the sheet in the viewport.
+pub fn sheet_outline(sheet: &SheetRecord) -> ([DVec2; 4], [DVec2; 4]) {
     let lay = layout(sheet);
     let t = SheetTransform::new(sheet, &lay.frame);
-    let f = lay.frame;
-    [
-        t.to_world(f.min),
-        t.to_world([f.max[0], f.min[1]]),
-        t.to_world(f.max),
-        t.to_world([f.min[0], f.max[1]]),
-    ]
+    let corners = |r: Rect| {
+        [
+            t.to_world(r.min),
+            t.to_world([r.max[0], r.min[1]]),
+            t.to_world(r.max),
+            t.to_world([r.min[0], r.max[1]]),
+        ]
+    };
+    (corners(lay.frame), corners(lay.title))
 }
 
 /// The map frame's size in metres at the sheet's scale.
@@ -800,8 +803,16 @@ impl<'a> Builder<'a> {
                 };
                 if c.major && s.style.contours.labels {
                     let text = trim_number(conv.format_length(c.z).parse().unwrap_or(c.z));
-                    // Every 120 mm along the line, starting 40 mm in.
-                    let mut next = 40.0;
+                    // Every 120 mm along the line, starting 40 mm in; short
+                    // ones (from 15 mm) once at their middle.
+                    let total: f64 = pts
+                        .windows(2)
+                        .map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt())
+                        .sum();
+                    let mut next = if total < 80.0 { total / 2.0 } else { 40.0 };
+                    if total < 15.0 {
+                        next = f64::INFINITY;
+                    }
                     let mut run = 0.0;
                     for w in pts.windows(2) {
                         let (a, b) = (w[0], w[1]);
@@ -1273,7 +1284,7 @@ fn legend_box(
         }
         if points || !lines {
             let radius = (f64::from(f.style.symbol_size) / 2.0 * sheet.symbol_scale).min(1.6);
-            let at = if lines { [x + 4.5, y] } else { [x + 4.5, y] };
+            let at = [x + 4.5, y];
             let mut items = Vec::new();
             Builder::symbol(&mut items, at, radius, f.style.symbol, color);
             plot.items.extend(items);
@@ -1467,7 +1478,7 @@ mod tests {
         assert_eq!(nice_ceil(17.0), 20.0);
         assert_eq!(nice_ceil(2.2), 2.5);
         assert_eq!(grid_interval(&a3), 20.0);
-        assert_eq!(upright(std::f64::consts::PI).1, true);
+        assert!(upright(std::f64::consts::PI).1);
         assert_eq!(paper_color([255, 255, 255], false), BLACK);
         assert_eq!(paper_color([200, 0, 0], false), [200, 0, 0]);
     }

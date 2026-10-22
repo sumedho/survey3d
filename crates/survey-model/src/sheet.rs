@@ -199,7 +199,7 @@ impl Default for SheetRecord {
             content: SheetContent::default(),
             grid_interval: 0.0,
             text_size: 2.0,
-            symbol_scale: 0.3,
+            symbol_scale: 0.2,
             line_scale: 0.18,
         }
     }

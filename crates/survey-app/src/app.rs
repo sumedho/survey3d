@@ -52,6 +52,7 @@ use crate::ui::reports::{ReportAction, ReportsWindow};
 use crate::ui::resection_window::{ResectionAction, ResectionWindow};
 use crate::ui::sections::SectionsWindow;
 use crate::ui::settings_window::SettingsWindow;
+use crate::ui::sheets::{PlotFormat, SheetsWindow, ViewInfo};
 use crate::ui::stakeout::StakeoutWindow;
 use crate::ui::stockpile::StockpileWindow;
 use crate::ui::subdivide_window::{SubdivideAction, SubdivideWindow};
@@ -261,6 +262,18 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::FILE_TEXT,
     ),
     cmd(
+        "sheets",
+        "Plan sheets (title block, grid, legend; print to PDF/SVG at scale)",
+        "File",
+        icons::MAP_TRIFOLD,
+    ),
+    cmd(
+        "plotpdf",
+        "Export the current plan sheet to PDF",
+        "File",
+        icons::EXPORT,
+    ),
+    cmd(
         "gpkg",
         "Export GeoPackage (points, lines, parcels)",
         "File",
@@ -398,6 +411,7 @@ pub struct SurveyApp {
     closure_window: ClosureWindow,
     calculator: CalculatorWindow,
     legend: LegendWindow,
+    sheets_window: SheetsWindow,
     subdivide_window: SubdivideWindow,
     resection_window: ResectionWindow,
     codes_window: FeatureCodesWindow,
@@ -543,6 +557,7 @@ impl SurveyApp {
             closure_window: ClosureWindow::default(),
             calculator: CalculatorWindow::default(),
             legend: LegendWindow::default(),
+            sheets_window: SheetsWindow::default(),
             subdivide_window: SubdivideWindow::default(),
             resection_window: ResectionWindow::default(),
             codes_window: FeatureCodesWindow::default(),
@@ -1629,6 +1644,8 @@ impl SurveyApp {
             "triangle" => self.calculator.open_at(CalcTab::Triangle),
             "average" | "avg" => self.average_selection(),
             "legend" => self.legend.open = true,
+            "sheets" | "sheet" | "layout" => self.sheets_window.open = true,
+            "plotpdf" | "plot" | "print" => self.plot_current_sheet(),
             "surface" | "tin" => self.surface_window.create(&self.project.doc),
             "contours" => self.contours_to_polylines(),
             "parcels" => self.parcels_window.open = true,
@@ -1813,6 +1830,77 @@ impl SurveyApp {
         }
     }
 
+    /// What the viewport shows, for placing plan sheets.
+    pub(crate) fn view_info(&self) -> ViewInfo {
+        let cam = &self.viewport.camera;
+        let bounds = (self.project.doc.entity_count() > 0).then(|| {
+            let b = self.project.doc.bounds();
+            (b.min.truncate(), b.max.truncate())
+        });
+        let mut up = cam.yaw.to_degrees().rem_euclid(360.0);
+        if up > 180.0 {
+            up -= 360.0;
+        }
+        ViewInfo {
+            centre: cam.target.truncate(),
+            up_bearing: if cam.is_plan() { up } else { 0.0 },
+            extent: cam.viewport * cam.world_per_pixel(),
+            bounds,
+        }
+    }
+
+    /// Point labels on plan sheets: the global label settings.
+    pub(crate) fn plan_labels(&self) -> survey_core::style::LabelSet {
+        survey_core::style::LabelSet {
+            name: self.settings.labels.names,
+            code: self.settings.labels.codes,
+            height: self.settings.labels.heights,
+            description: false,
+        }
+    }
+
+    /// Exports a plan sheet as PDF or SVG.
+    pub(crate) fn export_sheet(&mut self, sheet: &survey_model::SheetRecord, format: PlotFormat) {
+        let plot = crate::plan::build_plot(&self.project.doc, sheet, self.plan_labels());
+        let (kind, bytes, what) = match format {
+            PlotFormat::Pdf => (FileKind::Pdf, survey_io::plot::write_pdf(&plot), "PDF"),
+            PlotFormat::Svg => (
+                FileKind::Svg,
+                survey_io::plot::write_svg(&plot).into_bytes(),
+                "SVG",
+            ),
+        };
+        let stem = file_stem(&format!("{} {}", self.project.doc.meta().name, sheet.name));
+        match export(&self.platform, kind, &stem, &bytes) {
+            Ok(Some(where_)) => {
+                self.command_line.info(format!(
+                    "Exported {} ({}) to {where_}",
+                    sheet.name,
+                    sheet.scale_label()
+                ));
+                self.toasts.success(format!("Exported {what}"));
+            }
+            Ok(None) => {}
+            Err(e) => self.command_line.error(format!("{what} export failed: {e}")),
+        }
+    }
+
+    /// Exports the sheet open in the sheets window (or the first) to PDF.
+    fn plot_current_sheet(&mut self) {
+        let sheets = &self.project.doc.meta().sheets;
+        let Some(sheet) = sheets
+            .get(self.sheets_window.current)
+            .or_else(|| sheets.first())
+            .cloned()
+        else {
+            self.sheets_window.open = true;
+            self.command_line
+                .warn("There are no plan sheets yet: frame the area and press “New from view”");
+            return;
+        };
+        self.export_sheet(&sheet, PlotFormat::Pdf);
+    }
+
     fn export_dxf(&mut self) {
         let text = survey_io::dxf::write_dxf(&dxf_export(&self.project.doc));
         let stem = file_stem(&self.project.doc.meta().name);
@@ -1950,7 +2038,7 @@ impl SurveyApp {
                     FileKind::PointCloud => self.import_cloud(&name, &bytes),
                     FileKind::RawData => self.import_raw(&name, &bytes),
                     // Reports and GeoPackages are only saved, never opened.
-                    FileKind::Report | FileKind::GeoPackage => {}
+                    FileKind::Report | FileKind::GeoPackage | FileKind::Pdf | FileKind::Svg => {}
                 },
                 #[cfg(not(target_arch = "wasm32"))]
                 FileEvent::ProjectPath(path) => {
