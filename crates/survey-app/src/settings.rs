@@ -26,10 +26,69 @@ pub struct AppSettings {
     pub grid_snap_spacing: Option<f64>,
     /// Picks that do not snap to an object take their height from a visible surface.
     pub surface_heights: bool,
+    /// Domain modules whose menus are shown.
+    pub modules: ModuleSettings,
     /// Height of the working plane for picks that do not snap to anything.
     pub working_z: f64,
     pub csv_layout: CsvLayout,
     pub labels: LabelSettings,
+}
+
+/// A domain module that adds its own menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Module {
+    Cadastral,
+    Construction,
+    Mining,
+}
+
+impl Module {
+    pub const ALL: [Module; 3] = [Module::Cadastral, Module::Construction, Module::Mining];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Module::Cadastral => "Cadastral",
+            Module::Construction => "Construction",
+            Module::Mining => "Mining",
+        }
+    }
+}
+
+/// Which domain modules are switched on (all by default).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModuleSettings {
+    pub cadastral: bool,
+    pub construction: bool,
+    pub mining: bool,
+}
+
+impl Default for ModuleSettings {
+    fn default() -> Self {
+        Self {
+            cadastral: true,
+            construction: true,
+            mining: true,
+        }
+    }
+}
+
+impl ModuleSettings {
+    pub fn get_mut(&mut self, m: Module) -> &mut bool {
+        match m {
+            Module::Cadastral => &mut self.cadastral,
+            Module::Construction => &mut self.construction,
+            Module::Mining => &mut self.mining,
+        }
+    }
+
+    pub fn is_on(&self, m: Module) -> bool {
+        match m {
+            Module::Cadastral => self.cadastral,
+            Module::Construction => self.construction,
+            Module::Mining => self.mining,
+        }
+    }
 }
 
 /// Which point attributes are drawn next to points.
@@ -73,6 +132,7 @@ impl Default for AppSettings {
             show_grid: true,
             grid_snap_spacing: None,
             surface_heights: false,
+            modules: ModuleSettings::default(),
             working_z: 0.0,
             csv_layout: CsvLayout::from_letters("PENZC"),
             labels: LabelSettings::default(),

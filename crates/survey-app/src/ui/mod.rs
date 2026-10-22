@@ -6,6 +6,7 @@ pub mod closure_window;
 pub mod csv_import;
 pub mod feature_codes;
 pub mod legend;
+pub mod parcels;
 pub mod points_table;
 pub mod properties;
 pub mod reports;

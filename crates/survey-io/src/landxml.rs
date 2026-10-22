@@ -209,6 +209,102 @@ pub fn write_surfaces(project: &str, surfaces: &[(&str, &Tin)]) -> String {
     s
 }
 
+/// A parcel to write: its boundary (closed, with bulges) and stated area.
+pub struct ParcelGeometry<'a> {
+    pub name: &'a str,
+    pub description: &'a str,
+    /// Plan area in square metres.
+    pub area: f64,
+    pub vertices: &'a [DVec3],
+    pub bulges: &'a [f64],
+}
+
+/// Writes parcels as LandXML 1.2: shared corners as `<CgPoints>`, and each
+/// parcel's boundary as `<CoordGeom>` lines and curves referring to them.
+pub fn write_parcels(project: &str, parcels: &[ParcelGeometry<'_>]) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
+    let _ = writeln!(
+        s,
+        r#"<LandXML xmlns="http://www.landxml.org/schema/LandXML-1.2" version="1.2" language="English">"#
+    );
+    let _ = writeln!(
+        s,
+        r#"  <Units><Metric areaUnit="squareMeter" linearUnit="meter" volumeUnit="cubicMeter" temperatureUnit="celsius" pressureUnit="milliBars" angularUnit="decimal degrees" directionUnit="decimal degrees"/></Units>"#
+    );
+    let _ = writeln!(s, r#"  <Project name="{}"/>"#, escape(project));
+    let _ = writeln!(
+        s,
+        r#"  <Application name="survey3d" version="{}"/>"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    // Corners shared between parcels become one point (millimetre match).
+    let mut names: HashMap<(i64, i64), usize> = HashMap::new();
+    let mut points: Vec<DVec3> = Vec::new();
+    let mut point_name = |p: DVec3, names: &mut HashMap<(i64, i64), usize>| -> usize {
+        let key = ((p.x * 1000.0).round() as i64, (p.y * 1000.0).round() as i64);
+        *names.entry(key).or_insert_with(|| {
+            points.push(p);
+            points.len()
+        })
+    };
+    let mut bodies = String::new();
+    for parcel in parcels {
+        let n = parcel.vertices.len();
+        let _ = writeln!(
+            bodies,
+            r#"    <Parcel name="{}" desc="{}" area="{:.3}" class="lot">"#,
+            escape(parcel.name),
+            escape(parcel.description),
+            parcel.area
+        );
+        let _ = writeln!(bodies, "      <CoordGeom>");
+        for i in 0..n {
+            let (a, b) = (parcel.vertices[i], parcel.vertices[(i + 1) % n]);
+            let (pa, pb) = (point_name(a, &mut names), point_name(b, &mut names));
+            let bulge = parcel.bulges.get(i).copied().unwrap_or(0.0);
+            match survey_core::arc::Arc::from_bulge(a, b, bulge) {
+                Some(arc) => {
+                    let _ = writeln!(
+                        bodies,
+                        r#"        <Curve rot="{}" radius="{:.4}" length="{:.4}"><Start pntRef="{pa}"/><Center>{:.4} {:.4}</Center><End pntRef="{pb}"/></Curve>"#,
+                        if arc.sweep < 0.0 { "cw" } else { "ccw" },
+                        arc.radius,
+                        arc.length_2d(),
+                        arc.center.y,
+                        arc.center.x
+                    );
+                }
+                None => {
+                    let _ = writeln!(
+                        bodies,
+                        r#"        <Line><Start pntRef="{pa}"/><End pntRef="{pb}"/></Line>"#
+                    );
+                }
+            }
+        }
+        let _ = writeln!(bodies, "      </CoordGeom>");
+        let _ = writeln!(bodies, "    </Parcel>");
+    }
+    let _ = writeln!(s, "  <CgPoints>");
+    for (i, p) in points.iter().enumerate() {
+        let _ = writeln!(
+            s,
+            r#"    <CgPoint name="{}">{:.4} {:.4} {:.4}</CgPoint>"#,
+            i + 1,
+            p.y,
+            p.x,
+            p.z
+        );
+    }
+    let _ = writeln!(s, "  </CgPoints>");
+    let _ = writeln!(s, "  <Parcels>");
+    s.push_str(&bodies);
+    let _ = writeln!(s, "  </Parcels>");
+    let _ = writeln!(s, "</LandXML>");
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +365,54 @@ mod tests {
         let [a, b, c] = tin.triangles[0].map(|i| tin.vertices[i as usize].truncate());
         assert!((b - a).perp_dot(c - a) > 0.0);
         assert!(read_surfaces(b"<LandXML/>").is_err());
+    }
+
+    #[test]
+    fn parcels_share_corners_and_parse() {
+        let a = [
+            DVec3::new(0.0, 0.0, 0.0),
+            DVec3::new(20.0, 0.0, 0.0),
+            DVec3::new(20.0, 30.0, 0.0),
+            DVec3::new(0.0, 30.0, 0.0),
+        ];
+        let b = [
+            DVec3::new(20.0, 0.0, 0.0),
+            DVec3::new(40.0, 0.0, 0.0),
+            DVec3::new(40.0, 30.0, 0.0),
+            DVec3::new(20.0, 30.0, 0.0),
+        ];
+        let bulges = [0.0, 0.0, 0.2, 0.0];
+        let xml = write_parcels(
+            "Estate",
+            &[
+                ParcelGeometry {
+                    name: "Lot 1",
+                    description: "",
+                    area: 600.0,
+                    vertices: &a,
+                    bulges: &[],
+                },
+                ParcelGeometry {
+                    name: "Lot 2",
+                    description: "corner",
+                    area: 612.3,
+                    vertices: &b,
+                    bulges: &bulges,
+                },
+            ],
+        );
+        // Two shared corners: 6 unique points.
+        assert_eq!(xml.matches("<CgPoint ").count(), 6);
+        assert_eq!(xml.matches("<Line>").count(), 7);
+        assert_eq!(xml.matches("<Curve ").count(), 1);
+        // Well-formed XML.
+        let mut reader = Reader::from_str(&xml);
+        loop {
+            match reader.read_event() {
+                Ok(Event::Eof) => break,
+                Ok(_) => {}
+                Err(e) => panic!("{e}"),
+            }
+        }
     }
 }

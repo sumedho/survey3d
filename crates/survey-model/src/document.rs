@@ -31,6 +31,9 @@ pub struct ProjectMeta {
     /// Traverses as entered, so they can be reopened and recomputed.
     #[serde(default)]
     pub traverses: Vec<TraverseRecord>,
+    /// Cadastral parcels.
+    #[serde(default)]
+    pub parcels: Vec<crate::parcel::ParcelRecord>,
 }
 
 impl Default for ProjectMeta {
@@ -43,6 +46,7 @@ impl Default for ProjectMeta {
             feature_codes: FeatureLibrary::default(),
             tolerances: Tolerances::default(),
             traverses: Vec::new(),
+            parcels: Vec::new(),
         }
     }
 }

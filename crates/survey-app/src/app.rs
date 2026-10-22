@@ -40,6 +40,7 @@ use crate::ui::closure_window::{ClosureAction, ClosureWindow};
 use crate::ui::csv_import::{CsvDialogResult, CsvImportDialog};
 use crate::ui::feature_codes::{CodesAction, FeatureCodesWindow};
 use crate::ui::legend::LegendWindow;
+use crate::ui::parcels::ParcelsWindow;
 use crate::ui::points_table::{PointsAction, PointsWindow};
 use crate::ui::properties::properties_panel;
 use crate::ui::reports::{ReportAction, ReportsWindow};
@@ -211,6 +212,24 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::CHART_LINE,
     ),
     cmd(
+        "parcels",
+        "Parcels (lots, areas, plan closure)",
+        "Cadastral",
+        icons::POLYGON,
+    ),
+    cmd(
+        "mkparcel",
+        "Parcels from selected closed polylines",
+        "Cadastral",
+        icons::SQUARE_HALF,
+    ),
+    cmd(
+        "parcelxml",
+        "Export parcels to LandXML",
+        "Cadastral",
+        icons::EXPORT,
+    ),
+    cmd(
         "landxmlin",
         "Import LandXML surfaces",
         "Surface",
@@ -289,6 +308,7 @@ pub struct SurveyApp {
     surface_window: SurfaceWindow,
     volumes_window: VolumesWindow,
     sections_window: SectionsWindow,
+    parcels_window: ParcelsWindow,
     active_surface: Option<SurfaceId>,
     snap_engine: SnapEngine,
     snap_override: Option<SnapMode>,
@@ -400,7 +420,13 @@ impl SurveyApp {
 
         let platform = Platform::default();
         let mut command_line = CommandLineState::default();
-        let module_names: Vec<&str> = modules.iter().map(|m| m.name()).collect();
+        let mut module_names: Vec<&str> = modules.iter().map(|m| m.name()).collect();
+        module_names.extend(
+            crate::settings::Module::ALL
+                .into_iter()
+                .filter(|m| settings.modules.is_on(*m))
+                .map(|m| m.name()),
+        );
         command_line.info(format!(
             "survey3d {APP_VERSION} — modules: {} — type 'help' for commands.",
             module_names.join(", ")
@@ -422,6 +448,7 @@ impl SurveyApp {
             surface_window: SurfaceWindow::default(),
             volumes_window: VolumesWindow::default(),
             sections_window: SectionsWindow::default(),
+            parcels_window: ParcelsWindow::default(),
             active_surface: None,
             snap_engine: SnapEngine::default(),
             snap_override: None,
@@ -916,6 +943,96 @@ impl SurveyApp {
         }
     }
 
+    /// Makes a parcel of each selected closed polyline that is not one already.
+    fn parcels_from_selection(&mut self) {
+        let doc = &self.project.doc;
+        let existing: Vec<EntityId> = doc.meta().parcels.iter().map(|p| p.boundary).collect();
+        let lines: Vec<EntityId> = self
+            .selected_polylines()
+            .into_iter()
+            .filter(|(id, l)| l.closed && !existing.contains(id))
+            .map(|(id, _)| id)
+            .collect();
+        if lines.is_empty() {
+            self.command_line
+                .warn("Select closed polylines (lot boundaries) that are not parcels yet");
+            return;
+        }
+        // Continue the "Lot n" numbering.
+        let mut next = doc
+            .meta()
+            .parcels
+            .iter()
+            .filter_map(|p| {
+                p.name
+                    .strip_prefix("Lot ")
+                    .and_then(|n| n.trim().parse::<u32>().ok())
+            })
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let mut meta = doc.meta().clone();
+        let n = lines.len();
+        for id in lines {
+            let name = match doc.entity(id) {
+                Some(Entity::Polyline(l)) if !l.name.trim().is_empty() => l.name.trim().to_string(),
+                _ => {
+                    let name = format!("Lot {next}");
+                    next += 1;
+                    name
+                }
+            };
+            meta.parcels.push(survey_model::ParcelRecord {
+                name,
+                boundary: id,
+                ..Default::default()
+            });
+        }
+        self.execute(Box::new(
+            ChangeSet::new(format!("Create {n} parcels")).set_meta(meta),
+        ));
+        self.parcels_window.open = true;
+        self.command_line
+            .result(format!("Created {n} parcel{}", if n == 1 { "" } else { "s" }));
+    }
+
+    fn export_parcels_landxml(&mut self) {
+        let doc = &self.project.doc;
+        let geoms: Vec<(String, String, f64, &survey_model::Polyline)> = doc
+            .meta()
+            .parcels
+            .iter()
+            .filter_map(|p| {
+                let l = crate::ui::parcels::boundary(doc, p)?;
+                let (_, _, area) = survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, true);
+                Some((p.name.clone(), p.plan.clone(), area.abs(), l))
+            })
+            .collect();
+        if geoms.is_empty() {
+            self.command_line.warn("There are no parcels to export");
+            return;
+        }
+        let parcels: Vec<survey_io::landxml::ParcelGeometry<'_>> = geoms
+            .iter()
+            .map(|(name, plan, area, l)| survey_io::landxml::ParcelGeometry {
+                name,
+                description: plan,
+                area: *area,
+                vertices: &l.vertices,
+                bulges: &l.bulges,
+            })
+            .collect();
+        let xml = survey_io::landxml::write_parcels(&doc.meta().name, &parcels);
+        let n = parcels.len();
+        match export(&self.platform, FileKind::LandXml, "parcels", xml.as_bytes()) {
+            Ok(Some(where_)) => self
+                .command_line
+                .result(format!("Exported {n} parcels to {where_}")),
+            Ok(None) => {}
+            Err(e) => self.command_line.error(e),
+        }
+    }
+
     fn import_code_sheet(&mut self, name: &str, bytes: &[u8]) {
         match survey_io::code_sheet::read_code_sheet(bytes) {
             Ok((codes, warnings)) => {
@@ -1204,6 +1321,9 @@ impl SurveyApp {
             "legend" => self.legend.open = true,
             "surface" | "tin" => self.surface_window.create(&self.project.doc),
             "contours" => self.contours_to_polylines(),
+            "parcels" => self.parcels_window.open = true,
+            "mkparcel" | "parcel" => self.parcels_from_selection(),
+            "parcelxml" => self.export_parcels_landxml(),
             "landxmlin" | "importxml" => self.platform.pick_file(ctx, FileKind::LandXml),
             "landxmlout" | "exportxml" => self.export_landxml(),
             "sections" | "section" | "profile" => {

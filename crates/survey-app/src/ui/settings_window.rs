@@ -166,6 +166,17 @@ impl SettingsWindow {
 }
 
 fn general(ui: &mut egui::Ui, settings: &mut AppSettings) {
+    section_header(ui, "Modules");
+    for m in crate::settings::Module::ALL {
+        switch_row(ui, settings.modules.get_mut(m), m.name());
+    }
+    ui.label(
+        RichText::new("Modules add their own menu. Their commands can still be typed when switched off.")
+            .small()
+            .weak(),
+    );
+    ui.add_space(8.0);
+
     ui.horizontal(|ui| {
         ui.label("User name");
         ui.text_edit_singleline(&mut settings.user_name)

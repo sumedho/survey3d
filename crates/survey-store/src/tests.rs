@@ -31,6 +31,12 @@ fn sample() -> (Document, History) {
         )],
         ..Default::default()
     });
+    meta.parcels.push(survey_model::ParcelRecord {
+        name: "Lot 1".into(),
+        plan: "DP 1234".into(),
+        boundary: EntityId(3),
+        ..Default::default()
+    });
     meta.coord_system = CoordinateSystem::Projected {
         name: "MGA2020 zone 56".into(),
         epsg: Some(7856),

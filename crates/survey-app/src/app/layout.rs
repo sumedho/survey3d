@@ -12,7 +12,9 @@ use egui_cad::viewport::{NavAction, view_controls};
 
 use crate::platform::FileKind;
 use crate::scene_build::select_in_box;
+use crate::settings::Module;
 use crate::tools::ToolGroup;
+use crate::ui::parcels::ParcelsAction;
 use crate::ui::sections::SectionsAction;
 use crate::ui::surfaces::{SurfaceAction, SurfaceWindowAction, surfaces_panel};
 use crate::ui::volumes::VolumesAction;
@@ -134,13 +136,47 @@ const SURVEY_MENU: &[MenuEntry] = &[
     Item("Process linework", "linework"),
 ];
 
-/// Menus after View: title, entries, and the tool groups whose unlisted tools they collect.
-const MENUS: &[(&str, &[MenuEntry], &[ToolGroup])] = &[
-    ("Draw", DRAW_MENU, &[ToolGroup::Draw]),
-    ("Modify", MODIFY_MENU, &[ToolGroup::Modify]),
-    ("COGO", COGO_MENU, &[ToolGroup::Cogo, ToolGroup::Measure]),
-    ("Survey", SURVEY_MENU, &[]),
-    ("Surface", SURFACE_MENU, &[]),
+const CADASTRAL_MENU: &[MenuEntry] = &[
+    Item("Parcels…", "parcels"),
+    Item("Parcels from selected polylines", "mkparcel"),
+    Separator,
+    Item("Closure…", "closure"),
+    Item("Subdivide area…", "subdivide"),
+    Separator,
+    Item("Export parcels to LandXML…", "parcelxml"),
+];
+
+/// A menu after View.
+struct Menu {
+    title: &'static str,
+    entries: &'static [MenuEntry],
+    /// Tool groups whose unlisted tools the menu collects.
+    groups: &'static [ToolGroup],
+    /// Module that must be switched on to show the menu.
+    module: Option<Module>,
+}
+
+const fn menu(
+    title: &'static str,
+    entries: &'static [MenuEntry],
+    groups: &'static [ToolGroup],
+    module: Option<Module>,
+) -> Menu {
+    Menu {
+        title,
+        entries,
+        groups,
+        module,
+    }
+}
+
+const MENUS: &[Menu] = &[
+    menu("Draw", DRAW_MENU, &[ToolGroup::Draw], None),
+    menu("Modify", MODIFY_MENU, &[ToolGroup::Modify], None),
+    menu("COGO", COGO_MENU, &[ToolGroup::Cogo, ToolGroup::Measure], None),
+    menu("Survey", SURVEY_MENU, &[], None),
+    menu("Surface", SURFACE_MENU, &[], None),
+    menu("Cadastral", CADASTRAL_MENU, &[], Some(Module::Cadastral)),
 ];
 
 /// Whether any menu table lists `command`.
@@ -152,7 +188,7 @@ fn menu_lists(command: &str) -> bool {
             Submenu(_, inner) => walk(inner, command),
         })
     }
-    MENUS.iter().any(|(_, entries, _)| walk(entries, command))
+    MENUS.iter().any(|m| walk(m.entries, command))
 }
 
 /// Horizontal gap between a point marker and its label (px).
@@ -324,9 +360,15 @@ impl SurveyApp {
                     &mut action,
                 );
             });
-            for (title, entries, groups) in MENUS {
-                ui.menu_button(*title, |ui| {
-                    self.menu_entries(ui, entries, &mut action);
+            for m in MENUS {
+                if m.module
+                    .is_some_and(|module| !self.settings.modules.is_on(module))
+                {
+                    continue;
+                }
+                let groups = m.groups;
+                ui.menu_button(m.title, |ui| {
+                    self.menu_entries(ui, m.entries, &mut action);
                     // Tools registered by modules but not placed in a menu table.
                     let extra: Vec<_> = self
                         .tools
@@ -927,6 +969,9 @@ impl SurveyApp {
         if self.settings.labels.any() || code_labels {
             self.draw_labels(&painter, out.rect, &theme);
         }
+        if self.project.doc.meta().parcels.iter().any(|p| p.annotate) {
+            self.draw_parcel_annotations(&painter, out.rect, &theme);
+        }
         if !self.surface_cache.labels().is_empty() {
             self.draw_contour_labels(&painter, out.rect, &theme);
         }
@@ -1353,23 +1398,149 @@ impl SurveyApp {
             } else {
                 text
             };
-            let galley = painter.layout_no_wrap(text, font.clone(), theme.text);
-            let half = galley.size() * 0.5;
-            let rot = egui::emath::Rot2::from_angle(angle);
-            let origin = center - rot * half;
-            // A halo in the canvas colour keeps the text readable over lines and shading.
-            for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-                painter.add(
-                    egui::epaint::TextShape::new(
-                        origin + egui::vec2(dx, dy),
-                        galley.clone(),
-                        theme.viewport_bg,
-                    )
-                    .with_override_text_color(theme.viewport_bg)
-                    .with_angle(angle),
+            halo_text(painter, center, text, &font, angle, theme.text, theme.viewport_bg);
+        }
+    }
+
+    /// Cadastral annotation for parcels that ask for it: bearing above and
+    /// distance below each line (radius and arc length on arcs), and the lot's
+    /// name and area at its centre.
+    fn draw_parcel_annotations(&self, painter: &egui::Painter, rect: egui::Rect, theme: &CadTheme) {
+        let doc = &self.project.doc;
+        let conv = doc.conventions();
+        let cam = &self.viewport.camera;
+        let font = egui::FontId::proportional(10.5);
+        let bold = egui::FontId::new(12.0, egui::FontFamily::Proportional);
+        let screen = |p: glam::DVec3| cam.world_to_screen(p).map(|(s, _)| to_screen(rect, s));
+        // A boundary shared by two lots is annotated once.
+        let mut done: std::collections::HashSet<[(i64, i64); 2]> = std::collections::HashSet::new();
+        let key = |p: glam::DVec3| ((p.x * 1000.0).round() as i64, (p.y * 1000.0).round() as i64);
+        for parcel in doc.meta().parcels.iter().filter(|p| p.annotate) {
+            let Some(l) = crate::ui::parcels::boundary(doc, parcel) else {
+                continue;
+            };
+            if !doc.is_layer_visible(l.layer) {
+                continue;
+            }
+            for (a, b, bulge) in l.segments() {
+                let (ka, kb) = (key(a), key(b));
+                if !done.insert(if ka < kb { [ka, kb] } else { [kb, ka] }) {
+                    continue;
+                }
+                let (mid, tangent, top, bottom) = match survey_core::arc::Arc::from_bulge(a, b, bulge) {
+                    Some(arc) => {
+                        let t = arc.tangent_at(0.5);
+                        (
+                            arc.midpoint(),
+                            t.extend(0.0),
+                            format!("R {}", conv.format_length(arc.radius)),
+                            format!("A {}", conv.format_length(arc.length_2d())),
+                        )
+                    }
+                    None => {
+                        let d = (b - a).truncate();
+                        let Some(brg) = survey_core::Bearing::from_delta(d.x, d.y) else {
+                            continue;
+                        };
+                        (
+                            (a + b) * 0.5,
+                            (b - a),
+                            conv.format_bearing(brg),
+                            conv.format_length(d.length()),
+                        )
+                    }
+                };
+                let (Some(m), Some(m2), Some(sa), Some(sb)) = (
+                    screen(mid),
+                    screen(mid + tangent.normalize_or_zero()),
+                    screen(a),
+                    screen(b),
+                ) else {
+                    continue;
+                };
+                if !rect.contains(m) {
+                    continue;
+                }
+                // Only where the line is long enough on screen for the text.
+                let width = painter
+                    .layout_no_wrap(top.clone(), font.clone(), theme.text)
+                    .size()
+                    .x
+                    .max(
+                        painter
+                            .layout_no_wrap(bottom.clone(), font.clone(), theme.text)
+                            .size()
+                            .x,
+                    );
+                if sa.distance(sb) < width + 16.0 {
+                    continue;
+                }
+                let d = m2 - m;
+                let mut angle = d.y.atan2(d.x);
+                if angle > std::f32::consts::FRAC_PI_2 {
+                    angle -= std::f32::consts::PI;
+                } else if angle < -std::f32::consts::FRAC_PI_2 {
+                    angle += std::f32::consts::PI;
+                }
+                // "Up" relative to the upright text.
+                let up = egui::vec2(angle.sin(), -angle.cos());
+                halo_text(
+                    painter,
+                    m + up * 8.0,
+                    top,
+                    &font,
+                    angle,
+                    theme.text,
+                    theme.viewport_bg,
+                );
+                halo_text(
+                    painter,
+                    m - up * 8.0,
+                    bottom,
+                    &font,
+                    angle,
+                    theme.text_secondary,
+                    theme.viewport_bg,
                 );
             }
-            painter.add(egui::epaint::TextShape::new(origin, galley, theme.text).with_angle(angle));
+            // Name and area at the area-weighted centre.
+            let ring: Vec<glam::DVec2> = l
+                .tessellate(0.05)
+                .into_iter()
+                .flatten()
+                .map(|p| p.truncate())
+                .collect();
+            let (mut area, mut c) = (0.0, glam::DVec2::ZERO);
+            for i in 0..ring.len() {
+                let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+                let cross = p.perp_dot(q);
+                area += cross;
+                c += (p + q) * cross;
+            }
+            if area.abs() < 1e-9 {
+                continue;
+            }
+            let centre = (c / (3.0 * area)).extend(l.vertices[0].z);
+            if let Some(p) = screen(centre).filter(|p| rect.contains(*p)) {
+                halo_text(
+                    painter,
+                    p - egui::vec2(0.0, 7.0),
+                    parcel.name.clone(),
+                    &bold,
+                    0.0,
+                    theme.accent,
+                    theme.viewport_bg,
+                );
+                halo_text(
+                    painter,
+                    p + egui::vec2(0.0, 8.0),
+                    conv.format_area((area / 2.0).abs()),
+                    &font,
+                    0.0,
+                    theme.text,
+                    theme.viewport_bg,
+                );
+            }
         }
     }
 
@@ -1461,6 +1632,33 @@ impl SurveyApp {
         };
         if let Some(a) = self.surface_window.show(ctx, &self.project.doc, &closed) {
             self.apply_surface_window(a);
+        }
+        let can_create = self.parcels_window.open && self.selected_polylines().iter().any(|(_, l)| l.closed);
+        match self.parcels_window.show(ctx, &self.project.doc, can_create) {
+            Some(ParcelsAction::Update(i, record)) => {
+                let mut meta = self.project.doc.meta().clone();
+                if let Some(slot) = meta.parcels.get_mut(i) {
+                    let label = format!("Edit parcel {}", record.name);
+                    *slot = record;
+                    self.execute(Box::new(ChangeSet::new(label).set_meta(meta)));
+                }
+            }
+            Some(ParcelsAction::Delete(i)) => {
+                let mut meta = self.project.doc.meta().clone();
+                if i < meta.parcels.len() {
+                    let p = meta.parcels.remove(i);
+                    self.execute(Box::new(
+                        ChangeSet::new(format!("Remove parcel {}", p.name)).set_meta(meta),
+                    ));
+                }
+            }
+            Some(ParcelsAction::Select(id)) if self.project.doc.contains(id) => {
+                self.project.selection.set([id]);
+            }
+            Some(ParcelsAction::Report(title, text)) => self.reports.add(title, text),
+            Some(ParcelsAction::CreateFromSelection) => self.parcels_from_selection(),
+            Some(ParcelsAction::ExportLandXml) => self.export_parcels_landxml(),
+            Some(ParcelsAction::Select(_)) | None => {}
         }
         let selected_line = self
             .sections_window
@@ -1665,6 +1863,30 @@ impl SurveyApp {
     }
 }
 
+/// Text centred at `center`, rotated by `angle`, with a one-pixel halo in `halo`
+/// so it stays readable over lines and shading.
+fn halo_text(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    text: String,
+    font: &egui::FontId,
+    angle: f32,
+    color: Color32,
+    halo: Color32,
+) {
+    let galley = painter.layout_no_wrap(text, font.clone(), color);
+    let rot = egui::emath::Rot2::from_angle(angle);
+    let origin = center - rot * (galley.size() * 0.5);
+    for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+        painter.add(
+            egui::epaint::TextShape::new(origin + egui::vec2(dx, dy), galley.clone(), halo)
+                .with_override_text_color(halo)
+                .with_angle(angle),
+        );
+    }
+    painter.add(egui::epaint::TextShape::new(origin, galley, color).with_angle(angle));
+}
+
 fn label_box(painter: &egui::Painter, bounds: egui::Rect, pos: egui::Pos2, text: &str, theme: &CadTheme) {
     let galley = painter.layout_no_wrap(text.to_string(), egui::FontId::monospace(11.5), theme.text);
     let size = galley.size();
@@ -1709,8 +1931,8 @@ mod tests {
                 }
             }
         }
-        for (_, entries, _) in MENUS {
-            check(entries, &tools);
+        for m in MENUS {
+            check(m.entries, &tools);
         }
         // Every core tool except Select has a place in the menus.
         for t in tools.tools() {
