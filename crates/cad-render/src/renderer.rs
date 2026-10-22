@@ -15,7 +15,7 @@ use glam::{DVec3, Mat4};
 use survey_core::Aabb3;
 
 use crate::camera::{Camera, Projection};
-use crate::scene::{LineInstance, PointInstance, Scene};
+use crate::scene::{LineInstance, PointInstance, Scene, TriVertex};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -122,7 +122,9 @@ impl GridSettings {
 #[derive(Clone)]
 pub struct ViewportFrame {
     pub camera: Camera,
-    pub scene: Arc<Scene>,
+    /// Scenes drawn together (e.g. drawing objects and surfaces); each is
+    /// uploaded only when its revision changes.
+    pub scenes: Vec<Arc<Scene>>,
     pub grid: Option<GridSettings>,
     /// Straight RGBA in 0..1.
     pub background: [f32; 4],
@@ -146,6 +148,7 @@ pub fn install(render_state: &egui_wgpu::RenderState) {
 struct Pipelines {
     point: wgpu::RenderPipeline,
     line: wgpu::RenderPipeline,
+    tri: wgpu::RenderPipeline,
     grid: wgpu::RenderPipeline,
     blit: wgpu::RenderPipeline,
 }
@@ -166,6 +169,14 @@ struct GpuChunk {
     origin: DVec3,
     points: Option<(wgpu::Buffer, u32)>,
     lines: Option<(wgpu::Buffer, u32)>,
+    /// Vertex buffer and vertex count.
+    triangles: Option<(wgpu::Buffer, u32)>,
+}
+
+/// The uploaded chunks of one scene.
+struct Upload {
+    revision: u64,
+    chunks: Vec<GpuChunk>,
 }
 
 struct ViewResources {
@@ -177,8 +188,7 @@ struct ViewResources {
     uniform_buffer: wgpu::Buffer,
     uniform_slots: usize,
     uniform_bind_group: wgpu::BindGroup,
-    scene_revision: Option<u64>,
-    chunks: Vec<GpuChunk>,
+    uploads: Vec<Upload>,
 }
 
 impl Resources {
@@ -290,8 +300,7 @@ impl Resources {
             let mut view = ViewResources::new(self, device, size);
             if let Some(prev) = previous {
                 // Keep uploaded geometry across resizes.
-                view.chunks = prev.chunks;
-                view.scene_revision = prev.scene_revision;
+                view.uploads = prev.uploads;
                 view.uniform_buffer = prev.uniform_buffer;
                 view.uniform_slots = prev.uniform_slots;
                 view.uniform_bind_group = prev.uniform_bind_group;
@@ -367,25 +376,39 @@ impl ViewResources {
             uniform_buffer,
             uniform_slots: 16,
             uniform_bind_group,
-            scene_revision: None,
-            chunks: Vec::new(),
+            uploads: Vec::new(),
         }
     }
 
-    fn upload_scene(&mut self, device: &wgpu::Device, scene: &Scene) {
-        if self.scene_revision == Some(scene.revision) {
-            return;
+    fn upload_scenes(&mut self, device: &wgpu::Device, scenes: &[Arc<Scene>]) {
+        self.uploads.truncate(scenes.len());
+        for (i, scene) in scenes.iter().enumerate() {
+            if self.uploads.get(i).is_some_and(|u| u.revision == scene.revision) {
+                continue;
+            }
+            let upload = Upload {
+                revision: scene.revision,
+                chunks: scene
+                    .chunks
+                    .iter()
+                    .map(|c| GpuChunk {
+                        origin: c.origin,
+                        points: instance_buffer(device, "cad_render_points", &c.points),
+                        lines: instance_buffer(device, "cad_render_lines", &c.lines),
+                        triangles: instance_buffer(device, "cad_render_triangles", &c.triangles),
+                    })
+                    .collect(),
+            };
+            if i < self.uploads.len() {
+                self.uploads[i] = upload;
+            } else {
+                self.uploads.push(upload);
+            }
         }
-        self.chunks = scene
-            .chunks
-            .iter()
-            .map(|c| GpuChunk {
-                origin: c.origin,
-                points: instance_buffer(device, "cad_render_points", &c.points),
-                lines: instance_buffer(device, "cad_render_lines", &c.lines),
-            })
-            .collect();
-        self.scene_revision = Some(scene.revision);
+    }
+
+    fn chunks(&self) -> impl Iterator<Item = &GpuChunk> {
+        self.uploads.iter().flat_map(|u| &u.chunks)
     }
 }
 
@@ -532,6 +555,18 @@ impl Pipelines {
             })],
             true,
         );
+        let tri_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4];
+        let tri = scene_pipeline(
+            "cad_render_triangles",
+            "vs_tri",
+            "fs_tri",
+            &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<TriVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &tri_attrs,
+            })],
+            true,
+        );
         let grid = scene_pipeline("cad_render_grid", "vs_grid", "fs_grid", &[], false);
 
         let blit = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -562,6 +597,7 @@ impl Pipelines {
         Self {
             point,
             line,
+            tri,
             grid,
             blit,
         }
@@ -613,7 +649,7 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
             u
         });
 
-        let needed_slots = 1 + frame.scene.chunks.len();
+        let needed_slots = 1 + frame.scenes.iter().map(|s| s.chunks.len()).sum::<usize>();
         res.ensure_view(device, self.view_id, self.size_px);
         let Resources {
             pipelines,
@@ -625,7 +661,7 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
         let Some(view) = views.get_mut(&self.view_id) else {
             return Vec::new();
         };
-        view.upload_scene(device, &frame.scene);
+        view.upload_scenes(device, &frame.scenes);
         if view.uniform_slots < needed_slots {
             let slots = needed_slots.next_power_of_two();
             let (buffer, bind_group) = create_uniforms(uniform_layout, symbols, stride, device, slots);
@@ -642,8 +678,12 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
         if let Some(g) = &grid {
             put(0, g);
         }
-        for (i, chunk) in view.chunks.iter().enumerate() {
-            put(i + 1, &uniforms(camera.chunk_mvp(chunk.origin), viewport));
+        // params.w flags plan view: surfaces then sit behind everything drawn on them.
+        let plan = if camera.is_plan() { 1.0 } else { 0.0 };
+        for (i, chunk) in view.chunks().enumerate() {
+            let mut u = uniforms(camera.chunk_mvp(chunk.origin), viewport);
+            u.params[3] = plan;
+            put(i + 1, &u);
         }
         queue.write_buffer(&view.uniform_buffer, 0, &data);
 
@@ -686,8 +726,16 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
             pass.set_bind_group(0, &view.uniform_bind_group, &[0]);
             pass.draw(0..6, 0..1);
         }
+        pass.set_pipeline(&pipelines.tri);
+        for (i, chunk) in view.chunks().enumerate() {
+            if let Some((buf, n)) = &chunk.triangles {
+                pass.set_bind_group(0, &view.uniform_bind_group, &[((i + 1) as u64 * stride) as u32]);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                pass.draw(0..*n, 0..1);
+            }
+        }
         pass.set_pipeline(&pipelines.line);
-        for (i, chunk) in view.chunks.iter().enumerate() {
+        for (i, chunk) in view.chunks().enumerate() {
             if let Some((buf, n)) = &chunk.lines {
                 pass.set_bind_group(0, &view.uniform_bind_group, &[((i + 1) as u64 * stride) as u32]);
                 pass.set_vertex_buffer(0, buf.slice(..));
@@ -695,7 +743,7 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
             }
         }
         pass.set_pipeline(&pipelines.point);
-        for (i, chunk) in view.chunks.iter().enumerate() {
+        for (i, chunk) in view.chunks().enumerate() {
             if let Some((buf, n)) = &chunk.points {
                 pass.set_bind_group(0, &view.uniform_bind_group, &[((i + 1) as u64 * stride) as u32]);
                 pass.set_vertex_buffer(0, buf.slice(..));

@@ -10,9 +10,10 @@ use survey_core::{Aabb3, Conventions};
 
 use crate::coord_system::CoordinateSystem;
 use crate::entity::{Entity, SurveyPoint};
-use crate::ids::{EntityId, LayerId};
+use crate::ids::{EntityId, LayerId, SurfaceId};
 use crate::layer::{Color, Layer};
 use crate::spatial::SpatialIndex;
+use crate::surface::Surface;
 
 /// Project-wide settings that are saved with the project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,12 +52,13 @@ impl Default for ProjectMeta {
 pub struct DirtyState {
     pub entities: BTreeSet<EntityId>,
     pub layers: BTreeSet<LayerId>,
+    pub surfaces: BTreeSet<SurfaceId>,
     pub meta: bool,
 }
 
 impl DirtyState {
     pub fn is_empty(&self) -> bool {
-        self.entities.is_empty() && self.layers.is_empty() && !self.meta
+        self.entities.is_empty() && self.layers.is_empty() && self.surfaces.is_empty() && !self.meta
     }
 }
 
@@ -71,9 +73,12 @@ pub struct Document {
     current_layer: LayerId,
     entities: BTreeMap<EntityId, Entity>,
     index: SpatialIndex,
+    surfaces: BTreeMap<SurfaceId, Surface>,
     next_entity_id: i64,
     next_layer_id: i64,
+    next_surface_id: i64,
     revision: u64,
+    surfaces_revision: u64,
     dirty: DirtyState,
 }
 
@@ -109,9 +114,12 @@ impl Document {
             current_layer,
             entities: entities.into_iter().collect(),
             index,
+            surfaces: BTreeMap::new(),
             next_entity_id,
             next_layer_id,
+            next_surface_id: 1,
             revision: 1,
+            surfaces_revision: 1,
             dirty: DirtyState::default(),
         }
     }
@@ -184,6 +192,23 @@ impl Document {
         self.index.query(region, out);
     }
 
+    /// Increments only when surfaces change (their views rebuild on this).
+    pub fn surfaces_revision(&self) -> u64 {
+        self.surfaces_revision
+    }
+
+    pub fn surface(&self, id: SurfaceId) -> Option<&Surface> {
+        self.surfaces.get(&id)
+    }
+
+    pub fn surfaces(&self) -> impl Iterator<Item = (SurfaceId, &Surface)> {
+        self.surfaces.iter().map(|(id, s)| (*id, s))
+    }
+
+    pub fn surface_by_name(&self, name: &str) -> Option<(SurfaceId, &Surface)> {
+        self.surfaces().find(|(_, s)| s.name.eq_ignore_ascii_case(name))
+    }
+
     pub fn find_point_by_name(&self, name: &str) -> Option<(EntityId, &SurveyPoint)> {
         self.entities.iter().find_map(|(id, e)| match e {
             Entity::Point(p) if p.name == name => Some((*id, p)),
@@ -250,6 +275,49 @@ impl Document {
         previous
     }
 
+    pub fn alloc_surface_id(&mut self) -> SurfaceId {
+        let id = SurfaceId(self.next_surface_id);
+        self.next_surface_id += 1;
+        id
+    }
+
+    /// Inserts, replaces (`Some`) or removes (`None`) a surface; returns the previous value.
+    pub fn set_surface(&mut self, id: SurfaceId, surface: Option<Surface>) -> Option<Surface> {
+        let previous = match surface {
+            Some(s) => self.surfaces.insert(id, s),
+            None => self.surfaces.remove(&id),
+        };
+        self.next_surface_id = self.next_surface_id.max(id.0 + 1);
+        self.dirty.surfaces.insert(id);
+        self.revision += 1;
+        self.surfaces_revision += 1;
+        previous
+    }
+
+    /// Replaces a surface's style; returns the previous one.
+    pub fn set_surface_style(
+        &mut self,
+        id: SurfaceId,
+        style: crate::surface::SurfaceStyle,
+    ) -> Option<crate::surface::SurfaceStyle> {
+        let s = self.surfaces.get_mut(&id)?;
+        let previous = std::mem::replace(&mut s.style, style);
+        self.dirty.surfaces.insert(id);
+        self.revision += 1;
+        self.surfaces_revision += 1;
+        Some(previous)
+    }
+
+    /// Adds surfaces read from storage (not dirty).
+    pub fn load_surfaces(&mut self, surfaces: Vec<(SurfaceId, Surface)>) {
+        for (id, s) in surfaces {
+            self.next_surface_id = self.next_surface_id.max(id.0 + 1);
+            self.surfaces.insert(id, s);
+        }
+        self.revision += 1;
+        self.surfaces_revision += 1;
+    }
+
     /// Inserts, replaces (`Some`) or removes (`None`) a layer; returns the previous value.
     /// New layers are appended to the end of the layer list.
     pub fn set_layer(&mut self, id: LayerId, layer: Option<Layer>) -> Option<Layer> {
@@ -298,5 +366,6 @@ impl Document {
         self.dirty.meta = true;
         self.dirty.layers = self.layers.iter().map(|l| l.id).collect();
         self.dirty.entities = self.entities.keys().copied().collect();
+        self.dirty.surfaces = self.surfaces.keys().copied().collect();
     }
 }

@@ -14,12 +14,14 @@ pub mod ids;
 pub mod layer;
 pub mod selection;
 pub mod spatial;
+pub mod surface;
 
 pub use command::{ChangeSet, Command};
 pub use coord_system::CoordinateSystem;
 pub use document::{DirtyState, Document, ProjectMeta};
 pub use entity::{Entity, Polyline, SurveyPoint, join_polylines};
 pub use history::{AuditAction, AuditRecord, History};
-pub use ids::{EntityId, LayerId};
+pub use ids::{EntityId, LayerId, SurfaceId};
 pub use layer::{Color, Layer};
 pub use selection::Selection;
+pub use surface::{ContourStyle, Surface, SurfaceDefinition, SurfaceStyle};

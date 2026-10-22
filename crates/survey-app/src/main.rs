@@ -11,6 +11,7 @@ mod platform;
 mod project;
 mod scene_build;
 mod settings;
+mod surface_view;
 mod tools;
 mod ui;
 

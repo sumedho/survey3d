@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 glam.workspace = true
 serde.workspace = true
+spade.workspace = true
 thiserror.workspace = true
 
 [lints]

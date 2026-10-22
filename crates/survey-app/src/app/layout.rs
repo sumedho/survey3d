@@ -13,6 +13,7 @@ use egui_cad::viewport::{NavAction, view_controls};
 use crate::platform::FileKind;
 use crate::scene_build::select_in_box;
 use crate::tools::ToolGroup;
+use crate::ui::surfaces::{SurfaceAction, surfaces_panel};
 use egui_cad::ThemeMode;
 use survey_core::style::LabelSet;
 
@@ -110,6 +111,8 @@ const COGO_MENU: &[MenuEntry] = &[
     Item("COGO calculator…", "calc"),
 ];
 
+const SURFACE_MENU: &[MenuEntry] = &[Item("Create surface…", "surface")];
+
 const SURVEY_MENU: &[MenuEntry] = &[
     Item("Traverse…", "traverse"),
     Item("Closure…", "closure"),
@@ -126,6 +129,7 @@ const MENUS: &[(&str, &[MenuEntry], &[ToolGroup])] = &[
     ("Modify", MODIFY_MENU, &[ToolGroup::Modify]),
     ("COGO", COGO_MENU, &[ToolGroup::Cogo, ToolGroup::Measure]),
     ("Survey", SURVEY_MENU, &[]),
+    ("Surface", SURFACE_MENU, &[]),
 ];
 
 /// Whether any menu table lists `command`.
@@ -601,6 +605,16 @@ impl SurveyApp {
         }
         if status_toggle(
             ui,
+            self.settings.surface_heights,
+            "SURF",
+            "Picks that do not snap to an object take their height from the surface",
+        )
+        .clicked()
+        {
+            self.settings.surface_heights = !self.settings.surface_heights;
+        }
+        if status_toggle(
+            ui,
             self.settings.ortho.enabled,
             "ORTHO",
             "Ortho / polar constraint (F8)",
@@ -707,6 +721,29 @@ impl SurveyApp {
             for a in actions {
                 self.apply_layer_action(a);
             }
+            let mut new_surface = false;
+            let mut active = self.active_surface;
+            let surface_action = section(
+                ui,
+                "Surfaces",
+                true,
+                |ui| {
+                    new_surface = IconButton::new(icons::PLUS, "New surface")
+                        .description("Build a surface from points and breaklines")
+                        .size(20.0)
+                        .show(ui)
+                        .clicked();
+                },
+                |ui| surfaces_panel(ui, &self.project.doc, &mut active),
+            )
+            .flatten();
+            self.active_surface = active;
+            if new_surface {
+                self.apply_surface_action(SurfaceAction::New);
+            }
+            if let Some(a) = surface_action {
+                self.apply_surface_action(a);
+            }
             let p = &self.project;
             let edit = section(
                 ui,
@@ -812,6 +849,7 @@ impl SurveyApp {
         let scene = self
             .scene_cache
             .get(&self.project.doc, &self.project.selection, &theme);
+        let surfaces = self.surface_cache.get(&self.project.doc, &theme);
         let conv = self.project.doc.conventions().clone();
         let grid = self.settings.show_grid.then(|| GridSettings {
             elevation: self.settings.working_z,
@@ -838,6 +876,7 @@ impl SurveyApp {
             conv.axis_labels.height.as_str(),
         ];
         let out = Viewport::new(&mut self.viewport, scene)
+            .overlay_scene(surfaces)
             .grid(grid)
             .anchor(anchor)
             .extra_bounds(extra)
@@ -1024,6 +1063,47 @@ impl SurveyApp {
                         height_known: pick.height_known,
                     }),
                 };
+            }
+        }
+        // Drape free and grid picks on a surface.
+        let draped = pick.snap.is_none_or(|h| h.mode == SnapMode::Grid);
+        if self.settings.surface_heights && draped && self.project.doc.surfaces().next().is_some() {
+            let doc = &self.project.doc;
+            let preferred = self.active_surface;
+            if cam.is_plan() {
+                if let Some(z) = self
+                    .surface_indexes
+                    .height_at(doc, preferred, pick.point.truncate())
+                {
+                    pick.point.z = z;
+                    pick.height_known = true;
+                }
+            } else if pick.snap.is_none() {
+                // Along the view ray: alternate between the surface height and the ray.
+                let ray = cam.screen_ray(cursor);
+                let mut p = pick.point;
+                let mut hit = None;
+                for _ in 0..8 {
+                    let Some(z) = self.surface_indexes.height_at(doc, preferred, p.truncate()) else {
+                        break;
+                    };
+                    match ray.intersect_z_plane(z) {
+                        Some(q) => {
+                            hit = Some(q.truncate().extend(z));
+                            if q.truncate().distance(p.truncate()) < 1e-4 {
+                                break;
+                            }
+                            p = q;
+                        }
+                        None => break,
+                    }
+                }
+                if let Some(h) = hit
+                    && let Some(z) = self.surface_indexes.height_at(doc, preferred, h.truncate())
+                {
+                    pick.point = h.truncate().extend(z);
+                    pick.height_known = true;
+                }
             }
         }
         pick
@@ -1302,6 +1382,18 @@ impl SurveyApp {
             }
             Some(SubdivideAction::Report(title, text)) => self.reports.add(title, text),
             None => {}
+        }
+        let closed: Vec<EntityId> = if self.surface_window.open {
+            self.selected_polylines()
+                .into_iter()
+                .filter(|(_, l)| l.closed)
+                .map(|(id, _)| id)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if let Some(a) = self.surface_window.show(ctx, &self.project.doc, &closed) {
+            self.apply_surface_window(a);
         }
         self.legend.show(ctx, &self.project.doc);
         if let Some((title, text)) = self.calculator.show(ctx, self.project.doc.conventions()) {

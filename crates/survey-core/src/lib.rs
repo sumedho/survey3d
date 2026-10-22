@@ -20,6 +20,7 @@ pub mod resection;
 pub mod solvers;
 pub mod style;
 pub mod subdivide;
+pub mod tin;
 pub mod traverse;
 
 pub use angle::{Angle, Bearing, Dms, Quadrant};

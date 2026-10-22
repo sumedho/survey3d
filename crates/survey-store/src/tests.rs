@@ -1,6 +1,6 @@
 use super::*;
 use survey_core::Conventions;
-use survey_model::{ChangeSet, CoordinateSystem, History};
+use survey_model::{ChangeSet, Command, CoordinateSystem, History};
 
 fn point(name: &str, x: f64, z: Option<f64>) -> Entity {
     Entity::Point(SurveyPoint {
@@ -239,4 +239,42 @@ fn view_state_and_migration_from_v1() {
         Some(Entity::Polyline(l)) => assert!(l.bulges.is_empty() && l.vertices.len() == 2),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn surfaces_round_trip() {
+    let (mut doc, mut history) = sample();
+    let mut store = ProjectStore::create_in_memory().expect("store");
+    let tin = Tin {
+        vertices: vec![
+            DVec3::new(512_000.123_456, 6_912_000.5, 10.0),
+            DVec3::new(512_010.0, 6_912_000.0, 11.0),
+            DVec3::new(512_000.0, 6_912_010.0, 12.0),
+        ],
+        triangles: vec![[0, 1, 2]],
+    };
+    let surface = Surface {
+        name: "Existing".into(),
+        definition: Some(survey_model::SurfaceDefinition {
+            point_codes: vec!["NS*".into()],
+            max_edge: Some(50.0),
+            ..Default::default()
+        }),
+        tin,
+        style: survey_model::SurfaceStyle::default(),
+    };
+    let mut cmd = ChangeSet::new("surface").insert_surface(surface.clone());
+    cmd.apply(&mut doc);
+    let id = cmd.inserted_surface_ids()[0];
+    save(&mut store, &mut doc, &mut history);
+    let loaded = ProjectStore::from_bytes(&store.to_bytes().expect("bytes"))
+        .expect("open")
+        .load_document()
+        .expect("load");
+    assert_eq!(loaded.surface(id), Some(&surface));
+
+    let mut del = ChangeSet::new("delete").delete_surface(id);
+    del.apply(&mut doc);
+    save(&mut store, &mut doc, &mut history);
+    assert!(store.load_document().expect("load").surface(id).is_none());
 }

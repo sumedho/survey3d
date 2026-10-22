@@ -12,4 +12,5 @@ pub mod reports;
 pub mod resection_window;
 pub mod settings_window;
 pub mod subdivide_window;
+pub mod surfaces;
 pub mod traverse_window;

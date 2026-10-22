@@ -15,9 +15,10 @@ use std::path::{Path, PathBuf};
 use glam::DVec3;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
+use survey_core::tin::Tin;
 use survey_model::{
     AuditAction, AuditRecord, Color, Document, Entity, EntityId, Layer, LayerId, Polyline, ProjectMeta,
-    SurveyPoint,
+    Surface, SurfaceId, SurveyPoint,
 };
 use thiserror::Error;
 
@@ -133,7 +134,57 @@ impl ProjectStore {
         let layers = self.load_layers()?;
         let mut entities = self.load_points()?;
         entities.extend(self.load_polylines()?);
-        Ok(Document::from_parts(meta, layers, entities))
+        let mut doc = Document::from_parts(meta, layers, entities);
+        doc.load_surfaces(self.load_surfaces()?);
+        Ok(doc)
+    }
+
+    fn load_surfaces(&self) -> Result<Vec<(SurfaceId, Surface)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, definition_json, style_json, vertices, triangles FROM surfaces ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Vec<u8>>(4)?,
+                r.get::<_, Vec<u8>>(5)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, name, definition, style, vertices, triangles) = row?;
+            let tin = Tin {
+                vertices: vertices
+                    .chunks_exact(24)
+                    .map(|c| {
+                        let f =
+                            |i: usize| f64::from_le_bytes(c[i * 8..i * 8 + 8].try_into().unwrap_or_default());
+                        DVec3::new(f(0), f(1), f(2))
+                    })
+                    .collect(),
+                triangles: triangles
+                    .chunks_exact(12)
+                    .map(|c| {
+                        let u =
+                            |i: usize| u32::from_le_bytes(c[i * 4..i * 4 + 4].try_into().unwrap_or_default());
+                        [u(0), u(1), u(2)]
+                    })
+                    .collect(),
+            };
+            out.push((
+                SurfaceId(id),
+                Surface {
+                    name,
+                    definition: definition.map(|d| serde_json::from_str(&d)).transpose()?,
+                    tin,
+                    style: serde_json::from_str(&style)?,
+                },
+            ));
+        }
+        Ok(out)
     }
 
     fn load_meta(&self) -> Result<ProjectMeta> {
@@ -423,7 +474,35 @@ fn write_changes(
     for id in &dirty.entities {
         write_entity(tx, *id, doc.entity(*id))?;
     }
+    for id in &dirty.surfaces {
+        write_surface(tx, *id, doc.surface(*id))?;
+    }
     append_audit(tx, audit, app_version)
+}
+
+fn write_surface(tx: &Transaction<'_>, id: SurfaceId, surface: Option<&Surface>) -> Result<()> {
+    tx.execute("DELETE FROM surfaces WHERE id = ?1", [id.0])?;
+    let Some(s) = surface else {
+        return Ok(());
+    };
+    let mut vertices = Vec::with_capacity(s.tin.vertices.len() * 24);
+    for v in &s.tin.vertices {
+        for c in [v.x, v.y, v.z] {
+            vertices.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    let mut triangles = Vec::with_capacity(s.tin.triangles.len() * 12);
+    for t in &s.tin.triangles {
+        for k in t {
+            triangles.extend_from_slice(&k.to_le_bytes());
+        }
+    }
+    let definition = s.definition.as_ref().map(serde_json::to_string).transpose()?;
+    tx.execute(
+        "INSERT INTO surfaces (id, name, definition_json, style_json, vertices, triangles) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id.0, s.name, definition, serde_json::to_string(&s.style)?, vertices, triangles],
+    )?;
+    Ok(())
 }
 
 fn write_meta(tx: &Transaction<'_>, meta: &ProjectMeta) -> Result<()> {

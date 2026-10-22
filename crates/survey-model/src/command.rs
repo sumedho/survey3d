@@ -5,8 +5,9 @@ use serde_json::{Value, json};
 
 use crate::document::{Document, ProjectMeta};
 use crate::entity::Entity;
-use crate::ids::{EntityId, LayerId};
+use crate::ids::{EntityId, LayerId, SurfaceId};
 use crate::layer::Layer;
+use crate::surface::{Surface, SurfaceStyle};
 
 /// An undoable edit to a [`Document`].
 ///
@@ -39,6 +40,17 @@ enum Op {
         id: Option<LayerId>,
         before: Option<Layer>,
         after: Option<Layer>,
+    },
+    Surface {
+        id: Option<SurfaceId>,
+        before: Option<Box<Surface>>,
+        after: Option<Box<Surface>>,
+    },
+    /// Style only, so display changes do not copy the triangles into the history.
+    SurfaceStyle {
+        id: SurfaceId,
+        before: Option<SurfaceStyle>,
+        after: SurfaceStyle,
     },
     // Boxed: project settings are much larger than an entity record.
     Meta {
@@ -136,6 +148,57 @@ impl ChangeSet {
         self
     }
 
+    pub fn insert_surface(mut self, surface: Surface) -> Self {
+        self.ops.push(Op::Surface {
+            id: None,
+            before: None,
+            after: Some(Box::new(surface)),
+        });
+        self
+    }
+
+    pub fn update_surface(mut self, id: SurfaceId, surface: Surface) -> Self {
+        self.ops.push(Op::Surface {
+            id: Some(id),
+            before: None,
+            after: Some(Box::new(surface)),
+        });
+        self
+    }
+
+    pub fn delete_surface(mut self, id: SurfaceId) -> Self {
+        self.ops.push(Op::Surface {
+            id: Some(id),
+            before: None,
+            after: None,
+        });
+        self
+    }
+
+    pub fn set_surface_style(mut self, id: SurfaceId, style: SurfaceStyle) -> Self {
+        self.ops.push(Op::SurfaceStyle {
+            id,
+            before: None,
+            after: style,
+        });
+        self
+    }
+
+    /// Ids of inserted surfaces (available after the first apply).
+    pub fn inserted_surface_ids(&self) -> Vec<SurfaceId> {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Surface {
+                    id: Some(id),
+                    before: None,
+                    after: Some(_),
+                } => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn set_meta(mut self, meta: ProjectMeta) -> Self {
         self.ops.push(Op::Meta {
             before: None,
@@ -179,6 +242,13 @@ impl Command for ChangeSet {
                     }
                     *before = doc.set_layer(id, after.clone());
                 }
+                Op::Surface { id, before, after } => {
+                    let id = *id.get_or_insert_with(|| doc.alloc_surface_id());
+                    *before = doc.set_surface(id, after.as_deref().cloned()).map(Box::new);
+                }
+                Op::SurfaceStyle { id, before, after } => {
+                    *before = doc.set_surface_style(*id, *after);
+                }
                 Op::Meta { before, after } => {
                     *before = Some(Box::new(doc.set_meta((**after).clone())));
                 }
@@ -198,6 +268,18 @@ impl Command for ChangeSet {
                     id: Some(id), before, ..
                 } => {
                     doc.set_layer(*id, before.clone());
+                }
+                Op::Surface {
+                    id: Some(id), before, ..
+                } => {
+                    doc.set_surface(*id, before.as_deref().cloned());
+                }
+                Op::SurfaceStyle {
+                    id,
+                    before: Some(before),
+                    ..
+                } => {
+                    doc.set_surface_style(*id, *before);
                 }
                 Op::Meta {
                     before: Some(before), ..

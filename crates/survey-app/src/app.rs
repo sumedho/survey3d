@@ -20,7 +20,7 @@ use egui_cad::{CadTheme, ThemeMode, icons};
 use glam::DVec3;
 use survey_core::Aabb3;
 use survey_core::point_input::PointInput;
-use survey_model::{ChangeSet, Color, Command, Entity, EntityId, Layer, LayerId};
+use survey_model::{ChangeSet, Color, Command, Entity, EntityId, Layer, LayerId, SurfaceId};
 use survey_store::ProjectStore;
 
 use crate::interchange::{dxf_export, dxf_import};
@@ -28,6 +28,7 @@ use crate::platform::{FileEvent, FileKind, Platform, export};
 use crate::project::{APP_VERSION, Project};
 use crate::scene_build::{DocSnapProvider, SceneCache, color32, hit_test};
 use crate::settings::AppSettings;
+use crate::surface_view::{SurfaceIndexes, SurfaceSceneCache};
 use crate::tools::grips::Grip;
 use crate::tools::{
     CoreModule, DomainModule, Preview, SELECT_TOOL_ID, Tool, ToolCtx, ToolEvent, ToolOutcome, ToolRegistry,
@@ -44,6 +45,7 @@ use crate::ui::reports::{ReportAction, ReportsWindow};
 use crate::ui::resection_window::{ResectionAction, ResectionWindow};
 use crate::ui::settings_window::SettingsWindow;
 use crate::ui::subdivide_window::{SubdivideAction, SubdivideWindow};
+use crate::ui::surfaces::{SurfaceAction, SurfaceWindow, SurfaceWindowAction, build_from};
 use crate::ui::traverse_window::{TraverseAction, TraverseWindow};
 
 const SETTINGS_KEY: &str = "survey3d.settings";
@@ -188,6 +190,12 @@ const APP_COMMANDS: &[AppCommand] = &[
     ),
     cmd("average", "Average selected points", "COGO", icons::DOTS_NINE),
     cmd(
+        "surface",
+        "Create surface (TIN) from points and breaklines",
+        "Surface",
+        icons::MAP_TRIFOLD,
+    ),
+    cmd(
         "legend",
         "Legend (feature code symbols and line styles)",
         "View",
@@ -243,6 +251,10 @@ pub struct SurveyApp {
     active_tool: Box<dyn Tool>,
     viewport: ViewportState,
     scene_cache: SceneCache,
+    surface_cache: SurfaceSceneCache,
+    surface_indexes: SurfaceIndexes,
+    surface_window: SurfaceWindow,
+    active_surface: Option<SurfaceId>,
     snap_engine: SnapEngine,
     snap_override: Option<SnapMode>,
     command_line: CommandLineState,
@@ -370,6 +382,10 @@ impl SurveyApp {
             active_tool,
             viewport,
             scene_cache: SceneCache::default(),
+            surface_cache: SurfaceSceneCache::default(),
+            surface_indexes: SurfaceIndexes::default(),
+            surface_window: SurfaceWindow::default(),
+            active_surface: None,
             snap_engine: SnapEngine::default(),
             snap_override: None,
             command_line,
@@ -560,6 +576,83 @@ impl SurveyApp {
             .add(format!("Listing ({})", crate::tools::objects(n)), text);
     }
 
+    fn apply_surface_action(&mut self, action: SurfaceAction) {
+        match action {
+            SurfaceAction::New => self.surface_window.create(&self.project.doc),
+            SurfaceAction::Edit(id) => self.surface_window.edit(&self.project.doc, id),
+            SurfaceAction::Delete(id) => {
+                let name = self
+                    .project
+                    .doc
+                    .surface(id)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default();
+                self.execute(Box::new(
+                    ChangeSet::new(format!("Delete surface {name}")).delete_surface(id),
+                ));
+            }
+            SurfaceAction::Style(id, style) => {
+                let name = self
+                    .project
+                    .doc
+                    .surface(id)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default();
+                self.execute(Box::new(
+                    ChangeSet::new(format!("Surface {name} display")).set_surface_style(id, style),
+                ));
+            }
+            SurfaceAction::Rebuild(id) => {
+                let doc = &self.project.doc;
+                let Some(s) = doc.surface(id) else {
+                    return;
+                };
+                let Some(def) = &s.definition else {
+                    return;
+                };
+                match build_from(doc, def) {
+                    Ok(tin) => {
+                        let summary = format!(
+                            "Surface {}: {} points, {} triangles",
+                            s.name,
+                            tin.vertices.len(),
+                            tin.triangles.len()
+                        );
+                        let mut surface = s.clone();
+                        surface.tin = tin;
+                        let label = format!("Rebuild surface {}", s.name);
+                        self.execute(Box::new(ChangeSet::new(label).update_surface(id, surface)));
+                        self.command_line.result(summary);
+                    }
+                    Err(e) => self.command_line.error(format!("Surface {}: {e}", s.name)),
+                }
+            }
+        }
+    }
+
+    fn apply_surface_window(&mut self, action: SurfaceWindowAction) {
+        match action {
+            SurfaceWindowAction::Create(surface) => {
+                let summary = format!(
+                    "Surface {}: {} points, {} triangles",
+                    surface.name,
+                    surface.tin.vertices.len(),
+                    surface.tin.triangles.len()
+                );
+                let cmd = ChangeSet::new(format!("Create surface {}", surface.name)).insert_surface(surface);
+                self.execute(Box::new(cmd));
+                // New surfaces get the highest id.
+                self.active_surface = self.project.doc.surfaces().last().map(|(id, _)| id);
+                self.command_line.result(summary.clone());
+                self.toasts.success(summary);
+            }
+            SurfaceWindowAction::Update(id, surface) => {
+                let label = format!("Rebuild surface {}", surface.name);
+                self.execute(Box::new(ChangeSet::new(label).update_surface(id, surface)));
+            }
+        }
+    }
+
     /// Creates the mean of the selected points and reports their spread.
     fn average_selection(&mut self) {
         let doc = &self.project.doc;
@@ -723,7 +816,11 @@ impl SurveyApp {
     }
 
     fn zoom_extents(&mut self) {
-        let b = self.project.doc.bounds();
+        let doc = &self.project.doc;
+        let b = doc
+            .surfaces()
+            .filter(|(_, s)| s.style.visible)
+            .fold(doc.bounds(), |b, (_, s)| b.union(&s.tin.bounds()));
         if b.is_empty() {
             self.viewport.camera.target = DVec3::ZERO;
             self.viewport.camera.distance = 100.0;
@@ -944,6 +1041,7 @@ impl SurveyApp {
             "triangle" => self.calculator.open_at(CalcTab::Triangle),
             "average" | "avg" => self.average_selection(),
             "legend" => self.legend.open = true,
+            "surface" | "tin" => self.surface_window.create(&self.project.doc),
             "accuracy" | "tolerances" => self.settings_window.open_at_accuracy(),
             "codes" | "featurecodes" => self.codes_window.open(),
             "linework" | "f2f" => {
@@ -1018,6 +1116,11 @@ impl SurveyApp {
     fn replace_project(&mut self, project: Project) {
         self.project = project;
         self.scene_cache.invalidate();
+        self.surface_cache.invalidate();
+        self.surface_indexes.invalidate();
+        self.active_surface = None;
+        // Revisions restart with each document, so drop caches keyed by them.
+        self.layer_counts = (u64::MAX, Default::default());
         self.set_tool(SELECT_TOOL_ID);
         if !self.restore_view() {
             self.zoom_extents();

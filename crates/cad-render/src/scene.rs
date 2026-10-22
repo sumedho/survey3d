@@ -40,11 +40,21 @@ pub struct LineInstance {
     pub pattern: u32,
 }
 
+/// A vertex of a filled triangle (surfaces). Colours carry the shading.
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[repr(C)]
+pub struct TriVertex {
+    pub offset: [f32; 3],
+    pub color: [u8; 4],
+}
+
 #[derive(Clone, Debug)]
 pub struct Chunk {
     pub origin: DVec3,
     pub points: Vec<PointInstance>,
     pub lines: Vec<LineInstance>,
+    /// Three vertices per triangle.
+    pub triangles: Vec<TriVertex>,
 }
 
 /// An immutable, renderable scene. Rebuild (cheaply) when the document changes.
@@ -63,6 +73,10 @@ impl Scene {
 
     pub fn line_count(&self) -> usize {
         self.chunks.iter().map(|c| c.lines.len()).sum()
+    }
+
+    pub fn triangle_count(&self) -> usize {
+        self.chunks.iter().map(|c| c.triangles.len() / 3).sum()
     }
 }
 
@@ -99,6 +113,7 @@ impl SceneBuilder {
                 origin,
                 points: Vec::new(),
                 lines: Vec::new(),
+                triangles: Vec::new(),
             });
             self.chunks.len() - 1
         });
@@ -143,6 +158,21 @@ impl SceneBuilder {
             start: start as f32,
             pattern: style.id(),
         });
+    }
+
+    /// A filled triangle with a colour per corner.
+    pub fn add_triangle(&mut self, corners: [DVec3; 3], colors: [[u8; 4]; 3]) {
+        for p in corners {
+            self.bounds.extend(p);
+        }
+        let chunk = self.chunk_for((corners[0] + corners[1] + corners[2]) / 3.0);
+        let origin = chunk.origin;
+        for (p, color) in corners.into_iter().zip(colors) {
+            chunk.triangles.push(TriVertex {
+                offset: (p - origin).as_vec3().to_array(),
+                color,
+            });
+        }
     }
 
     pub fn build(self, revision: u64) -> Scene {

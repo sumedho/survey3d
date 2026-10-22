@@ -81,6 +81,18 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE string_vertices ADD COLUMN bulge REAL NOT NULL DEFAULT 0;
     "#,
+    // v3: surfaces. Vertices are little-endian f64 (e, n, z) triples and
+    // triangles little-endian u32 index triples.
+    r#"
+    CREATE TABLE surfaces (
+        id              INTEGER PRIMARY KEY,
+        name            TEXT NOT NULL,
+        definition_json TEXT,
+        style_json      TEXT NOT NULL,
+        vertices        BLOB NOT NULL,
+        triangles       BLOB NOT NULL
+    );
+    "#,
 ];
 
 pub const SCHEMA_VERSION: i32 = MIGRATIONS.len() as i32;
