@@ -154,6 +154,28 @@ Known follow-ups: traverse observations are not yet stored in the project (only 
 scale factors / combined scale factor for traverse distances (Phase 5 projections); mirror/scale/trim/
 extend; drag-to-move grips; coordinate CSV export from the points table.
 
+## Phase 6 status (2026-10-22): complete
+
+- **6a:** `survey-io::plot` — `Plot` (paths, pens with dash patterns, circles, text with alignment,
+  rotation and halo, even-odd clip groups) in page millimetres; `write_pdf` (PDF 1.4, base-14 Helvetica with
+  AFM metrics and WinAnsi encoding, Flate content) and `write_svg`. Checked with poppler and rsvg.
+- **6b:** `SheetRecord` in `ProjectMeta.sheets` (persisted); `plan::build_plot` draws linework with code
+  line types, symbols, collision-avoided point labels, parcel annotation, contours with labels, chainages,
+  grid ticks/crosses/lines with values, north arrow, scale bar, legend of codes in the frame and the title
+  block (corner box, or a strip on narrow pages); the map is clipped around the boxes. Bright layer colours
+  are darkened for paper; optional monochrome.
+- **6c:** Plan sheets window (`sheets`) with a live, zoomable preview painted from the same plot, new from
+  view / fit drawing / centre and rotate as view, edits committed as one undo step, sheet frame drawn in
+  the viewport, PDF/SVG export (`plotpdf`).
+- **6d:** DXF export writes code symbols as blocks (`S3D_<SYMBOL>`, inserted at the plan size of the current
+  sheet, BYBLOCK colour), code line types as `LTYPE`s with paper-sized dashes, code colours on entities and
+  point names as `TEXT` on `POINT_NAMES`. GDAL reads the line types, colours, blocks and text.
+
+Follow-ups: multi-page sets and sheet layouts along an alignment; viewports within a sheet (insets,
+location diagram); symbol and text sizes on screen at the sheet's scale (plan-scale display); embedding a
+font for full Unicode in PDFs (currently WinAnsi, primes become ' and "); title block templates and logos;
+text along curved contours; dimension and leader annotation; DXF text/insert import.
+
 ## Phase 6 plan (2026-10-22): plan output
 
 Getting a finished drawing out of the app: plan sheets at a true scale, printed to PDF/SVG.
@@ -341,5 +363,5 @@ guidance (Material dark theme, WCAG):
   construction (alignments, chainage/offset, setout); mining (pickups, EOM volumes, stockpiles, point cloud LOD).
 - **Phase 5 — advanced (done):** least-squares network adjustment, JobXML/GSI raw data, projections & scale
   factors, point cloud streaming, GeoPackage export.
-- **Phase 6 — plan output (in progress):** plan sheets with title block, grid, north arrow, scale bar and
+- **Phase 6 — plan output (done):** plan sheets with title block, grid, north arrow, scale bar and
   legend; PDF/SVG at true scale; DXF symbols as blocks and line types.

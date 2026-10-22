@@ -22,7 +22,7 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
 |---|---|
 | `survey-core` | Pure maths: angles/bearings, conventions (parse/format), geometry, arcs (bulges), offsets, COGO (intersections, chainage/offset), traverse adjustment, least-squares networks, map projections, TINs and volumes, field-to-finish, point input |
 | `survey-model` | `Document`, entities, layers, `Command`/`ChangeSet`, undo `History` with audit records, R-tree index |
-| `survey-io` | Interchange formats: CSV/TXT points (configurable columns), DXF read/write, feature code sheets, LandXML, LAS/XYZ point clouds, Leica GSI and Trimble JobXML raw data |
+| `survey-io` | Interchange formats: CSV/TXT points (configurable columns), DXF read/write (symbol blocks, line types), feature code sheets, LandXML, LAS/XYZ point clouds, Leica GSI and Trimble JobXML raw data; PDF and SVG plot writers |
 | `survey-store` | `.s3d` project files (SQLite): incremental saves, migrations, hash-chained append-only audit trail; GeoPackage export |
 | `cad-render` | wgpu renderer: f64 camera, relative-to-center chunks, reverse-Z, offscreen MSAA, egui paint callback |
 | `egui-cad` | Reusable CAD widgets: theme, viewport, snapping, box selection, label placement, command line, panels |
@@ -104,8 +104,16 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
   follows the visible grid or a fixed value), ORTHO and DYN, beside a fixed-width cursor readout.
   Shortcuts: F3 object snap, F9 snap to grid, F8 ortho, F12 dynamic input, F7 grid display. Tab cycles overlapping candidates; typing
   `end`/`mid`/`int`/`per`/`nea`/`nod`/`gri` applies a one-shot snap. 
+* **Plan sheets:** File → Plan sheets… (`sheets`): frame the area in the view and press *New from view*
+  (centred, rotated as the plan view, at the standard scale that fits). Each sheet has a paper size (A4–A0,
+  US sizes or custom) and orientation, a scale, centre and rotation, a title block (title, subtitle,
+  surveyor, date, reference, sheet, notes) and switches for linework, symbols, point labels, parcel
+  bearings/distances/areas, contours, chainages, the coordinate grid (ticks, crosses or lines), north arrow,
+  scale bar, legend and black-and-white. The preview is the printed page; export it as PDF or SVG at true
+  scale (`plotpdf` exports the current sheet). The sheet frame is drawn in the view while the window is open.
 * **Files:** Ctrl+S saves an `.s3d` (download on the web); File → Import points (CSV/TXT), Import / Export
-  DXF, Import raw data, Export GeoPackage (`gpkg`: points, lines and parcels for GIS). On the web, unsaved work is autosaved to browser storage and offered for recovery on the next visit.
+  DXF (exports carry code symbols as blocks, line types, colours and point names, sized for the current
+  plan sheet's scale), Import raw data, Export GeoPackage (`gpkg`: points, lines and parcels for GIS). On the web, unsaved work is autosaved to browser storage and offered for recovery on the next visit.
 * **Labels & appearance:** Settings → Display (or `labels`): point names, codes and heights; dark/light
   theme, accent colour and density.
   Project → Audit trail shows every edit and verifies the hash chain.
