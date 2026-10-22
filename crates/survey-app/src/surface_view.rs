@@ -7,6 +7,7 @@ use std::sync::Arc;
 use cad_render::{Scene, SceneBuilder};
 use egui_cad::{CadTheme, ThemeMode};
 use glam::DVec3;
+use survey_core::contour::{Contour, contours};
 use survey_core::tin::TinIndex;
 use survey_model::{Document, Surface, SurfaceId};
 
@@ -44,12 +45,25 @@ fn rgba(c: [f32; 3], k: f32, alpha: u8) -> [u8; 4] {
     [v(c[0]), v(c[1]), v(c[2]), alpha]
 }
 
+/// Most contour levels traced per surface (guards against a tiny interval).
+pub const MAX_CONTOUR_LEVELS: usize = 2000;
+
+/// Where a contour label goes and the height it shows.
+#[derive(Clone, Copy, Debug)]
+pub struct ContourLabel {
+    pub position: DVec3,
+    /// Direction of the contour there (plan), for keeping labels upright.
+    pub along: glam::DVec2,
+    pub z: f64,
+}
+
 /// Rebuilds the surface scene only when surfaces (or the theme) change.
 #[derive(Default)]
 pub struct SurfaceSceneCache {
     key: Option<(u64, ThemeMode)>,
     revision: u64,
     scene: Option<Arc<Scene>>,
+    labels: Vec<ContourLabel>,
 }
 
 impl SurfaceSceneCache {
@@ -57,10 +71,17 @@ impl SurfaceSceneCache {
         let key = (doc.surfaces_revision(), theme.mode);
         if self.key != Some(key) {
             self.revision += 1;
-            self.scene = build(doc, theme, self.revision);
+            let (scene, labels) = build(doc, theme, self.revision);
+            self.scene = scene;
+            self.labels = labels;
             self.key = Some(key);
         }
         self.scene.clone()
+    }
+
+    /// Label anchors on major contours (from the last [`Self::get`]).
+    pub fn labels(&self) -> &[ContourLabel] {
+        &self.labels
     }
 
     pub fn invalidate(&mut self) {
@@ -68,24 +89,53 @@ impl SurfaceSceneCache {
     }
 }
 
-fn build(doc: &Document, theme: &CadTheme, revision: u64) -> Option<Arc<Scene>> {
+fn build(doc: &Document, theme: &CadTheme, revision: u64) -> (Option<Arc<Scene>>, Vec<ContourLabel>) {
     let visible: Vec<&Surface> = doc
         .surfaces()
         .map(|(_, s)| s)
         .filter(|s| s.style.visible && !s.tin.triangles.is_empty())
         .collect();
+    let mut labels = Vec::new();
     if visible.is_empty() {
-        return None;
+        return (None, labels);
     }
     let mut b = SceneBuilder::default();
     for s in visible {
-        add_surface(&mut b, s, theme);
+        add_surface(&mut b, s, theme, &mut labels);
     }
     // Offset revisions so they never collide with the drawing scene's.
-    Some(Arc::new(b.build(revision | (1 << 62))))
+    (Some(Arc::new(b.build(revision | (1 << 62)))), labels)
 }
 
-fn add_surface(b: &mut SceneBuilder, s: &Surface, theme: &CadTheme) {
+/// The contours a surface's style asks for.
+pub fn surface_contours(s: &Surface) -> Vec<Contour> {
+    let c = &s.style.contours;
+    contours(&s.tin, c.interval, c.major_every, MAX_CONTOUR_LEVELS)
+}
+
+/// Label anchors spread along a contour: its middle, and about every 80 vertices.
+fn label_anchors(c: &Contour, out: &mut Vec<ContourLabel>) {
+    let n = c.points.len();
+    if n < 2 {
+        return;
+    }
+    let step = 80.max(n / 4);
+    let mut i = n / 2;
+    let mut placed = 0;
+    while placed < 1 + n / step {
+        let a = c.points[i.min(n - 2)];
+        let b = c.points[(i + 1).min(n - 1)];
+        out.push(ContourLabel {
+            position: (a + b) * 0.5,
+            along: (b - a).truncate(),
+            z: c.z,
+        });
+        placed += 1;
+        i = (i + step) % (n - 1);
+    }
+}
+
+fn add_surface(b: &mut SceneBuilder, s: &Surface, theme: &CadTheme, labels: &mut Vec<ContourLabel>) {
     let tin = &s.tin;
     let bounds = tin.bounds();
     let (zmin, zmax) = (bounds.min.z, bounds.max.z);
@@ -121,6 +171,32 @@ fn add_surface(b: &mut SceneBuilder, s: &Surface, theme: &CadTheme) {
         };
         for [i, j] in tin.edges() {
             b.add_line(tin.vertices[i as usize], tin.vertices[j as usize], edge, 1.0);
+        }
+    }
+    if s.style.contours.show {
+        let (minor, major) = if s.style.shaded {
+            ([45, 35, 25, 150], [35, 25, 15, 230])
+        } else {
+            let c = s.style.color.0;
+            let c = if theme.mode == ThemeMode::Light {
+                [c[0] / 2, c[1] / 2, c[2] / 2, 255]
+            } else {
+                c
+            };
+            ([c[0], c[1], c[2], 150], c)
+        };
+        for c in surface_contours(s) {
+            let (color, width) = if c.major { (major, 1.8) } else { (minor, 1.0) };
+            let mut pts = c.points.clone();
+            if c.closed {
+                pts.push(pts[0]);
+            }
+            for w in pts.windows(2) {
+                b.add_line(w[0], w[1], color, width);
+            }
+            if c.major && s.style.contours.labels {
+                label_anchors(&c, labels);
+            }
         }
     }
 }

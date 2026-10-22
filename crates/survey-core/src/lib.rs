@@ -10,6 +10,7 @@ pub mod angle;
 pub mod arc;
 pub mod closure;
 pub mod cogo;
+pub mod contour;
 pub mod conventions;
 pub mod error;
 pub mod field_to_finish;

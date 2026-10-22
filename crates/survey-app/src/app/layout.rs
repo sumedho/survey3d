@@ -111,7 +111,11 @@ const COGO_MENU: &[MenuEntry] = &[
     Item("COGO calculator…", "calc"),
 ];
 
-const SURFACE_MENU: &[MenuEntry] = &[Item("Create surface…", "surface")];
+const SURFACE_MENU: &[MenuEntry] = &[
+    Item("Create surface…", "surface"),
+    Separator,
+    Item("Contours to polylines", "contours"),
+];
 
 const SURVEY_MENU: &[MenuEntry] = &[
     Item("Traverse…", "traverse"),
@@ -916,6 +920,9 @@ impl SurveyApp {
         if self.settings.labels.any() || code_labels {
             self.draw_labels(&painter, out.rect, &theme);
         }
+        if !self.surface_cache.labels().is_empty() {
+            self.draw_contour_labels(&painter, out.rect, &theme);
+        }
         self.draw_overlays(&painter, out.rect, &preview, out.hover, &theme);
         if self.settings.dynamic_input
             && let Some(c) = out.hover
@@ -1303,6 +1310,59 @@ impl SurveyApp {
             if let Some(r) = placer.place(anchor, egui::vec2(LABEL_GAP, -size.y * 0.5), size) {
                 painter.galley(r.min, galley, theme.text);
             }
+        }
+    }
+
+    /// Heights on major contours, rotated along the line and kept upright.
+    fn draw_contour_labels(&self, painter: &egui::Painter, rect: egui::Rect, theme: &CadTheme) {
+        let cam = &self.viewport.camera;
+        let conv = self.project.doc.conventions();
+        let font = egui::FontId::proportional(10.5);
+        let mut placed: Vec<egui::Pos2> = Vec::new();
+        for label in self.surface_cache.labels() {
+            let Some((s, _)) = cam.world_to_screen(label.position) else {
+                continue;
+            };
+            let Some((s2, _)) =
+                cam.world_to_screen(label.position + (label.along.normalize_or_zero()).extend(0.0))
+            else {
+                continue;
+            };
+            let center = to_screen(rect, s);
+            if !rect.shrink(20.0).contains(center) || placed.iter().any(|p| p.distance(center) < 70.0) {
+                continue;
+            }
+            placed.push(center);
+            let d = to_screen(rect, s2) - center;
+            let mut angle = d.y.atan2(d.x);
+            if angle > std::f32::consts::FRAC_PI_2 {
+                angle -= std::f32::consts::PI;
+            } else if angle < -std::f32::consts::FRAC_PI_2 {
+                angle += std::f32::consts::PI;
+            }
+            let text = conv.format_length(label.z);
+            let text = if text.contains('.') {
+                text.trim_end_matches('0').trim_end_matches('.').to_string()
+            } else {
+                text
+            };
+            let galley = painter.layout_no_wrap(text, font.clone(), theme.text);
+            let half = galley.size() * 0.5;
+            let rot = egui::emath::Rot2::from_angle(angle);
+            let origin = center - rot * half;
+            // A halo in the canvas colour keeps the text readable over lines and shading.
+            for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                painter.add(
+                    egui::epaint::TextShape::new(
+                        origin + egui::vec2(dx, dy),
+                        galley.clone(),
+                        theme.viewport_bg,
+                    )
+                    .with_override_text_color(theme.viewport_bg)
+                    .with_angle(angle),
+                );
+            }
+            painter.add(egui::epaint::TextShape::new(origin, galley, theme.text).with_angle(angle));
         }
     }
 

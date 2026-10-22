@@ -23,6 +23,7 @@ use survey_core::point_input::PointInput;
 use survey_model::{ChangeSet, Color, Command, Entity, EntityId, Layer, LayerId, SurfaceId};
 use survey_store::ProjectStore;
 
+use crate::import_command::{ImportEntities, LayerRef};
 use crate::interchange::{dxf_export, dxf_import};
 use crate::platform::{FileEvent, FileKind, Platform, export};
 use crate::project::{APP_VERSION, Project};
@@ -194,6 +195,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         "Create surface (TIN) from points and breaklines",
         "Surface",
         icons::MAP_TRIFOLD,
+    ),
+    cmd(
+        "contours",
+        "Contours of the active surface to polylines",
+        "Surface",
+        icons::PATH,
     ),
     cmd(
         "legend",
@@ -630,6 +637,66 @@ impl SurveyApp {
         }
     }
 
+    /// The surface commands act on: the active one, else the only one.
+    fn target_surface(&mut self) -> Option<SurfaceId> {
+        let doc = &self.project.doc;
+        if let Some(id) = self.active_surface.filter(|id| doc.surface(*id).is_some()) {
+            return Some(id);
+        }
+        let mut ids = doc.surfaces().map(|(id, _)| id);
+        match (ids.next(), ids.next()) {
+            (Some(id), None) => Some(id),
+            (None, _) => {
+                self.command_line
+                    .warn("Create a surface first (Surface → Create surface…)");
+                None
+            }
+            _ => {
+                self.command_line
+                    .warn("Select a surface in the Surfaces panel first");
+                None
+            }
+        }
+    }
+
+    /// Adds the active surface's contours (at its contour interval) as polylines.
+    fn contours_to_polylines(&mut self) {
+        let Some(id) = self.target_surface() else {
+            return;
+        };
+        let doc = &self.project.doc;
+        let Some(s) = doc.surface(id) else {
+            return;
+        };
+        let contours = crate::surface_view::surface_contours(s);
+        if contours.is_empty() {
+            self.command_line.warn("No contours at this interval");
+            return;
+        }
+        let mut cmd = ImportEntities::new(format!("Contours of {}", s.name));
+        let mut layer = |name: &str, color: Color| match doc.layer_by_name(name) {
+            Some(l) => LayerRef::Existing(l.id),
+            None => cmd.add_layer(name.to_string(), color, true),
+        };
+        let minor = layer("CONTOUR MINOR", Color::rgb(160, 130, 100));
+        let major = layer("CONTOUR MAJOR", Color::rgb(200, 160, 110));
+        let n = contours.len();
+        for c in contours {
+            let line = survey_model::Polyline {
+                name: format!("Contour {}", doc.conventions().format_length(c.z)),
+                vertices: c.points,
+                bulges: Vec::new(),
+                closed: c.closed,
+                code: String::new(),
+                layer: doc.current_layer(),
+            };
+            cmd.add(if c.major { major } else { minor }, Entity::Polyline(line));
+        }
+        let summary = format!("Contours: added {n} polylines from {}", s.name);
+        self.execute(Box::new(cmd));
+        self.command_line.result(summary);
+    }
+
     fn apply_surface_window(&mut self, action: SurfaceWindowAction) {
         match action {
             SurfaceWindowAction::Create(surface) => {
@@ -1042,6 +1109,7 @@ impl SurveyApp {
             "average" | "avg" => self.average_selection(),
             "legend" => self.legend.open = true,
             "surface" | "tin" => self.surface_window.create(&self.project.doc),
+            "contours" => self.contours_to_polylines(),
             "accuracy" | "tolerances" => self.settings_window.open_at_accuracy(),
             "codes" | "featurecodes" => self.codes_window.open(),
             "linework" | "f2f" => {
