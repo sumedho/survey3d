@@ -38,6 +38,12 @@ pub struct ProjectMeta {
     /// Construction alignments.
     #[serde(default)]
     pub alignments: Vec<crate::alignment::AlignmentRecord>,
+    /// Raw field observations (imported instrument files).
+    #[serde(default)]
+    pub field_data: Vec<survey_core::network::FieldData>,
+    /// A priori precision used by the network adjustment.
+    #[serde(default)]
+    pub network_options: survey_core::network::NetworkOptions,
 }
 
 impl Default for ProjectMeta {
@@ -52,6 +58,8 @@ impl Default for ProjectMeta {
             traverses: Vec::new(),
             parcels: Vec::new(),
             alignments: Vec::new(),
+            field_data: Vec::new(),
+            network_options: Default::default(),
         }
     }
 }

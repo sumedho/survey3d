@@ -1,0 +1,442 @@
+//! Least-squares network adjustment of saved traverses and imported field
+//! data: sources, a priori precision, control, results and error ellipses.
+
+use std::collections::BTreeSet;
+
+use egui::RichText;
+use egui_cad::{CadTheme, fonts};
+use glam::DVec3;
+use survey_core::Angle;
+use survey_core::adjustment::{AdjustResult, adjust};
+use survey_core::network::{Known, Network, NetworkOptions, Setup, build, report, setups_from_traverse};
+use survey_model::{ChangeSet, Command, Document, Entity, SurveyPoint};
+
+pub struct NetworkWindow {
+    pub open: bool,
+    /// Selected sources: "t:<traverse>" or "f:<field data>".
+    sources: BTreeSet<String>,
+    options: Option<NetworkOptions>,
+    /// Known stations the user has freed (adjusted rather than held fixed).
+    free: BTreeSet<String>,
+    /// Stations seen in the selected sources: (name, known in the project).
+    stations: Vec<(String, bool)>,
+    pub result: Option<Result<(Network, AdjustResult), String>>,
+    pub show_ellipses: bool,
+    pub exaggeration: f64,
+}
+
+impl Default for NetworkWindow {
+    fn default() -> Self {
+        Self {
+            open: false,
+            sources: BTreeSet::new(),
+            options: None,
+            free: BTreeSet::new(),
+            stations: Vec::new(),
+            result: None,
+            show_ellipses: true,
+            exaggeration: 1000.0,
+        }
+    }
+}
+
+pub enum NetworkAction {
+    Apply(Box<dyn Command>, String),
+    Report(String, String),
+}
+
+impl NetworkWindow {
+    pub fn open_with(&mut self, doc: &Document) {
+        self.open = true;
+        if self.sources.is_empty() {
+            let meta = doc.meta();
+            self.sources
+                .extend(meta.traverses.iter().map(|t| format!("t:{}", t.name)));
+            self.sources
+                .extend(meta.field_data.iter().map(|f| format!("f:{}", f.name)));
+        }
+    }
+
+    fn setups(&self, doc: &Document) -> Vec<Setup> {
+        let meta = doc.meta();
+        let mut out = Vec::new();
+        for t in &meta.traverses {
+            if self.sources.contains(&format!("t:{}", t.name)) {
+                out.extend(setups_from_traverse(t));
+            }
+        }
+        for f in &meta.field_data {
+            if self.sources.contains(&format!("f:{}", f.name)) {
+                out.extend(f.setups.iter().cloned());
+            }
+        }
+        out
+    }
+
+    fn known<'a>(&'a self, doc: &'a Document) -> impl Fn(&str) -> Option<Known> + 'a {
+        move |name: &str| {
+            doc.find_point_by_name(name).map(|(_, p)| Known {
+                position: p.position,
+                height_known: p.height_known,
+                fixed: !self.free.contains(name),
+            })
+        }
+    }
+
+    fn run(&self, doc: &Document, options: &NetworkOptions) -> Result<(Network, AdjustResult), String> {
+        let setups = self.setups(doc);
+        let net = build(&setups, &self.known(doc), options).map_err(|e| e.to_string())?;
+        let r = adjust(&net.stations, &net.observations).map_err(|e| e.to_string())?;
+        Ok((net, r))
+    }
+
+    fn refresh_stations(&mut self, doc: &Document) {
+        let mut seen = BTreeSet::new();
+        self.stations.clear();
+        for s in self.setups(doc) {
+            for name in std::iter::once(s.station).chain(s.observations.into_iter().map(|o| o.target)) {
+                if seen.insert(name.clone()) {
+                    let known = doc.find_point_by_name(&name).is_some();
+                    self.stations.push((name, known));
+                }
+            }
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context, doc: &Document) -> Option<NetworkAction> {
+        if !self.open {
+            return None;
+        }
+        let theme = CadTheme::current(ctx);
+        let mut options = *self.options.get_or_insert(doc.meta().network_options);
+        let mut action = None;
+        let mut open = self.open;
+        egui::Window::new("Network adjustment")
+            .open(&mut open)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                let meta = doc.meta();
+                ui.label(RichText::new("SOURCES").small().color(theme.text_secondary));
+                if meta.traverses.is_empty() && meta.field_data.is_empty() {
+                    ui.label(
+                        RichText::new(
+                            "Save a traverse or import raw data (File → Import raw data) to adjust it.",
+                        )
+                        .color(theme.text_secondary),
+                    );
+                }
+                let mut changed = false;
+                let mut toggle = |ui: &mut egui::Ui, key: String, label: String| {
+                    let mut on = self.sources.contains(&key);
+                    if ui.checkbox(&mut on, label).changed() {
+                        changed = true;
+                        if on {
+                            self.sources.insert(key);
+                        } else {
+                            self.sources.remove(&key);
+                        }
+                    }
+                };
+                for t in &meta.traverses {
+                    toggle(
+                        ui,
+                        format!("t:{}", t.name),
+                        format!("Traverse {} ({} legs)", t.name, t.legs.len()),
+                    );
+                }
+                for f in &meta.field_data {
+                    toggle(
+                        ui,
+                        format!("f:{}", f.name),
+                        format!("{} — {} ({} setups)", f.name, f.format, f.setups.len()),
+                    );
+                }
+                if changed || self.stations.is_empty() {
+                    self.refresh_stations(doc);
+                }
+
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("A PRIORI PRECISION")
+                        .small()
+                        .color(theme.text_secondary),
+                );
+                egui::Grid::new("net_opts")
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        let mut dir = options.direction_sigma.degrees() * 3600.0;
+                        ui.label("Directions");
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut dir)
+                                    .speed(0.1)
+                                    .range(0.1..=600.0)
+                                    .suffix("\""),
+                            )
+                            .changed()
+                        {
+                            options.direction_sigma = Angle::from_degrees(dir / 3600.0);
+                        }
+                        ui.end_row();
+                        let mut mm = options.distance_sigma * 1000.0;
+                        ui.label("Distances");
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut mm)
+                                        .speed(0.1)
+                                        .range(0.01..=1000.0)
+                                        .suffix(" mm"),
+                                )
+                                .changed()
+                            {
+                                options.distance_sigma = mm / 1000.0;
+                            }
+                            ui.label("+");
+                            ui.add(
+                                egui::DragValue::new(&mut options.distance_ppm)
+                                    .speed(0.1)
+                                    .range(0.0..=1000.0)
+                                    .suffix(" ppm"),
+                            );
+                        });
+                        ui.end_row();
+                        let mut c = options.centring * 1000.0;
+                        ui.label("Centring");
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut c)
+                                    .speed(0.1)
+                                    .range(0.0..=100.0)
+                                    .suffix(" mm"),
+                            )
+                            .changed()
+                        {
+                            options.centring = c / 1000.0;
+                        }
+                        ui.end_row();
+                        ui.label("Heights");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut options.heights, "");
+                            let mut h = options.height_sigma * 1000.0;
+                            if ui
+                                .add_enabled(
+                                    options.heights,
+                                    egui::DragValue::new(&mut h)
+                                        .speed(0.1)
+                                        .range(0.01..=1000.0)
+                                        .suffix(" mm"),
+                                )
+                                .changed()
+                            {
+                                options.height_sigma = h / 1000.0;
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("Scale factor");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut options.scale_factor)
+                                    .speed(0.00001)
+                                    .max_decimals(9)
+                                    .range(0.9..=1.1),
+                            );
+                            // Combined factor at the mean of the known stations.
+                            let pts: Vec<DVec3> = self
+                                .stations
+                                .iter()
+                                .filter_map(|(n, _)| doc.find_point_by_name(n).map(|(_, p)| p.position))
+                                .collect();
+                            let factor = (!pts.is_empty())
+                                .then(|| pts.iter().sum::<DVec3>() / pts.len() as f64)
+                                .and_then(|c| meta.coord_system.combined_factor(c.x, c.y, c.z));
+                            if ui
+                                .add_enabled(factor.is_some(), egui::Button::new("From project"))
+                                .on_hover_text("Combined factor at the centre of the known stations")
+                                .on_disabled_hover_text("Needs a projection (Settings → Coordinates)")
+                                .clicked()
+                                && let Some(k) = factor
+                            {
+                                options.scale_factor = k;
+                            }
+                        });
+                        ui.end_row();
+                    });
+
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("CONTROL (ticked stations are held fixed)")
+                        .small()
+                        .color(theme.text_secondary),
+                );
+                egui::ScrollArea::vertical()
+                    .id_salt("net_stations")
+                    .max_height(120.0)
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for (name, known) in &self.stations {
+                                if *known {
+                                    let mut fixed = !self.free.contains(name);
+                                    if ui.checkbox(&mut fixed, name).changed() {
+                                        if fixed {
+                                            self.free.remove(name);
+                                        } else {
+                                            self.free.insert(name.clone());
+                                        }
+                                    }
+                                } else {
+                                    ui.label(
+                                        RichText::new(format!("{name} (new)")).color(theme.text_secondary),
+                                    );
+                                }
+                            }
+                        });
+                    });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!self.sources.is_empty(), egui::Button::new("Adjust"))
+                        .clicked()
+                    {
+                        self.result = Some(self.run(doc, &options));
+                    }
+                    ui.checkbox(&mut self.show_ellipses, "Error ellipses ×");
+                    ui.add(
+                        egui::DragValue::new(&mut self.exaggeration)
+                            .speed(10.0)
+                            .range(1.0..=100_000.0),
+                    );
+                });
+                match &self.result {
+                    Some(Ok((net, r))) => {
+                        let (verdict, colour) = match r.chi_square {
+                            Some(c) if c.pass => ("χ² test passed", theme.success),
+                            Some(_) => ("χ² test failed", theme.error),
+                            None => ("no redundancy", theme.text_secondary),
+                        };
+                        ui.label(
+                            RichText::new(format!(
+                                "σ₀ = {:.3}   dof {}   {} observations   {} iterations",
+                                r.sigma0,
+                                r.dof,
+                                net.observations.len(),
+                                r.iterations
+                            ))
+                            .font(fonts::mono(12.0)),
+                        );
+                        ui.label(RichText::new(verdict).color(colour));
+                        let worst = r
+                            .residuals
+                            .iter()
+                            .zip(&net.labels)
+                            .filter_map(|(v, l)| v.standardised.map(|w| (w.abs(), l)))
+                            .max_by(|a, b| a.0.total_cmp(&b.0));
+                        if let Some((w, label)) = worst {
+                            let text = format!("Largest standardised residual {w:.2}: {label}");
+                            ui.label(RichText::new(text).color(if w > 3.0 {
+                                theme.error
+                            } else {
+                                theme.text_secondary
+                            }));
+                        }
+                        let worst_ellipse = r
+                            .ellipses
+                            .iter()
+                            .zip(&net.stations)
+                            .filter_map(|(e, s)| e.map(|e| (e.semi_major, &s.name)))
+                            .max_by(|a, b| a.0.total_cmp(&b.0));
+                        if let Some((a, name)) = worst_ellipse {
+                            ui.label(format!("Largest 95% ellipse {:.1} mm at {name}", a * 1000.0));
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Report").clicked() {
+                                action = Some(NetworkAction::Report(
+                                    "Network adjustment".into(),
+                                    report(net, r, &options, doc.conventions()),
+                                ));
+                            }
+                            let updates = net
+                                .stations
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, s)| !s.fixed_plan || r.sd[*i].z > 0.0)
+                                .count();
+                            if ui
+                                .add_enabled(
+                                    updates > 0,
+                                    egui::Button::new(format!("Update {updates} points")),
+                                )
+                                .on_hover_text("Create new stations and move adjusted ones (undoable)")
+                                .clicked()
+                            {
+                                action = Some(apply(doc, net, r, &options));
+                                // Points written by this adjustment stay free on the next run.
+                                for &i in &net.new_stations {
+                                    self.free.insert(net.stations[i].name.clone());
+                                }
+                            }
+                        });
+                    }
+                    Some(Err(e)) => {
+                        ui.label(RichText::new(e).color(theme.error));
+                    }
+                    None => {}
+                }
+            });
+        self.options = Some(options);
+        self.open = open;
+        action
+    }
+}
+
+fn apply(doc: &Document, net: &Network, r: &AdjustResult, options: &NetworkOptions) -> NetworkAction {
+    let mut meta = doc.meta().clone();
+    meta.network_options = *options;
+    let mut cs = ChangeSet::new("Network adjustment").set_meta(meta);
+    let (mut created, mut moved) = (0, 0);
+    let heights = r.sd.iter().any(|s| s.z > 0.0) || net.stations.iter().any(|s| s.fixed_height);
+    for (i, s) in net.stations.iter().enumerate() {
+        let plan_adjusted = !s.fixed_plan;
+        let height_adjusted = r.sd[i].z > 0.0;
+        if !plan_adjusted && !height_adjusted {
+            continue;
+        }
+        let p = r.positions[i];
+        match doc.find_point_by_name(&s.name) {
+            Some((id, existing)) => {
+                let mut q = existing.clone();
+                if plan_adjusted {
+                    q.position.x = p.x;
+                    q.position.y = p.y;
+                }
+                if height_adjusted {
+                    q.position.z = p.z;
+                    q.height_known = true;
+                }
+                cs.push_update_entity(id, Entity::Point(q));
+                moved += 1;
+            }
+            None => {
+                cs.push_insert_entity(Entity::Point(SurveyPoint {
+                    name: s.name.clone(),
+                    position: if height_adjusted {
+                        p
+                    } else {
+                        p.truncate().extend(0.0)
+                    },
+                    height_known: heights && height_adjusted,
+                    code: String::new(),
+                    description: "Network adjustment".into(),
+                    layer: doc.current_layer(),
+                }));
+                created += 1;
+            }
+        }
+    }
+    NetworkAction::Apply(
+        Box::new(cs),
+        format!("Network adjustment: {created} points created, {moved} updated"),
+    )
+}

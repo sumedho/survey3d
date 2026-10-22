@@ -6,6 +6,7 @@
 //! or formatting output — see [`conventions::Conventions`].
 
 pub mod accuracy;
+pub mod adjustment;
 pub mod alignment;
 pub mod angle;
 pub mod arc;
@@ -16,6 +17,7 @@ pub mod conventions;
 pub mod error;
 pub mod field_to_finish;
 pub mod geom;
+pub mod network;
 pub mod offset;
 pub mod point_input;
 pub mod projection;

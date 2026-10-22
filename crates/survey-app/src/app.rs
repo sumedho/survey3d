@@ -43,6 +43,7 @@ use crate::ui::clouds::{CloudAction, CloudPanel};
 use crate::ui::csv_import::{CsvDialogResult, CsvImportDialog};
 use crate::ui::feature_codes::{CodesAction, FeatureCodesWindow};
 use crate::ui::legend::LegendWindow;
+use crate::ui::network::{NetworkAction, NetworkWindow};
 use crate::ui::parcels::ParcelsWindow;
 use crate::ui::points_table::{PointsAction, PointsWindow};
 use crate::ui::projection_calc::{ProjectionAction, ProjectionWindow};
@@ -254,6 +255,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::DOTS_NINE,
     ),
     cmd(
+        "netadj",
+        "Least-squares network adjustment",
+        "Survey",
+        icons::POLYGON,
+    ),
+    cmd(
         "projcalc",
         "Projection calculator (lat/long, grid, scale factors)",
         "Project",
@@ -357,6 +364,7 @@ pub struct SurveyApp {
     stakeout_window: StakeoutWindow,
     stockpile_window: StockpileWindow,
     projection_window: ProjectionWindow,
+    network_window: NetworkWindow,
     active_surface: Option<SurfaceId>,
     snap_engine: SnapEngine,
     snap_override: Option<SnapMode>,
@@ -503,6 +511,7 @@ impl SurveyApp {
             stakeout_window: StakeoutWindow::default(),
             stockpile_window: StockpileWindow::default(),
             projection_window: ProjectionWindow::default(),
+            network_window: NetworkWindow::default(),
             active_surface: None,
             snap_engine: SnapEngine::default(),
             snap_override: None,
@@ -1558,6 +1567,7 @@ impl SurveyApp {
             }
             "volume" | "volumes" | "vol" => self.volumes_window.open(&self.project.doc, self.active_surface),
             "projcalc" | "projection" | "geo" => self.projection_window.open = true,
+            "netadj" | "adjust" | "lsa" => self.network_window.open_with(&self.project.doc),
             "accuracy" | "tolerances" => self.settings_window.open_at_accuracy(),
             "codes" | "featurecodes" => self.codes_window.open(),
             "linework" | "f2f" => {

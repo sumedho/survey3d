@@ -133,6 +133,9 @@ const SURVEY_MENU: &[MenuEntry] = &[
     Item("Resection…", "resection"),
     Item("Subdivide area…", "subdivide"),
     Separator,
+    Item("Network adjustment…", "netadj"),
+    Item("Projection calculator…", "projcalc"),
+    Separator,
     Item("Feature codes…", "codes"),
     Item("Process linework", "linework"),
 ];
@@ -1026,6 +1029,9 @@ impl SurveyApp {
         {
             self.draw_chainages(&painter, out.rect, &theme);
         }
+        if self.network_window.open && self.network_window.show_ellipses {
+            self.draw_error_ellipses(&painter, out.rect, &theme);
+        }
         if self.project.doc.meta().parcels.iter().any(|p| p.annotate) {
             self.draw_parcel_annotations(&painter, out.rect, &theme);
         }
@@ -1464,6 +1470,45 @@ impl SurveyApp {
     }
 
     /// Chainage ticks along alignments, labelled where there is room.
+    /// 95% error ellipses of the last network adjustment, exaggerated.
+    fn draw_error_ellipses(&self, painter: &egui::Painter, rect: egui::Rect, theme: &CadTheme) {
+        let Some(Ok((_, r))) = &self.network_window.result else {
+            return;
+        };
+        let cam = &self.viewport.camera;
+        let scale = self.network_window.exaggeration;
+        let stroke = egui::Stroke::new(1.5, theme.error);
+        for (i, e) in r.ellipses.iter().enumerate() {
+            let Some(e) = e else { continue };
+            let c = r.positions[i];
+            let (s, co) = e.bearing.radians().sin_cos();
+            let major = glam::DVec3::new(s, co, 0.0) * e.semi_major * scale;
+            let minor = glam::DVec3::new(co, -s, 0.0) * e.semi_minor * scale;
+            let pts: Vec<egui::Pos2> = (0..=48)
+                .filter_map(|k| {
+                    let t = k as f64 / 48.0 * std::f64::consts::TAU;
+                    let p = c + major * t.cos() + minor * t.sin();
+                    cam.world_to_screen(p).map(|(s, _)| to_screen(rect, s))
+                })
+                .collect();
+            if pts.len() > 2 && pts.iter().any(|p| rect.contains(*p)) {
+                painter.add(egui::Shape::line(pts, stroke));
+            }
+            if let Some((sp, _)) = cam.world_to_screen(c) {
+                let sp = to_screen(rect, sp);
+                if rect.contains(sp) {
+                    painter.text(
+                        sp + egui::vec2(6.0, 6.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("{:.1} mm", e.semi_major * 1000.0),
+                        egui::FontId::proportional(10.0),
+                        theme.error,
+                    );
+                }
+            }
+        }
+    }
+
     fn draw_chainages(&self, painter: &egui::Painter, rect: egui::Rect, theme: &CadTheme) {
         let doc = &self.project.doc;
         let conv = doc.conventions();
@@ -1848,6 +1893,15 @@ impl SurveyApp {
             .iter()
             .copied()
             .find(|id| matches!(self.project.doc.entity(*id), Some(Entity::Point(_))));
+        match self.network_window.show(ctx, &self.project.doc) {
+            Some(NetworkAction::Apply(cmd, summary)) => {
+                self.execute(cmd);
+                self.command_line.result(summary.clone());
+                self.toasts.success(summary);
+            }
+            Some(NetworkAction::Report(title, text)) => self.reports.add(title, text),
+            None => {}
+        }
         match self
             .projection_window
             .show(ctx, &self.project.doc, selected_point)
