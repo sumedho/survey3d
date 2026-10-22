@@ -381,6 +381,48 @@ impl TinIndex {
     }
 }
 
+/// How grid thinning picks one height per cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Thin {
+    /// The lowest point (ground from scans with vegetation or equipment).
+    Lowest,
+    Highest,
+    /// Mean position and height of the cell's points.
+    Mean,
+}
+
+/// Thins dense points (e.g. a point cloud) to at most one per `cell` × `cell`
+/// square, keeping the point the method chooses.
+pub fn thin_to_grid(points: impl IntoIterator<Item = DVec3>, cell: f64, method: Thin) -> Vec<DVec3> {
+    let cell = cell.max(1e-6);
+    let mut cells: HashMap<(i64, i64), (DVec3, usize)> = HashMap::new();
+    for p in points {
+        if !p.is_finite() {
+            continue;
+        }
+        let key = ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64);
+        cells
+            .entry(key)
+            .and_modify(|(q, n)| match method {
+                Thin::Lowest if p.z < q.z => *q = p,
+                Thin::Highest if p.z > q.z => *q = p,
+                Thin::Mean => {
+                    *q += p;
+                    *n += 1;
+                }
+                _ => {}
+            })
+            .or_insert((p, 1));
+    }
+    let mut out: Vec<DVec3> = cells
+        .into_values()
+        .map(|(q, n)| if method == Thin::Mean { q / n as f64 } else { q })
+        .collect();
+    // Deterministic order for repeatable triangulations.
+    out.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    out
+}
+
 /// Points along a plan polyline on the surface: every vertex and every
 /// triangle-edge crossing that lies on it (off-surface parts are skipped).
 pub fn drape(tin: &Tin, index: &TinIndex, line: &[DVec2]) -> Vec<DVec3> {
@@ -638,5 +680,23 @@ mod tests {
         assert_eq!(runs.len(), 2, "{runs:?}");
         assert!((runs[0].last().expect("end").0 - 50.0).abs() < 1e-6);
         assert!((runs[1][0].0 - 70.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn grid_thinning() {
+        let pts = [
+            DVec3::new(0.2, 0.2, 5.0),
+            DVec3::new(0.7, 0.6, 3.0),
+            DVec3::new(1.5, 0.5, 9.0),
+        ];
+        let low = thin_to_grid(pts, 1.0, Thin::Lowest);
+        assert_eq!(low.len(), 2);
+        assert!(low.contains(&DVec3::new(0.7, 0.6, 3.0)));
+        let mean = thin_to_grid(pts, 1.0, Thin::Mean);
+        assert!(
+            mean.iter()
+                .any(|p| (p.z - 4.0).abs() < 1e-12 && (p.x - 0.45).abs() < 1e-12)
+        );
+        assert!(thin_to_grid(pts, 1.0, Thin::Highest).contains(&DVec3::new(0.2, 0.2, 5.0)));
     }
 }

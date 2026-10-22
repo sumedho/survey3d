@@ -167,6 +167,7 @@ struct Resources {
 
 struct GpuChunk {
     origin: DVec3,
+    radius: f32,
     points: Option<(wgpu::Buffer, u32)>,
     lines: Option<(wgpu::Buffer, u32)>,
     /// Vertex buffer and vertex count.
@@ -176,8 +177,14 @@ struct GpuChunk {
 /// The uploaded chunks of one scene.
 struct Upload {
     revision: u64,
+    lod: bool,
     chunks: Vec<GpuChunk>,
 }
+
+/// Points drawn per square logical pixel of a level-of-detail chunk.
+const LOD_DENSITY: f64 = 0.35;
+/// Most level-of-detail points drawn in one frame.
+const LOD_BUDGET: f64 = 4_000_000.0;
 
 struct ViewResources {
     size: [u32; 2],
@@ -189,6 +196,8 @@ struct ViewResources {
     uniform_slots: usize,
     uniform_bind_group: wgpu::BindGroup,
     uploads: Vec<Upload>,
+    /// Points to draw per chunk this frame (all, or a level-of-detail prefix).
+    point_counts: Vec<u32>,
 }
 
 impl Resources {
@@ -301,6 +310,7 @@ impl Resources {
             if let Some(prev) = previous {
                 // Keep uploaded geometry across resizes.
                 view.uploads = prev.uploads;
+                view.point_counts = prev.point_counts;
                 view.uniform_buffer = prev.uniform_buffer;
                 view.uniform_slots = prev.uniform_slots;
                 view.uniform_bind_group = prev.uniform_bind_group;
@@ -377,7 +387,58 @@ impl ViewResources {
             uniform_slots: 16,
             uniform_bind_group,
             uploads: Vec::new(),
+            point_counts: Vec::new(),
         }
+    }
+
+    /// How many points of each chunk to draw: every point of ordinary scenes,
+    /// and for level-of-detail scenes a number that suits the chunk's size on
+    /// screen (none when it is off screen), within an overall budget.
+    fn plan_points(&mut self, camera: &Camera) {
+        let mut counts = Vec::new();
+        let mut lod_total = 0.0;
+        let mut lod_slots = Vec::new();
+        for u in &self.uploads {
+            for c in &u.chunks {
+                let n = c.points.as_ref().map_or(0, |(_, n)| *n);
+                if !u.lod || n == 0 {
+                    counts.push(n);
+                    continue;
+                }
+                let r = f64::from(c.radius).max(1e-3);
+                let wpp = match camera.projection {
+                    Projection::Orthographic => camera.world_per_pixel(),
+                    Projection::Perspective => {
+                        let d = (c.origin - camera.eye()).length().max(camera.near);
+                        camera.world_per_pixel() * d / camera.distance.max(1e-9)
+                    }
+                };
+                let r_px = r / wpp.max(1e-12);
+                let inside_sphere = (c.origin - camera.eye()).length() < r;
+                let visible = inside_sphere
+                    || camera.world_to_screen(c.origin).is_some_and(|(s, _)| {
+                        s.x > -r_px
+                            && s.y > -r_px
+                            && s.x < camera.viewport.x + r_px
+                            && s.y < camera.viewport.y + r_px
+                    });
+                let want = if visible {
+                    (std::f64::consts::PI * r_px * r_px * LOD_DENSITY).min(n as f64)
+                } else {
+                    0.0
+                };
+                lod_total += want;
+                lod_slots.push(counts.len());
+                counts.push(want as u32);
+            }
+        }
+        if lod_total > LOD_BUDGET {
+            let k = LOD_BUDGET / lod_total;
+            for i in lod_slots {
+                counts[i] = (f64::from(counts[i]) * k) as u32;
+            }
+        }
+        self.point_counts = counts;
     }
 
     fn upload_scenes(&mut self, device: &wgpu::Device, scenes: &[Arc<Scene>]) {
@@ -388,11 +449,13 @@ impl ViewResources {
             }
             let upload = Upload {
                 revision: scene.revision,
+                lod: scene.lod,
                 chunks: scene
                     .chunks
                     .iter()
                     .map(|c| GpuChunk {
                         origin: c.origin,
+                        radius: c.radius,
                         points: instance_buffer(device, "cad_render_points", &c.points),
                         lines: instance_buffer(device, "cad_render_lines", &c.lines),
                         triangles: instance_buffer(device, "cad_render_triangles", &c.triangles),
@@ -662,6 +725,7 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
             return Vec::new();
         };
         view.upload_scenes(device, &frame.scenes);
+        view.plan_points(camera);
         if view.uniform_slots < needed_slots {
             let slots = needed_slots.next_power_of_two();
             let (buffer, bind_group) = create_uniforms(uniform_layout, symbols, stride, device, slots);
@@ -744,7 +808,11 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
         }
         pass.set_pipeline(&pipelines.point);
         for (i, chunk) in view.chunks().enumerate() {
-            if let Some((buf, n)) = &chunk.points {
+            if let Some((buf, _)) = &chunk.points {
+                let n = &view.point_counts.get(i).copied().unwrap_or(0);
+                if *n == 0 {
+                    continue;
+                }
                 pass.set_bind_group(0, &view.uniform_bind_group, &[((i + 1) as u64 * stride) as u32]);
                 pass.set_vertex_buffer(0, buf.slice(..));
                 pass.draw(0..6, 0..*n);

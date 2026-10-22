@@ -8,6 +8,7 @@ pub mod code_sheet;
 pub mod csv_points;
 pub mod dxf;
 pub mod landxml;
+pub mod pointcloud;
 
 pub use csv_points::{CsvField, CsvLayout, CsvPointImporter, HeaderMode, export_points_csv};
 

@@ -4,6 +4,7 @@ pub mod alignments;
 pub mod audit_window;
 pub mod calculator;
 pub mod closure_window;
+pub mod clouds;
 pub mod csv_import;
 pub mod feature_codes;
 pub mod legend;

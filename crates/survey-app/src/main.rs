@@ -3,6 +3,7 @@
 //! survey3d — surveying CAD for cadastral, construction and mining work.
 
 mod app;
+mod cloud_view;
 mod field_to_finish;
 mod import_command;
 mod interchange;

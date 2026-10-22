@@ -55,6 +55,8 @@ pub struct Chunk {
     pub lines: Vec<LineInstance>,
     /// Three vertices per triangle.
     pub triangles: Vec<TriVertex>,
+    /// Largest distance of any geometry from `origin` (for culling and LOD).
+    pub radius: f32,
 }
 
 /// An immutable, renderable scene. Rebuild (cheaply) when the document changes.
@@ -64,6 +66,9 @@ pub struct Scene {
     pub bounds: Aabb3,
     /// Identifies this scene's content; the renderer re-uploads when it changes.
     pub revision: u64,
+    /// Points in each chunk are shuffled, so the renderer may draw only a
+    /// prefix of them (an even sample) when the chunk is small on screen.
+    pub lod: bool,
 }
 
 impl Scene {
@@ -114,6 +119,7 @@ impl SceneBuilder {
                 points: Vec::new(),
                 lines: Vec::new(),
                 triangles: Vec::new(),
+                radius: 0.0,
             });
             self.chunks.len() - 1
         });
@@ -175,12 +181,47 @@ impl SceneBuilder {
         }
     }
 
-    pub fn build(self, revision: u64) -> Scene {
+    pub fn build(mut self, revision: u64) -> Scene {
+        for c in &mut self.chunks {
+            let r2 = c
+                .points
+                .iter()
+                .map(|p| p.offset)
+                .chain(c.lines.iter().flat_map(|l| [l.a, l.b]))
+                .chain(c.triangles.iter().map(|t| t.offset))
+                .map(|o| o[0] * o[0] + o[1] * o[1] + o[2] * o[2])
+                .fold(0.0f32, f32::max);
+            c.radius = r2.sqrt();
+        }
         Scene {
             chunks: self.chunks,
             bounds: self.bounds,
             revision,
+            lod: false,
         }
+    }
+
+    /// Builds a level-of-detail scene: each chunk's points are shuffled
+    /// (deterministically) so any prefix is an even sample.
+    pub fn build_lod(mut self, revision: u64) -> Scene {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            // xorshift64*
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        };
+        for c in &mut self.chunks {
+            let n = c.points.len();
+            for i in (1..n).rev() {
+                let j = (next() % (i as u64 + 1)) as usize;
+                c.points.swap(i, j);
+            }
+        }
+        let mut scene = self.build(revision);
+        scene.lod = true;
+        scene
     }
 }
 

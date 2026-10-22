@@ -16,6 +16,8 @@ pub enum FileKind {
     Codes,
     /// LandXML surfaces.
     LandXml,
+    /// Point clouds (LAS, XYZ text).
+    PointCloud,
 }
 
 impl FileKind {
@@ -27,6 +29,7 @@ impl FileKind {
             FileKind::Report => ("Text report", &["txt"]),
             FileKind::Codes => ("Feature code sheet", &["csv"]),
             FileKind::LandXml => ("LandXML", &["xml"]),
+            FileKind::PointCloud => ("Point cloud", &["las", "xyz", "txt", "pts", "csv"]),
         }
     }
 }

@@ -170,8 +170,8 @@ pub enum NavAction {
 pub struct Viewport<'a> {
     state: &'a mut ViewportState,
     scene: Arc<Scene>,
-    /// A second scene drawn with the first (e.g. surfaces), uploaded separately.
-    overlay: Option<Arc<Scene>>,
+    /// Further scenes drawn with the first (e.g. surfaces, point clouds), each uploaded separately.
+    overlays: Vec<Arc<Scene>>,
     grid: Option<GridSettings>,
     nav: NavigationSettings,
     anchor: Option<DVec3>,
@@ -187,7 +187,7 @@ impl<'a> Viewport<'a> {
         Self {
             state,
             scene,
-            overlay: None,
+            overlays: Vec::new(),
             grid: Some(GridSettings::default()),
             nav: NavigationSettings::default(),
             anchor: None,
@@ -200,7 +200,7 @@ impl<'a> Viewport<'a> {
 
     /// Another scene drawn with the main one (its own revision, uploaded only when it changes).
     pub fn overlay_scene(mut self, scene: Option<Arc<Scene>>) -> Self {
-        self.overlay = scene;
+        self.overlays.extend(scene);
         self
     }
 
@@ -305,7 +305,7 @@ impl<'a> Viewport<'a> {
 
         // Fit clip planes to everything that will be drawn.
         let mut bounds = self.scene.bounds.union(&self.extra_bounds);
-        if let Some(o) = &self.overlay {
+        for o in &self.overlays {
             bounds = bounds.union(&o.bounds);
         }
         if let Some(g) = &self.grid {
@@ -333,7 +333,7 @@ impl<'a> Viewport<'a> {
                     frame: ViewportFrame {
                         camera: cam.clone(),
                         scenes: std::iter::once(self.scene.clone())
-                            .chain(self.overlay.clone())
+                            .chain(self.overlays.iter().cloned())
                             .collect(),
                         grid,
                         background: CadTheme::rgba_f32(theme.viewport_bg),

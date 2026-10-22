@@ -23,6 +23,7 @@ use survey_core::point_input::PointInput;
 use survey_model::{ChangeSet, Color, Command, Entity, EntityId, Layer, LayerId, SurfaceId};
 use survey_store::ProjectStore;
 
+use crate::cloud_view::CloudSceneCache;
 use crate::import_command::{ImportEntities, LayerRef};
 use crate::interchange::{dxf_export, dxf_import};
 use crate::platform::{FileEvent, FileKind, Platform, export};
@@ -38,6 +39,7 @@ use crate::ui::alignments::AlignmentsWindow;
 use crate::ui::audit_window::AuditWindow;
 use crate::ui::calculator::{CalcTab, CalculatorWindow};
 use crate::ui::closure_window::{ClosureAction, ClosureWindow};
+use crate::ui::clouds::{CloudAction, CloudPanel};
 use crate::ui::csv_import::{CsvDialogResult, CsvImportDialog};
 use crate::ui::feature_codes::{CodesAction, FeatureCodesWindow};
 use crate::ui::legend::LegendWindow;
@@ -245,6 +247,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::TRIANGLE,
     ),
     cmd(
+        "cloudin",
+        "Import point cloud (LAS, XYZ)",
+        "File",
+        icons::DOTS_NINE,
+    ),
+    cmd(
         "mkparcel",
         "Parcels from selected closed polylines",
         "Cadastral",
@@ -331,6 +339,8 @@ pub struct SurveyApp {
     viewport: ViewportState,
     scene_cache: SceneCache,
     surface_cache: SurfaceSceneCache,
+    cloud_cache: CloudSceneCache,
+    cloud_panel: CloudPanel,
     surface_indexes: SurfaceIndexes,
     surface_window: SurfaceWindow,
     volumes_window: VolumesWindow,
@@ -474,6 +484,8 @@ impl SurveyApp {
             viewport,
             scene_cache: SceneCache::default(),
             surface_cache: SurfaceSceneCache::default(),
+            cloud_cache: CloudSceneCache::default(),
+            cloud_panel: CloudPanel::default(),
             surface_indexes: SurfaceIndexes::default(),
             surface_window: SurfaceWindow::default(),
             volumes_window: VolumesWindow::default(),
@@ -912,6 +924,87 @@ impl SurveyApp {
         }
     }
 
+    fn import_cloud(&mut self, name: &str, bytes: &[u8]) {
+        match survey_io::pointcloud::read_cloud(bytes) {
+            Ok(raw) => {
+                let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+                let cloud = survey_model::PointCloud::from_points(stem, &raw.points, raw.colors);
+                let summary = format!(
+                    "Imported point cloud {stem}: {} points{}",
+                    cloud.len(),
+                    if cloud.colors.is_some() {
+                        " with colours"
+                    } else {
+                        ""
+                    }
+                );
+                self.execute(Box::new(
+                    ChangeSet::new(format!("Import point cloud {stem}")).insert_cloud(cloud),
+                ));
+                self.cloud_panel.active = self.project.doc.clouds().last().map(|(id, _)| id);
+                self.zoom_extents();
+                self.command_line.result(summary.clone());
+                self.toasts.success(summary);
+            }
+            Err(e) => self.command_line.error(format!("Could not read {name}: {e}")),
+        }
+    }
+
+    fn apply_cloud_action(&mut self, action: CloudAction) {
+        match action {
+            CloudAction::Style(id, style) => {
+                let name = self
+                    .project
+                    .doc
+                    .cloud(id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                self.execute(Box::new(
+                    ChangeSet::new(format!("Point cloud {name} display")).set_cloud_style(id, style),
+                ));
+            }
+            CloudAction::Delete(id) => {
+                let name = self
+                    .project
+                    .doc
+                    .cloud(id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                self.execute(Box::new(
+                    ChangeSet::new(format!("Delete point cloud {name}")).delete_cloud(id),
+                ));
+            }
+            CloudAction::Surface(id, cell, thin, max_edge) => {
+                let Some(c) = self.project.doc.cloud(id) else {
+                    return;
+                };
+                let points = survey_core::tin::thin_to_grid(c.iter(), cell, thin);
+                let n = points.len();
+                let input = survey_core::tin::TinInput {
+                    points,
+                    max_edge,
+                    ..Default::default()
+                };
+                match survey_core::tin::build(&input) {
+                    Ok(tin) => {
+                        let surface = survey_model::Surface {
+                            name: format!("{} surface", c.name),
+                            definition: None,
+                            tin,
+                            style: survey_model::SurfaceStyle::default(),
+                        };
+                        self.command_line.info(format!(
+                            "Thinned {} cloud points to {n} on a {cell} m grid",
+                            c.len()
+                        ));
+                        self.apply_surface_window(SurfaceWindowAction::Create(surface));
+                    }
+                    Err(e) => self.command_line.error(format!("Surface from {}: {e}", c.name)),
+                }
+            }
+        }
+    }
+
     fn import_landxml(&mut self, name: &str, bytes: &[u8]) {
         match survey_io::landxml::read_surfaces(bytes) {
             Ok((surfaces, warnings)) => {
@@ -1206,6 +1299,10 @@ impl SurveyApp {
             .surfaces()
             .filter(|(_, s)| s.style.visible)
             .fold(doc.bounds(), |b, (_, s)| b.union(&s.tin.bounds()));
+        let b = doc
+            .clouds()
+            .filter(|(_, c)| c.style.visible)
+            .fold(b, |b, (_, c)| b.union(&c.bounds()));
         if b.is_empty() {
             self.viewport.camera.target = DVec3::ZERO;
             self.viewport.camera.distance = 100.0;
@@ -1443,6 +1540,7 @@ impl SurveyApp {
             }
             "mkparcel" | "parcel" => self.parcels_from_selection(),
             "parcelxml" => self.export_parcels_landxml(),
+            "cloudin" | "importcloud" | "las" => self.platform.pick_file(ctx, FileKind::PointCloud),
             "landxmlin" | "importxml" => self.platform.pick_file(ctx, FileKind::LandXml),
             "landxmlout" | "exportxml" => self.export_landxml(),
             "sections" | "section" | "profile" => {
@@ -1525,6 +1623,8 @@ impl SurveyApp {
         self.project = project;
         self.scene_cache.invalidate();
         self.surface_cache.invalidate();
+        self.cloud_cache.invalidate();
+        self.cloud_panel.active = None;
         self.surface_indexes.invalidate();
         self.active_surface = None;
         // Revisions restart with each document, so drop caches keyed by them.
@@ -1714,6 +1814,7 @@ impl SurveyApp {
                     FileKind::Dxf => self.import_dxf(&name, &bytes),
                     FileKind::Codes => self.import_code_sheet(&name, &bytes),
                     FileKind::LandXml => self.import_landxml(&name, &bytes),
+                    FileKind::PointCloud => self.import_cloud(&name, &bytes),
                     // Reports are only saved, never opened.
                     FileKind::Report => {}
                 },

@@ -77,6 +77,16 @@ The web build compiles SQLite to wasm with clang. On macOS install an LLVM with 
   surface and a level (optionally inside a boundary) exactly, and can create a cut/fill surface; `sections`
   plots long and cross sections along a polyline; `contours` converts contours to polylines; `landxmlin` /
   `landxmlout` import and export LandXML surfaces.
+* **Modules** (Settings → General → Modules; each adds a menu):
+  * **Cadastral:** `mkparcel` makes parcels of selected closed polylines; `parcels` lists areas and plan
+    closures, reports them and switches on bearing/distance and area annotation; `parcelxml` exports
+    LandXML parcels.
+  * **Construction:** `mkalign` makes an alignment of a centreline polyline (start chainage, chainage ticks);
+    `alignments` shows the element table and sets out points at intervals and offsets with a set-out table;
+    `stakeout` lists angles and distances from an instrument station to the selected points.
+  * **Mining:** `stockpile` measures a stockpile inside a toe (toe surface, lowest toe or level base) with
+    tonnes; `volume` takes a density for period volumes; `cloudin` imports LAS or XYZ point clouds, drawn
+    with level of detail and convertible to a surface by grid thinning (Point clouds panel).
 * **Point input:** pick with snapping, or type `E,N[,Z]`, `@dE,dN[,dZ]`, `@dist<bearing`, or an existing point name.
   Order, units and angle format follow the project conventions (Project → Conventions).
 * **Snapping & drafting:** Settings (gear) → Drafting holds snap modes, aperture, ortho/polar, grid and working

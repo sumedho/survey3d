@@ -17,8 +17,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 use survey_core::tin::Tin;
 use survey_model::{
-    AuditAction, AuditRecord, Color, Document, Entity, EntityId, Layer, LayerId, Polyline, ProjectMeta,
-    Surface, SurfaceId, SurveyPoint,
+    AuditAction, AuditRecord, Color, Document, Entity, EntityId, Layer, LayerId, PointCloud, PointCloudId,
+    Polyline, ProjectMeta, Surface, SurfaceId, SurveyPoint,
 };
 use thiserror::Error;
 
@@ -136,7 +136,47 @@ impl ProjectStore {
         entities.extend(self.load_polylines()?);
         let mut doc = Document::from_parts(meta, layers, entities);
         doc.load_surfaces(self.load_surfaces()?);
+        doc.load_clouds(self.load_clouds()?);
         Ok(doc)
+    }
+
+    fn load_clouds(&self) -> Result<Vec<(PointCloudId, PointCloud)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, origin_json, style_json, points, colors FROM point_clouds ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Vec<u8>>(4)?,
+                r.get::<_, Option<Vec<u8>>>(5)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, name, origin, style, points, colors) = row?;
+            let points = points
+                .chunks_exact(12)
+                .map(|c| {
+                    let f = |i: usize| f32::from_le_bytes(c[i * 4..i * 4 + 4].try_into().unwrap_or_default());
+                    [f(0), f(1), f(2)]
+                })
+                .collect();
+            let colors = colors.map(|c| c.chunks_exact(3).map(|x| [x[0], x[1], x[2]]).collect());
+            out.push((
+                PointCloudId(id),
+                PointCloud {
+                    name,
+                    origin: serde_json::from_str(&origin)?,
+                    points,
+                    colors,
+                    style: serde_json::from_str(&style)?,
+                },
+            ));
+        }
+        Ok(out)
     }
 
     fn load_surfaces(&self) -> Result<Vec<(SurfaceId, Surface)>> {
@@ -483,7 +523,36 @@ fn write_changes(
     for id in &dirty.surfaces {
         write_surface(tx, *id, doc.surface(*id))?;
     }
+    for id in &dirty.clouds {
+        write_cloud(tx, *id, doc.cloud(*id))?;
+    }
     append_audit(tx, audit, app_version)
+}
+
+fn write_cloud(tx: &Transaction<'_>, id: PointCloudId, cloud: Option<&PointCloud>) -> Result<()> {
+    tx.execute("DELETE FROM point_clouds WHERE id = ?1", [id.0])?;
+    let Some(c) = cloud else {
+        return Ok(());
+    };
+    let mut points = Vec::with_capacity(c.points.len() * 12);
+    for p in &c.points {
+        for v in p {
+            points.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    let colors: Option<Vec<u8>> = c.colors.as_ref().map(|cs| cs.iter().flatten().copied().collect());
+    tx.execute(
+        "INSERT INTO point_clouds (id, name, origin_json, style_json, points, colors) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            id.0,
+            c.name,
+            serde_json::to_string(&c.origin)?,
+            serde_json::to_string(&c.style)?,
+            points,
+            colors
+        ],
+    )?;
+    Ok(())
 }
 
 fn write_surface(tx: &Transaction<'_>, id: SurfaceId, surface: Option<&Surface>) -> Result<()> {

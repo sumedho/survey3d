@@ -157,6 +157,8 @@ const CONSTRUCTION_MENU: &[MenuEntry] = &[
 ];
 
 const MINING_MENU: &[MenuEntry] = &[
+    Item("Import point cloud…", "cloudin"),
+    Separator,
     Item("Stockpile volume…", "stockpile"),
     Item("Period volumes…", "volume"),
     Separator,
@@ -283,6 +285,13 @@ impl SurveyApp {
                 ui.separator();
                 item(ui, "Import points (CSV/TXT)…", None, Action::Import, &mut action);
                 item(ui, "Import DXF…", None, Action::ImportDxf, &mut action);
+                item(
+                    ui,
+                    "Import point cloud…",
+                    None,
+                    Action::Run("cloudin"),
+                    &mut action,
+                );
                 item(ui, "Export DXF…", None, Action::ExportDxf, &mut action);
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -817,6 +826,15 @@ impl SurveyApp {
             if let Some(a) = surface_action {
                 self.apply_surface_action(a);
             }
+            if self.project.doc.clouds().next().is_some() {
+                let doc = &self.project.doc;
+                let panel = &mut self.cloud_panel;
+                let cloud_action =
+                    section(ui, "Point clouds", true, |_| {}, |ui| panel.show(ui, doc)).flatten();
+                if let Some(a) = cloud_action {
+                    self.apply_cloud_action(a);
+                }
+            }
             let p = &self.project;
             let edit = section(
                 ui,
@@ -923,6 +941,7 @@ impl SurveyApp {
             .scene_cache
             .get(&self.project.doc, &self.project.selection, &theme);
         let surfaces = self.surface_cache.get(&self.project.doc, &theme);
+        let clouds = self.cloud_cache.get(&self.project.doc, &theme);
         let conv = self.project.doc.conventions().clone();
         let grid = self.settings.show_grid.then(|| GridSettings {
             elevation: self.settings.working_z,
@@ -950,6 +969,7 @@ impl SurveyApp {
         ];
         let out = Viewport::new(&mut self.viewport, scene)
             .overlay_scene(surfaces)
+            .overlay_scene(clouds)
             .grid(grid)
             .anchor(anchor)
             .extra_bounds(extra)
@@ -1011,7 +1031,11 @@ impl SurveyApp {
         {
             self.draw_hud(&painter, out.rect, to_screen(out.rect, c), &preview, &conv);
         }
-        if self.project.doc.entity_count() == 0 && out.drag.is_none() {
+        let doc_empty = {
+            let d = &self.project.doc;
+            d.entity_count() == 0 && d.surfaces().next().is_none() && d.clouds().next().is_none()
+        };
+        if doc_empty && out.drag.is_none() {
             let search = ui
                 .ctx()
                 .format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::K));
@@ -1991,10 +2015,22 @@ impl SurveyApp {
                 Ok(mut p) => {
                     // Not saved anywhere the user controls yet.
                     p.doc.mark_all_dirty();
-                    let n = p.doc.entity_count();
+                    let count =
+                        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+                    let mut parts = vec![count(p.doc.entity_count(), "object", "objects")];
+                    let surfaces = p.doc.surfaces().count();
+                    if surfaces > 0 {
+                        parts.push(count(surfaces, "surface", "surfaces"));
+                    }
+                    let clouds = p.doc.clouds().count();
+                    if clouds > 0 {
+                        parts.push(count(clouds, "point cloud", "point clouds"));
+                    }
                     self.replace_project(p);
-                    self.command_line
-                        .warn(format!("Recovered {n} objects — save to keep them (Ctrl+S)"));
+                    self.command_line.warn(format!(
+                        "Recovered {} — save to keep them (Ctrl+S)",
+                        parts.join(", ")
+                    ));
                 }
                 Err(e) => self.command_line.error(format!("Recovery failed: {e}")),
             }

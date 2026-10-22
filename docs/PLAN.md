@@ -154,6 +154,27 @@ Known follow-ups: traverse observations are not yet stored in the project (only 
 scale factors / combined scale factor for traverse distances (Phase 5 projections); mirror/scale/trim/
 extend; drag-to-move grips; coordinate CSV export from the points table.
 
+## Phase 4 status (2026-10-22): complete
+
+- **4a modules & cadastral:** Cadastral / Construction / Mining switch on and off (Settings → General),
+  each with its own menu. `ParcelRecord` (lot, plan, boundary polyline) in `project_meta.parcels`; Parcels
+  window (areas, plan closure from courses rounded to the display precision, reports); bearing/distance
+  and area annotation (shared boundaries once); LandXML parcels (`CgPoints` + `CoordGeom`).
+- **4b construction:** `survey_core::alignment` (element table, set-out at intervals/offsets/TPs);
+  `AlignmentRecord` in `project_meta.alignments`; Alignments window, chainage ticks/labels, set-out points
+  and tables, stake-out sheet; chainage tool honours start chainage.
+- **4c mining:** `survey_core::volume::stockpile` (toe draped on the surface, lowest toe or level), Stockpile
+  window with tonnes; density/tonnes in Volumes (period volumes).
+- **4d point clouds:** `survey_io::pointcloud` (XYZ text, uncompressed LAS 1.0–1.4 with RGB); `PointCloud`
+  (f32 offsets from an origin, optional colours, style) stored in schema v4 `point_clouds`; level-of-detail
+  rendering (points shuffled per chunk, per-frame draw counts from on-screen size, global budget, off-screen
+  chunks skipped); Point clouds panel (colour by RGB/height/single, size); surface from a cloud by grid
+  thinning (lowest/mean/highest).
+
+Follow-ups: LAZ; out-of-core streaming for very large clouds (Phase 5); cloud snapping and section display;
+ePlan-specific LandXML (monuments, observations); vertical alignments and design templates; stockpile
+reports with photos/dates; parcel creation from linework regions.
+
 ## Phase 3 status (2026-10-22): complete
 
 - **3a** `survey_core::tin` (spade CDT: points, breaklines with crossing vertices, boundary/holes as
@@ -261,7 +282,7 @@ guidance (Material dark theme, WCAG):
 - **Phase 2.5 — COGO, accuracy, code styling (done):** closures, traverse upgrade, area,
   resection, solvers, code symbols and line styles.
 - **Phase 3 — surfaces (done):** TIN with breaklines, contours, volumes, sections, LandXML surfaces.
-- **Phase 4 — domain modules:** cadastral (parcels, closures, areas, plan annotation, LandXML/ePlan);
+- **Phase 4 — domain modules (done):** cadastral (parcels, closures, areas, plan annotation, LandXML/ePlan);
   construction (alignments, chainage/offset, setout); mining (pickups, EOM volumes, stockpiles, point cloud LOD).
 - **Phase 5 — advanced:** least-squares network adjustment, JobXML/GSI raw data, projections & scale factors,
   point cloud streaming, GeoPackage export.

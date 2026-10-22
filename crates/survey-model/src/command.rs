@@ -3,9 +3,10 @@
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::cloud::{CloudStyle, PointCloud};
 use crate::document::{Document, ProjectMeta};
 use crate::entity::Entity;
-use crate::ids::{EntityId, LayerId, SurfaceId};
+use crate::ids::{EntityId, LayerId, PointCloudId, SurfaceId};
 use crate::layer::Layer;
 use crate::surface::{Surface, SurfaceStyle};
 
@@ -51,6 +52,16 @@ enum Op {
         id: SurfaceId,
         before: Option<SurfaceStyle>,
         after: SurfaceStyle,
+    },
+    Cloud {
+        id: Option<PointCloudId>,
+        before: Option<Box<PointCloud>>,
+        after: Option<Box<PointCloud>>,
+    },
+    CloudStyle {
+        id: PointCloudId,
+        before: Option<CloudStyle>,
+        after: CloudStyle,
     },
     // Boxed: project settings are much larger than an entity record.
     Meta {
@@ -184,6 +195,33 @@ impl ChangeSet {
         self
     }
 
+    pub fn insert_cloud(mut self, cloud: PointCloud) -> Self {
+        self.ops.push(Op::Cloud {
+            id: None,
+            before: None,
+            after: Some(Box::new(cloud)),
+        });
+        self
+    }
+
+    pub fn delete_cloud(mut self, id: PointCloudId) -> Self {
+        self.ops.push(Op::Cloud {
+            id: Some(id),
+            before: None,
+            after: None,
+        });
+        self
+    }
+
+    pub fn set_cloud_style(mut self, id: PointCloudId, style: CloudStyle) -> Self {
+        self.ops.push(Op::CloudStyle {
+            id,
+            before: None,
+            after: style,
+        });
+        self
+    }
+
     /// Ids of inserted surfaces (available after the first apply).
     pub fn inserted_surface_ids(&self) -> Vec<SurfaceId> {
         self.ops
@@ -249,6 +287,13 @@ impl Command for ChangeSet {
                 Op::SurfaceStyle { id, before, after } => {
                     *before = doc.set_surface_style(*id, *after);
                 }
+                Op::Cloud { id, before, after } => {
+                    let id = *id.get_or_insert_with(|| doc.alloc_cloud_id());
+                    *before = doc.set_cloud(id, after.as_deref().cloned()).map(Box::new);
+                }
+                Op::CloudStyle { id, before, after } => {
+                    *before = doc.set_cloud_style(*id, *after);
+                }
                 Op::Meta { before, after } => {
                     *before = Some(Box::new(doc.set_meta((**after).clone())));
                 }
@@ -280,6 +325,18 @@ impl Command for ChangeSet {
                     ..
                 } => {
                     doc.set_surface_style(*id, *before);
+                }
+                Op::Cloud {
+                    id: Some(id), before, ..
+                } => {
+                    doc.set_cloud(*id, before.as_deref().cloned());
+                }
+                Op::CloudStyle {
+                    id,
+                    before: Some(before),
+                    ..
+                } => {
+                    doc.set_cloud_style(*id, *before);
                 }
                 Op::Meta {
                     before: Some(before), ..

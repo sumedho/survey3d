@@ -93,6 +93,18 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         triangles       BLOB NOT NULL
     );
     "#,
+    // v4: point clouds. Points are little-endian f32 (x, y, z) offsets from
+    // the origin; colours are RGB bytes (or NULL).
+    r#"
+    CREATE TABLE point_clouds (
+        id          INTEGER PRIMARY KEY,
+        name        TEXT NOT NULL,
+        origin_json TEXT NOT NULL,
+        style_json  TEXT NOT NULL,
+        points      BLOB NOT NULL,
+        colors      BLOB
+    );
+    "#,
 ];
 
 pub const SCHEMA_VERSION: i32 = MIGRATIONS.len() as i32;

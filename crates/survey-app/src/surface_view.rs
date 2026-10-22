@@ -21,7 +21,7 @@ const RAMP: [[f32; 3]; 6] = [
     [235.0, 230.0, 220.0],
 ];
 
-fn ramp(t: f64) -> [f32; 3] {
+pub fn ramp(t: f64) -> [f32; 3] {
     let t = t.clamp(0.0, 1.0) * (RAMP.len() - 1) as f64;
     let i = (t.floor() as usize).min(RAMP.len() - 2);
     let f = (t - i as f64) as f32;

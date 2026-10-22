@@ -8,9 +8,10 @@ use survey_core::field_to_finish::FeatureLibrary;
 use survey_core::traverse::TraverseRecord;
 use survey_core::{Aabb3, Conventions};
 
+use crate::cloud::{CloudStyle, PointCloud};
 use crate::coord_system::CoordinateSystem;
 use crate::entity::{Entity, SurveyPoint};
-use crate::ids::{EntityId, LayerId, SurfaceId};
+use crate::ids::{EntityId, LayerId, PointCloudId, SurfaceId};
 use crate::layer::{Color, Layer};
 use crate::spatial::SpatialIndex;
 use crate::surface::Surface;
@@ -61,12 +62,17 @@ pub struct DirtyState {
     pub entities: BTreeSet<EntityId>,
     pub layers: BTreeSet<LayerId>,
     pub surfaces: BTreeSet<SurfaceId>,
+    pub clouds: BTreeSet<PointCloudId>,
     pub meta: bool,
 }
 
 impl DirtyState {
     pub fn is_empty(&self) -> bool {
-        self.entities.is_empty() && self.layers.is_empty() && self.surfaces.is_empty() && !self.meta
+        self.entities.is_empty()
+            && self.layers.is_empty()
+            && self.surfaces.is_empty()
+            && self.clouds.is_empty()
+            && !self.meta
     }
 }
 
@@ -82,6 +88,9 @@ pub struct Document {
     entities: BTreeMap<EntityId, Entity>,
     index: SpatialIndex,
     surfaces: BTreeMap<SurfaceId, Surface>,
+    clouds: BTreeMap<PointCloudId, PointCloud>,
+    next_cloud_id: i64,
+    clouds_revision: u64,
     next_entity_id: i64,
     next_layer_id: i64,
     next_surface_id: i64,
@@ -123,6 +132,9 @@ impl Document {
             entities: entities.into_iter().collect(),
             index,
             surfaces: BTreeMap::new(),
+            clouds: BTreeMap::new(),
+            next_cloud_id: 1,
+            clouds_revision: 1,
             next_entity_id,
             next_layer_id,
             next_surface_id: 1,
@@ -198,6 +210,19 @@ impl Document {
     /// Entity ids whose bounds pass `region` (see [`SpatialIndex::query`]).
     pub fn query(&self, region: &dyn Fn(&Aabb3) -> bool, out: &mut Vec<EntityId>) {
         self.index.query(region, out);
+    }
+
+    /// Increments only when point clouds change.
+    pub fn clouds_revision(&self) -> u64 {
+        self.clouds_revision
+    }
+
+    pub fn cloud(&self, id: PointCloudId) -> Option<&PointCloud> {
+        self.clouds.get(&id)
+    }
+
+    pub fn clouds(&self) -> impl Iterator<Item = (PointCloudId, &PointCloud)> {
+        self.clouds.iter().map(|(id, c)| (*id, c))
     }
 
     /// Increments only when surfaces change (their views rebuild on this).
@@ -316,6 +341,45 @@ impl Document {
         Some(previous)
     }
 
+    pub fn alloc_cloud_id(&mut self) -> PointCloudId {
+        let id = PointCloudId(self.next_cloud_id);
+        self.next_cloud_id += 1;
+        id
+    }
+
+    /// Inserts, replaces (`Some`) or removes (`None`) a point cloud; returns the previous value.
+    pub fn set_cloud(&mut self, id: PointCloudId, cloud: Option<PointCloud>) -> Option<PointCloud> {
+        let previous = match cloud {
+            Some(c) => self.clouds.insert(id, c),
+            None => self.clouds.remove(&id),
+        };
+        self.next_cloud_id = self.next_cloud_id.max(id.0 + 1);
+        self.dirty.clouds.insert(id);
+        self.revision += 1;
+        self.clouds_revision += 1;
+        previous
+    }
+
+    /// Replaces a point cloud's style; returns the previous one.
+    pub fn set_cloud_style(&mut self, id: PointCloudId, style: CloudStyle) -> Option<CloudStyle> {
+        let c = self.clouds.get_mut(&id)?;
+        let previous = std::mem::replace(&mut c.style, style);
+        self.dirty.clouds.insert(id);
+        self.revision += 1;
+        self.clouds_revision += 1;
+        Some(previous)
+    }
+
+    /// Adds point clouds read from storage (not dirty).
+    pub fn load_clouds(&mut self, clouds: Vec<(PointCloudId, PointCloud)>) {
+        for (id, c) in clouds {
+            self.next_cloud_id = self.next_cloud_id.max(id.0 + 1);
+            self.clouds.insert(id, c);
+        }
+        self.revision += 1;
+        self.clouds_revision += 1;
+    }
+
     /// Adds surfaces read from storage (not dirty).
     pub fn load_surfaces(&mut self, surfaces: Vec<(SurfaceId, Surface)>) {
         for (id, s) in surfaces {
@@ -375,5 +439,6 @@ impl Document {
         self.dirty.layers = self.layers.iter().map(|l| l.id).collect();
         self.dirty.entities = self.entities.keys().copied().collect();
         self.dirty.surfaces = self.surfaces.keys().copied().collect();
+        self.dirty.clouds = self.clouds.keys().copied().collect();
     }
 }

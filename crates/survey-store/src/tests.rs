@@ -290,3 +290,24 @@ fn surfaces_round_trip() {
     save(&mut store, &mut doc, &mut history);
     assert!(store.load_document().expect("load").surface(id).is_none());
 }
+
+#[test]
+fn point_clouds_round_trip() {
+    let (mut doc, mut history) = sample();
+    let mut store = ProjectStore::create_in_memory().expect("store");
+    let pts = [
+        DVec3::new(512_000.25, 6_912_000.5, 101.0),
+        DVec3::new(512_010.75, 6_912_003.0, 99.5),
+    ];
+    let cloud = PointCloud::from_points("scan", &pts, Some(vec![[1, 2, 3], [4, 5, 6]]));
+    let mut cmd = ChangeSet::new("cloud").insert_cloud(cloud.clone());
+    cmd.apply(&mut doc);
+    save(&mut store, &mut doc, &mut history);
+    let loaded = ProjectStore::from_bytes(&store.to_bytes().expect("bytes"))
+        .expect("open")
+        .load_document()
+        .expect("load");
+    let (_, c) = loaded.clouds().next().expect("cloud");
+    assert_eq!(c, &cloud);
+    assert!((c.point(1) - pts[1]).length() < 1e-3);
+}

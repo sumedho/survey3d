@@ -6,6 +6,7 @@
 //! are dirty for incremental saving.
 
 pub mod alignment;
+pub mod cloud;
 pub mod command;
 pub mod coord_system;
 pub mod document;
@@ -19,12 +20,13 @@ pub mod spatial;
 pub mod surface;
 
 pub use alignment::AlignmentRecord;
+pub use cloud::{CloudColor, CloudStyle, PointCloud};
 pub use command::{ChangeSet, Command};
 pub use coord_system::CoordinateSystem;
 pub use document::{DirtyState, Document, ProjectMeta};
 pub use entity::{Entity, Polyline, SurveyPoint, join_polylines};
 pub use history::{AuditAction, AuditRecord, History};
-pub use ids::{EntityId, LayerId, SurfaceId};
+pub use ids::{EntityId, LayerId, PointCloudId, SurfaceId};
 pub use layer::{Color, Layer};
 pub use parcel::ParcelRecord;
 pub use selection::Selection;
