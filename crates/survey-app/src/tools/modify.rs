@@ -90,6 +90,10 @@ impl Gather {
                     self.ghost_points.push(p.position);
                     count += 1;
                 }
+                Some(Entity::Text(t)) => {
+                    self.ghost_points.push(t.position);
+                    count += 1;
+                }
                 Some(Entity::Polyline(l)) => {
                     for part in l.tessellate(0.01) {
                         count += part.len();
@@ -281,6 +285,7 @@ impl RotateTool {
         for id in &self.gather.ids {
             if let Some(mut e) = ctx.doc.entity(*id).cloned() {
                 e.map_positions(|p| rotate_cw(p, centre, angle));
+                e.rotate_text(-angle.to_degrees());
                 cs.push_update_entity(*id, e);
             }
         }

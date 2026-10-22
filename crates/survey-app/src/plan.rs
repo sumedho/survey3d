@@ -11,8 +11,8 @@ use survey_core::style::{CodeStyle, LabelSet, Prim, Symbol, outline};
 use survey_io::plot::{
     Align, BLACK, CAP_HEIGHT, Item, Pen, Plot, Rgb, Text, VAlign, WHITE, rect_ring, text_width,
 };
-use survey_model::sheet::{GridMarks, SheetRecord};
-use survey_model::{Document, Entity, EntityId, Polyline};
+use survey_model::sheet::{GridMarks, LegendPosition, SheetRecord};
+use survey_model::{Document, Entity, EntityId, Polyline, TextAlign};
 
 use crate::scene_build::{LINE_WIDTH, POINT_SIZE};
 
@@ -343,6 +343,26 @@ impl Placer {
     }
 }
 
+/// A line from a boundary to its detached label, on the paper.
+type Leader = [[f64; 2]; 2];
+
+/// A boundary label's two lines of text and its leader, if detached.
+type Placement = ([Text; 2], Option<Leader>);
+
+/// A boundary label to place (see [`Builder::boundary_label`]). Directions are
+/// unit vectors on the paper.
+struct BoundaryLabel {
+    at: [f64; 2],
+    along: [f64; 2],
+    outward: [f64; 2],
+    /// Whether the text fits along the line.
+    fits: bool,
+    top: String,
+    bottom: String,
+    size: f64,
+    color: Rgb,
+}
+
 /// A feature code's style as drawn: its index in the library, style and colour.
 type Resolved = Option<(usize, CodeStyle, [u8; 3])>;
 
@@ -406,11 +426,16 @@ impl<'a> Builder<'a> {
 
     fn polyline_pen(&mut self, l: &'a Polyline) -> Pen {
         let color = self.entity_color(l.layer, &l.code);
+        // A code's style wins; otherwise the layer's.
+        let layer = self
+            .doc
+            .layer(l.layer)
+            .map_or((Default::default(), LINE_WIDTH), |layer| {
+                (layer.line_style, layer.line_weight)
+            });
         let (line_style, weight) = self
             .style(&l.code)
-            .map_or((Default::default(), LINE_WIDTH), |(_, s, _)| {
-                (s.line_style, s.line_weight)
-            });
+            .map_or(layer, |(_, s, _)| (s.line_style, s.line_weight));
         let width = f64::from(weight) * self.sheet.line_scale;
         let unit = width.max(0.2);
         Pen {
@@ -440,6 +465,43 @@ impl<'a> Builder<'a> {
                 pen: Some(pen),
                 fill: None,
             });
+        }
+    }
+
+    /// Text notes at their paper height, turned with the sheet. Their boxes are
+    /// kept clear of point labels.
+    fn texts(&mut self, ids: &[EntityId], out: &mut Vec<Item>) {
+        for id in ids {
+            let Some(Entity::Text(note)) = self.doc.entity(*id) else {
+                continue;
+            };
+            if !self.doc.is_layer_visible(note.layer) {
+                continue;
+            }
+            let [dx, dy] = self.t.dir(DVec2::from_angle(note.rotation.to_radians()));
+            let angle = dy.atan2(dx);
+            let size = note.height / CAP_HEIGHT;
+            let color = self.entity_color(note.layer, "");
+            let at = self.t.to_paper(note.position.truncate());
+            let lines: Vec<&str> = note.text.lines().collect();
+            // Lines stack downwards, the block centred on the insertion point.
+            let step = size * crate::scene_build::TEXT_LINE_SPACING;
+            let up = [-angle.sin(), angle.cos()];
+            for (i, line) in lines.iter().enumerate() {
+                let shift = ((lines.len() - 1) as f64 / 2.0 - i as f64) * step;
+                let mut text = Text::new([at[0] + up[0] * shift, at[1] + up[1] * shift], *line, size);
+                text.angle = angle;
+                text.align = match note.align {
+                    TextAlign::Left => Align::Left,
+                    TextAlign::Centre => Align::Centre,
+                    TextAlign::Right => Align::Right,
+                };
+                text.valign = VAlign::Middle;
+                text.color = color;
+                text.halo = true;
+                self.placer.add(Rect::bounding(&text.corners()));
+                out.push(Item::Text(text));
+            }
         }
     }
 
@@ -621,6 +683,8 @@ impl<'a> Builder<'a> {
             if !doc.is_layer_visible(l.layer) {
                 continue;
             }
+            // Anticlockwise boundaries have the lot on their left.
+            let anticlockwise = survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, true).2 > 0.0;
             for (a, b, bulge) in l.segments() {
                 let (ka, kb) = (key(a), key(b));
                 if !done.insert(if ka < kb { [ka, kb] } else { [kb, ka] }) {
@@ -652,25 +716,19 @@ impl<'a> Builder<'a> {
                 }
                 let length = (b - a).truncate().length() * self.t.k;
                 let width = text_width(&top, size, false).max(text_width(&bottom, size, false));
-                if length < width + 2.0 {
-                    continue;
-                }
-                let d = self.t.dir(tangent.normalize_or_zero());
-                let (angle, _) = upright(d[1].atan2(d[0]));
-                let up = [-angle.sin(), angle.cos()];
-                let off = 0.5;
-                let above = Text::new([m[0] + up[0] * off, m[1] + up[1] * off], top, size)
-                    .align(Align::Centre, VAlign::Bottom)
-                    .angle(angle)
-                    .color(color)
-                    .halo();
-                let below = Text::new([m[0] - up[0] * off, m[1] - up[1] * off], bottom, size)
-                    .align(Align::Centre, VAlign::Top)
-                    .angle(angle)
-                    .color(color)
-                    .halo();
-                self.along_text(above, true, out);
-                self.along_text(below, true, out);
+                let tangent = tangent.normalize_or_zero();
+                let outward = DVec2::new(tangent.y, -tangent.x) * if anticlockwise { 1.0 } else { -1.0 };
+                let label = BoundaryLabel {
+                    at: m,
+                    along: self.t.dir(tangent),
+                    outward: self.t.dir(outward),
+                    fits: length >= width + 2.0,
+                    top,
+                    bottom,
+                    size,
+                    color,
+                };
+                self.boundary_label(label, out);
             }
             // Name and area at the area-weighted centre.
             let ring: Vec<DVec2> = l
@@ -709,6 +767,93 @@ impl<'a> Builder<'a> {
             self.along_text(name, false, out);
             self.along_text(area, false, out);
         }
+    }
+
+    /// A boundary's bearing over its distance (or radius over arc length). Along
+    /// the line when they fit there and the place is clear; otherwise as a block
+    /// beside it, outside the lot, then further out on a leader, then inside.
+    /// A cadastral plan dimensions every boundary, so a label is never dropped:
+    /// if nowhere is clear it goes in the first place beside the line.
+    fn boundary_label(&mut self, label: BoundaryLabel, out: &mut Vec<Item>) {
+        let BoundaryLabel {
+            at,
+            along,
+            outward,
+            fits,
+            top,
+            bottom,
+            size,
+            color,
+        } = label;
+        let (angle, _) = upright(along[1].atan2(along[0]));
+        let up = [-angle.sin(), angle.cos()];
+        let pair = |c: [f64; 2], gap: f64| {
+            let above = Text::new([c[0] + up[0] * gap, c[1] + up[1] * gap], top.clone(), size)
+                .align(Align::Centre, VAlign::Bottom)
+                .angle(angle)
+                .color(color)
+                .halo();
+            let below = Text::new([c[0] - up[0] * gap, c[1] - up[1] * gap], bottom.clone(), size)
+                .align(Align::Centre, VAlign::Top)
+                .angle(angle)
+                .color(color)
+                .halo();
+            [above, below]
+        };
+        let free = |placer: &Placer, texts: &[Text; 2]| {
+            texts
+                .iter()
+                .all(|t| placer.is_free(&Rect::bounding(&t.corners())))
+        };
+        let mut place = |b: &mut Self, texts: [Text; 2], leader: Option<Leader>| {
+            for t in texts {
+                b.placer.add(Rect::bounding(&t.corners()));
+                out.push(Item::Text(t));
+            }
+            if let Some([p, q]) = leader {
+                out.push(Item::Path {
+                    points: vec![p, q],
+                    closed: false,
+                    pen: Some(Pen::solid(color, 0.13)),
+                    fill: None,
+                });
+            }
+        };
+        if fits {
+            let texts = pair(at, 0.5);
+            if free(&self.placer, &texts) {
+                place(self, texts, None);
+                return;
+            }
+        }
+        // Half the block's depth (capitals plus descenders of the lower line).
+        let gap = 0.4;
+        let half = gap + size * (CAP_HEIGHT + 0.25);
+        let first = half + 0.8;
+        let step = 2.0 * half + 1.0;
+        let slots = [
+            (1.0, first),
+            (1.0, first + step),
+            (1.0, first + 2.0 * step),
+            (-1.0, first),
+            (-1.0, first + step),
+        ];
+        let candidates: Vec<Placement> = slots
+            .iter()
+            .map(|&(side, d)| {
+                let n = [outward[0] * side, outward[1] * side];
+                let centre = [at[0] + n[0] * d, at[1] + n[1] * d];
+                // Detached blocks point back to their line.
+                let leader = (d > first).then(|| [at, [centre[0] - n[0] * half, centre[1] - n[1] * half]]);
+                (pair(centre, gap), leader)
+            })
+            .collect();
+        let chosen = candidates
+            .iter()
+            .position(|(texts, _)| free(&self.placer, texts))
+            .unwrap_or(0);
+        let (texts, leader) = candidates.into_iter().nth(chosen).expect("candidates");
+        place(self, texts, leader);
     }
 
     fn chainages(&mut self, out: &mut Vec<Item>) {
@@ -1013,6 +1158,7 @@ fn legend_rows(doc: &Document, ids: &[EntityId]) -> Vec<LegendRow> {
         let (code, line) = match e {
             Entity::Point(p) => (p.code.as_str(), false),
             Entity::Polyline(l) => (l.code.as_str(), true),
+            Entity::Text(_) => continue,
         };
         if code.is_empty() {
             continue;
@@ -1036,6 +1182,32 @@ fn legend_rows(doc: &Document, ids: &[EntityId]) -> Vec<LegendRow> {
 
 const LEGEND_WIDTH: f64 = 64.0;
 const LEGEND_ROW: f64 = 4.6;
+
+/// How much of the drawing a box on the sheet would hide: points, text and
+/// samples every 2 mm along lines that fall in it.
+fn drawing_under(doc: &Document, ids: &[EntityId], t: &SheetTransform, r: &Rect) -> usize {
+    let world_step = 2.0 / t.k;
+    let mut n = 0;
+    for id in ids {
+        match doc.entity(*id) {
+            Some(Entity::Point(p)) => n += usize::from(r.contains(t.to_paper(p.position.truncate()))),
+            Some(Entity::Text(note)) => {
+                n += 4 * usize::from(r.contains(t.to_paper(note.position.truncate())))
+            }
+            Some(Entity::Polyline(l)) if doc.is_layer_visible(l.layer) => {
+                for (a, b, _) in l.segments() {
+                    let (a, b) = (a.truncate(), b.truncate());
+                    let steps = ((b - a).length() / world_step).ceil().max(1.0) as usize;
+                    n += (0..=steps)
+                        .filter(|i| r.contains(t.to_paper(a.lerp(b, *i as f64 / steps as f64))))
+                        .count();
+                }
+            }
+            _ => {}
+        }
+    }
+    n
+}
 
 fn circle_ring(c: [f64; 2], r: f64) -> Vec<[f64; 2]> {
     (0..40)
@@ -1089,15 +1261,45 @@ pub fn build_plot(doc: &Document, sheet: &SheetRecord, labels: LabelSet) -> Plot
         Vec::new()
     };
     let legend = (!rows.is_empty()).then(|| {
-        let base = if lay.strip { f.min[1] } else { lay.title.max[1] };
-        let room = ((f.height() - (base - f.min[1])) * 0.6 - 8.0).max(LEGEND_ROW);
-        let shown = rows.len().min((room / LEGEND_ROW).floor() as usize).max(1);
-        let more = usize::from(shown < rows.len());
-        let height = 8.0 + (shown + more) as f64 * LEGEND_ROW + 1.5;
-        (
-            Rect::new(f.max[0] - LEGEND_WIDTH, base, f.max[0], base + height),
-            shown,
-        )
+        // The legend's box in each corner: clear of the title block (bottom
+        // right), the scale bar (bottom left) and the north arrow (top right),
+        // as many rows as fit in 60% of the frame's height.
+        let room = f.height() * 0.6 - 8.0;
+        let fit = |below: f64| {
+            let room = (room - below).max(LEGEND_ROW);
+            let shown = rows.len().min((room / LEGEND_ROW).floor() as usize).max(1);
+            let more = usize::from(shown < rows.len());
+            (8.0 + (shown + more) as f64 * LEGEND_ROW + 1.5, shown)
+        };
+        let title_top = if lay.strip { f.min[1] } else { lay.title.max[1] };
+        let bar_top = f.min[1] + if content.scale_bar { 16.0 } else { 0.0 };
+        let arrow_bottom = f.max[1] - if content.north_arrow { 24.0 } else { 0.0 };
+        let (left, right) = (f.min[0], f.max[0] - LEGEND_WIDTH);
+        let corner = |position: LegendPosition| {
+            let (x, bottom, top) = match position {
+                LegendPosition::BottomRight | LegendPosition::Auto => (right, Some(title_top), None),
+                LegendPosition::BottomLeft => (left, Some(bar_top), None),
+                LegendPosition::TopRight => (right, None, Some(arrow_bottom)),
+                LegendPosition::TopLeft => (left, None, Some(f.max[1])),
+            };
+            let (height, shown) = fit(bottom.map_or(f.max[1] - top.unwrap_or(f.max[1]), |b| b - f.min[1]));
+            let y = bottom.unwrap_or_else(|| top.unwrap_or(f.max[1]) - height);
+            (Rect::new(x, y, x + LEGEND_WIDTH, y + height), shown)
+        };
+        match content.legend_position {
+            // The corner covering least of the drawing; bottom right on a tie.
+            LegendPosition::Auto => [
+                LegendPosition::BottomRight,
+                LegendPosition::TopRight,
+                LegendPosition::TopLeft,
+                LegendPosition::BottomLeft,
+            ]
+            .into_iter()
+            .map(corner)
+            .min_by_key(|(r, _)| drawing_under(doc, &ids, &t, r))
+            .unwrap_or_else(|| corner(LegendPosition::BottomRight)),
+            fixed => corner(fixed),
+        }
     });
     if let Some((r, _)) = legend {
         boxes.push(r);
@@ -1171,6 +1373,7 @@ pub fn build_plot(doc: &Document, sheet: &SheetRecord, labels: LabelSet) -> Plot
     if content.chainages {
         b.chainages(&mut map);
     }
+    b.texts(&ids, &mut map);
     if content.points && content.point_labels {
         b.point_labels(&ids, labels, &mut map);
     }
@@ -1433,7 +1636,7 @@ mod tests {
     use super::*;
     use glam::DVec3;
     use survey_core::field_to_finish::FeatureCode;
-    use survey_model::{ChangeSet, History, SurveyPoint};
+    use survey_model::{ChangeSet, Command, History, ParcelRecord, SurveyPoint};
 
     #[test]
     fn transform_round_trips_and_rotates() {
@@ -1521,6 +1724,7 @@ mod tests {
             closed: false,
             code: "FENCE".into(),
             layer,
+            heights_known: true,
         }));
         history.execute(Box::new(cmd), &mut doc);
         let sheet = SheetRecord {
@@ -1560,5 +1764,108 @@ mod tests {
         let all = survey_io::plot::write_svg(&plot);
         assert!(all.contains(">LEGEND<") && all.contains("FENCE  Fence"));
         assert!(all.contains("SCALE 1:200 at A3"));
+    }
+
+    fn texts(plot: &Plot) -> Vec<&Text> {
+        fn walk<'a>(items: &'a [Item], out: &mut Vec<&'a Text>) {
+            for i in items {
+                match i {
+                    Item::Text(t) => out.push(t),
+                    Item::Clip { items, .. } => walk(items, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&plot.items, &mut out);
+        out
+    }
+
+    /// A lot with a 4 m corner cut: every boundary carries its bearing and
+    /// distance, the short cut's beside it, outside the lot.
+    #[test]
+    fn short_boundaries_are_dimensioned() {
+        let mut doc = Document::new();
+        let layer = doc.layers()[0].id;
+        let o = DVec2::new(500_000.0, 7_000_000.0);
+        let corners = [(0.0, 0.0), (30.0, 0.0), (30.0, 26.0), (26.0, 30.0), (0.0, 30.0)];
+        let mut lot = ChangeSet::new("lot").insert_entity(Entity::Polyline(Polyline {
+            name: "Lot 1".into(),
+            vertices: corners
+                .iter()
+                .map(|&(x, y)| (o + DVec2::new(x, y)).extend(0.0))
+                .collect(),
+            bulges: Vec::new(),
+            closed: true,
+            code: String::new(),
+            layer,
+            heights_known: false,
+        }));
+        lot.apply(&mut doc);
+        let boundary = lot.inserted_entity_ids()[0];
+        ChangeSet::new("parcel")
+            .insert_record(ParcelRecord {
+                name: "1".into(),
+                boundary,
+                ..Default::default()
+            })
+            .apply(&mut doc);
+        let sheet = SheetRecord {
+            centre: (o + DVec2::splat(15.0)).to_array(),
+            scale: 500.0,
+            ..Default::default()
+        };
+        let plot = build_plot(&doc, &sheet, LabelSet::default());
+        let texts = texts(&plot);
+        let lengths: Vec<&str> = texts
+            .iter()
+            .map(|t| t.text.as_str())
+            .filter(|t| ["30.000", "26.000", "5.657"].contains(t))
+            .collect();
+        assert_eq!(lengths.len(), 5, "a distance on every boundary: {lengths:?}");
+        let cut = texts.iter().find(|t| t.text == "5.657").expect("cut distance");
+        let at = SheetTransform::new(&sheet, &layout(&sheet).frame).to_world(cut.at) - o;
+        assert!(at.x + at.y > 56.0, "outside the cut (x + y = 56): {at:?}");
+        assert!(texts.iter().any(|t| t.text == "315°00'00\""), "the cut's bearing");
+    }
+
+    #[test]
+    fn the_legend_keeps_clear_of_the_drawing() {
+        let mut doc = Document::new();
+        let layer = doc.layers()[0].id;
+        let mut meta = doc.meta().clone();
+        meta.feature_codes
+            .codes
+            .push(FeatureCode::new("TR", "Tree", "TREES", [0, 160, 0], false));
+        let mut cs = ChangeSet::new("seed").set_meta(meta);
+        // Trees filling the bottom right of an A3 frame at 1:500 around the origin.
+        for i in 0..12 {
+            for j in 0..8 {
+                cs.push_insert_entity(Entity::Point(SurveyPoint {
+                    name: format!("{i}.{j}"),
+                    position: DVec3::new(30.0 + 5.0 * f64::from(i), -65.0 + 7.0 * f64::from(j), 0.0),
+                    height_known: false,
+                    code: "TR".into(),
+                    description: String::new(),
+                    layer,
+                }));
+            }
+        }
+        cs.apply(&mut doc);
+        let mut sheet = SheetRecord::default();
+        let legend_at = |sheet: &SheetRecord| {
+            let plot = build_plot(&doc, sheet, LabelSet::default());
+            texts(&plot)
+                .iter()
+                .find(|t| t.text == "LEGEND")
+                .map(|t| t.at)
+                .expect("legend")
+        };
+        let [w, h] = sheet.page_size();
+        let at = legend_at(&sheet);
+        assert!(at[0] < w / 2.0 || at[1] > h / 2.0, "moved off the trees: {at:?}");
+        sheet.content.legend_position = LegendPosition::BottomRight;
+        let at = legend_at(&sheet);
+        assert!(at[0] > w / 2.0 && at[1] < h / 2.0, "where it was put: {at:?}");
     }
 }

@@ -167,8 +167,10 @@ impl SurfaceDefinition {
                         input.points.push(p.position);
                     }
                 }
+                Entity::Text(_) => {}
                 Entity::Polyline(l) => {
-                    if excluded.contains(&id) {
+                    // A plan-only line has no heights to model the ground with.
+                    if excluded.contains(&id) || !l.heights_known {
                         continue;
                     }
                     let by_layer =
@@ -239,6 +241,7 @@ mod tests {
             closed: false,
             code: "TB".into(),
             layer: LayerId(1),
+            heights_known: true,
         }));
         cs.apply(&mut doc);
         let def = SurfaceDefinition {

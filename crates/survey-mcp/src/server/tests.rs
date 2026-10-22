@@ -258,3 +258,213 @@ fn files_save_open_and_guards() {
     assert!(error && text.contains("read-only"), "{text}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The gaps reported from a real job, each checked end to end.
+#[test]
+fn reported_gaps_are_closed() {
+    let dir = temp_dir("gaps");
+    let mut s = Server::new_for_tests();
+
+    // 3. Coordinate system from its name.
+    let project = ok_json(
+        &mut s,
+        "set_project",
+        json!({ "name": "Lot 12", "coordinate_system": { "name": "MGA2020 Zone 50" } }),
+    );
+    assert_eq!(project["coordinate_system"], "MGA2020 Zone 50 (EPSG:7850)");
+    assert_eq!(project["coordinate_system_detail"]["Projected"]["zone"], 50);
+
+    // 1. Feature codes: symbols, layers, linework.
+    ok(
+        &mut s,
+        "set_feature_codes",
+        json!({ "codes": [
+            { "code": "SSM", "description": "State survey mark", "layer": "CONTROL", "style": { "symbol": "triangle_dot" } },
+            { "code": "BM", "description": "Benchmark", "layer": "CONTROL", "style": { "symbol": "benchmark" } },
+            { "code": "PEG", "description": "Peg", "layer": "BOUNDARY MARKS", "style": { "symbol": "circle_dot" } },
+            { "code": "KB", "description": "Kerb", "layer": "KERBS", "color": "#00aaff", "linework": true },
+            { "code": "FNC", "description": "Fence", "layer": "FENCES", "linework": true, "style": { "line_style": "dash_dot" } }
+        ] }),
+    );
+    let codes = ok_json(&mut s, "query", json!({ "kind": "feature_codes" }));
+    assert_eq!(codes["total"], 5);
+    assert_eq!(codes["rows"][3]["color"], json!([0, 170, 255]));
+    assert!(
+        call(
+            &mut s,
+            "set_feature_codes",
+            json!({ "codes": [{ "code": "X", "style": { "symbol": "nope" } }] })
+        )
+        .1
+    );
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": [
+            { "e": 0.0, "n": 0.0, "z": 10.0, "code": "KB1 ST" },
+            { "e": 10.0, "n": 0.0, "z": 10.1, "code": "KB1" },
+            { "e": 20.0, "n": 1.0, "z": 10.2, "code": "KB1 END" },
+            { "e": 5.0, "n": 5.0, "z": 11.0, "code": "SSM" }
+        ] }),
+    );
+    let out = ok(&mut s, "run_commands", json!({ "lines": ["linework"] }));
+    assert!(!out.contains("empty"), "{out}");
+    let kerb = ok_json(
+        &mut s,
+        "query",
+        json!({ "kind": "polylines", "filter": { "code": "KB" } }),
+    );
+    assert_eq!(kerb["total"], 1, "{out}");
+    assert_eq!(kerb["rows"][0]["vertices"].as_array().map(Vec::len), Some(3));
+
+    // 2. Layers: distinct colours for new layers, styles, current layer.
+    let a = ok_json(&mut s, "set_layer", json!({ "layer": "ROADS" }));
+    let b = ok_json(
+        &mut s,
+        "set_layer",
+        json!({ "layer": "EASEMENTS", "line_style": "dashed", "line_weight": 1.0, "current": true }),
+    );
+    assert_ne!(a["color"], b["color"]);
+    assert_eq!(
+        (b["line_style"].as_str(), b["current"].as_bool()),
+        (Some("dashed"), Some(true))
+    );
+    let b = ok_json(
+        &mut s,
+        "set_layer",
+        json!({ "layer": "EASEMENTS", "color": "#ff00ff" }),
+    );
+    assert_eq!(b["color"], "#ff00ff");
+    assert!(
+        call(
+            &mut s,
+            "set_layer",
+            json!({ "layer": "ROADS", "rename": "easements" })
+        )
+        .1
+    );
+
+    // 4. Text, on the current layer.
+    let text = ok_json(
+        &mut s,
+        "add_text",
+        json!({ "texts": [
+            { "text": "Easement A", "at": [10.0, 3.0], "rotation": 5.0 },
+            { "text": "SMITH STREET", "at": [10.0, -4.0], "height_mm": 3.5, "align": "left" }
+        ] }),
+    );
+    assert_eq!(text["added"][0]["layer"], "EASEMENTS");
+    assert_eq!(text["added"][1]["align"], "left");
+    let plan = s.call("render", &json!({ "width": 600 })).to_json();
+    assert_eq!(plan["isError"], false, "{plan}");
+    ok(
+        &mut s,
+        "export_file",
+        json!({ "format": "dxf", "path": dir.join("t.dxf") }),
+    );
+    let dxf = std::fs::read_to_string(dir.join("t.dxf")).expect("dxf");
+    assert!(dxf.contains("Easement A") && dxf.contains("SMITH STREET"));
+    let svg_path = dir.join("t.svg");
+    ok(
+        &mut s,
+        "export_file",
+        json!({ "format": "svg", "path": svg_path }),
+    );
+    let svg = std::fs::read_to_string(&svg_path).expect("svg");
+    assert!(svg.contains(">Easement A<") && svg.contains("EPSG:7850"));
+
+    // 5. Edit lines (and other objects) in place.
+    let id = kerb["rows"][0]["id"].as_i64().expect("id");
+    let edited = ok_json(
+        &mut s,
+        "edit_entities",
+        json!({ "filter": { "ids": [id] }, "set": { "name": "Kerb north", "layer": "ROADS" } }),
+    );
+    assert_eq!(edited["changed"], 1);
+    assert_eq!(edited["objects"][0]["name"], "Kerb north");
+    assert_eq!(edited["objects"][0]["layer"], "ROADS");
+    let edited = ok_json(
+        &mut s,
+        "edit_entities",
+        json!({ "kind": "texts", "filter": { "names": ["Easement A"] }, "set": { "text": "Easement A (3.0 wide)" } }),
+    );
+    assert_eq!(edited["objects"][0]["text"], "Easement A (3.0 wide)");
+    assert!(
+        call(&mut s, "edit_entities", json!({ "set": { "name": "x" } })).1,
+        "a filter is required"
+    );
+    assert!(
+        call(
+            &mut s,
+            "edit_entities",
+            json!({ "filter": { "code": "KB" }, "set": { "colour": 1 } })
+        )
+        .1
+    );
+
+    // 6. help.
+    let help = ok(&mut s, "run_commands", json!({ "lines": ["help"] }));
+    assert!(
+        help.contains("polyline, pl") && help.contains("Point input"),
+        "{help}"
+    );
+    assert!(!help.contains("Unknown command"));
+
+    // 7. Lines from plan coordinates have unknown heights.
+    let line = ok_json(&mut s, "add_polyline", json!({ "vertices": [[0, 10], [10, 10]] }));
+    assert_eq!(line["added"][0]["heights_known"], false);
+    assert_eq!(line["added"][0]["vertices"][0], json!([0.0, 10.0]));
+    assert!(
+        call(
+            &mut s,
+            "add_polyline",
+            json!({ "vertices": [[0, 10], [10, 10, 5]] })
+        )
+        .1
+    );
+
+    // 8. Saving into a new folder; many records in one call; leaving a tool.
+    ok(
+        &mut s,
+        "save_project",
+        json!({ "path": dir.join("new/folder/job.s3d") }),
+    );
+    for corners in [[30.0, 0.0], [50.0, 0.0], [70.0, 0.0]] {
+        let [e, n] = corners;
+        ok(
+            &mut s,
+            "add_polyline",
+            json!({ "vertices": [[e, n], [e + 10.0, n], [e + 10.0, n + 10.0], [e, n + 10.0]], "closed": true, "layer": "LOTS" }),
+        );
+    }
+    ok(&mut s, "select", json!({ "filter": { "layer": "LOTS" } }));
+    ok(&mut s, "run_commands", json!({ "lines": ["mkparcel"] }));
+    let parcels = ok_json(&mut s, "query", json!({ "kind": "parcel" }));
+    let items: Vec<Value> = parcels["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|p| json!({ "id": p["id"], "record": { "plan": "DP 1234" } }))
+        .collect();
+    let set = ok_json(&mut s, "set_record", json!({ "kind": "parcel", "items": items }));
+    assert_eq!(set.as_array().map(Vec::len), Some(3));
+    assert!(
+        set.as_array()
+            .expect("set")
+            .iter()
+            .all(|p| p["plan"] == "DP 1234")
+    );
+    let info = ok_json(&mut s, "project_info", json!({}));
+    assert_eq!(info["undo"], "Set 3 parcel records", "one undo step");
+
+    let out = ok(
+        &mut s,
+        "run_commands",
+        json!({ "lines": ["inverse", "1", "2", "", "list"] }),
+    );
+    assert!(
+        out.contains("Prompt: Command:") && out.contains("Listing (3 objects)"),
+        "{out}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -63,6 +63,7 @@ const DRAW_MENU: &[MenuEntry] = &[
     Item("Polyline", "polyline"),
     Item("Arc (three points)", "arc"),
     Item("Circle", "circle"),
+    Item("Text", "text"),
     Separator,
     Item("Point along line", "along"),
     Item("Divide polyline", "divide"),

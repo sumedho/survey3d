@@ -126,6 +126,7 @@ pub fn build_linework(
                 closed: line.closed,
                 code: feature.code.clone(),
                 layer: survey_model::LayerId(0),
+                heights_known: true,
             }),
         );
         summary.lines += 1;

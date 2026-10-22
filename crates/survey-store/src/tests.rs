@@ -65,6 +65,7 @@ fn sample() -> (Document, History) {
         closed: false,
         code: "FE".into(),
         layer: LayerId(1),
+        heights_known: true,
     });
     history.execute(
         Box::new(
@@ -376,4 +377,92 @@ fn point_clouds_round_trip() {
     let (_, c) = loaded.clouds().next().expect("cloud");
     assert_eq!(c, &cloud);
     assert!((c.point(1) - pts[1]).length() < 1e-3);
+}
+
+#[test]
+fn text_layer_styles_and_plan_only_lines_round_trip() {
+    let (mut doc, mut history) = sample();
+    let mut layer = doc.layers()[0].clone();
+    layer.line_style = survey_core::style::LineStyle::DashDot;
+    layer.line_weight = 2.5;
+    let note = Entity::Text(TextNote {
+        text: "Easement A\n3.0 wide".into(),
+        position: DVec3::new(10.0, 20.0, 0.0),
+        height: 3.5,
+        rotation: 37.5,
+        align: TextAlign::Right,
+        layer: LayerId(1),
+    });
+    let flat = Entity::Polyline(Polyline {
+        name: "kerb".into(),
+        vertices: vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(5.0, 0.0, 0.0)],
+        bulges: Vec::new(),
+        closed: false,
+        code: String::new(),
+        layer: LayerId(1),
+        heights_known: false,
+    });
+    history.execute(
+        Box::new(
+            ChangeSet::new("more")
+                .update_layer(layer)
+                .insert_entity(note)
+                .insert_entity(flat),
+        ),
+        &mut doc,
+    );
+    let mut store = ProjectStore::create_in_memory().expect("store");
+    save(&mut store, &mut doc, &mut history);
+    let loaded = store.load_document().expect("load");
+    assert_same(&doc, &loaded);
+    assert_eq!(loaded.layers()[0].line_weight, 2.5);
+    assert!(
+        loaded
+            .entities()
+            .any(|(_, e)| matches!(e, Entity::Text(t) if t.align == TextAlign::Right))
+    );
+    assert!(
+        loaded
+            .entities()
+            .any(|(_, e)| matches!(e, Entity::Polyline(l) if !l.heights_known))
+    );
+
+    // Deleting text removes it from the file.
+    let (id, _) = loaded
+        .entities()
+        .find(|(_, e)| matches!(e, Entity::Text(_)))
+        .expect("text");
+    history.execute(Box::new(ChangeSet::new("del").delete_entity(id)), &mut doc);
+    save(&mut store, &mut doc, &mut history);
+    assert!(
+        !store
+            .load_document()
+            .expect("reload")
+            .entities()
+            .any(|(_, e)| matches!(e, Entity::Text(_)))
+    );
+}
+
+/// A project saved to a file is complete in that one file (no unmerged
+/// `-wal`), and opens from its bytes, as an upload to the web build does.
+#[test]
+fn saved_files_open_from_their_bytes_alone() {
+    let dir = std::env::temp_dir().join(format!("survey3d-store-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let path = dir.join("job.s3d");
+    let (mut doc, mut history) = sample();
+    let mut store = ProjectStore::create_in_memory().expect("store");
+    save(&mut store, &mut doc, &mut history);
+    store.save_as_file(&path).expect("save as");
+    // Saved while the file stays open, as the desktop app does.
+    let (id, _) = doc.find_point_by_name("2").expect("p2");
+    history.execute(Box::new(ChangeSet::new("del").delete_entity(id)), &mut doc);
+    save(&mut store, &mut doc, &mut history);
+
+    let bytes = std::fs::read(&path).expect("read");
+    let copy = ProjectStore::from_bytes(&bytes).expect("opens from bytes");
+    let loaded = copy.load_document().expect("load");
+    assert_same(&doc, &loaded);
+    drop(store);
+    let _ = std::fs::remove_dir_all(dir);
 }

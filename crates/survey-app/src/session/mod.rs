@@ -55,6 +55,29 @@ pub enum Panel {
     },
 }
 
+/// Other names for session commands.
+const COMMAND_ALIASES: &[(&str, &str)] = &[
+    ("?", "help"),
+    ("erase", "delete"),
+    ("avg", "average"),
+    ("li", "list"),
+    ("f2f", "linework"),
+    ("parcel", "mkparcel"),
+];
+
+/// The session command `name` (lowercase) stands for, if any.
+fn canonical_command(name: &str) -> Option<&'static str> {
+    SESSION_COMMANDS
+        .iter()
+        .map(|(n, _)| *n)
+        .find(|n| *n == name)
+        .or_else(|| COMMAND_ALIASES.iter().find(|(a, _)| *a == name).map(|(_, n)| *n))
+}
+
+/// How points can be typed, for help text.
+pub const POINT_INPUT_HELP: &str =
+    "Point input: E,N[,Z]  @dE,dN[,dZ]  @dist<bearing  or a point name; Enter (empty) finishes";
+
 /// Pointer state the select and grip tools use (set by the viewport each frame).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Pointer {
@@ -66,6 +89,7 @@ pub struct Pointer {
 /// Commands the session handles itself (the application adds view, file and
 /// window commands). Name and description, for help and completion.
 pub const SESSION_COMMANDS: &[(&str, &str)] = &[
+    ("help", "List tools and commands"),
     ("undo", "Undo"),
     ("redo", "Redo"),
     ("delete", "Delete selection"),
@@ -334,23 +358,50 @@ impl Session {
         }
     }
 
+    /// Tools, the session's commands and the point input forms, one per line.
+    pub fn help_lines(&self) -> Vec<String> {
+        let mut lines = vec!["Tools:".to_string()];
+        for t in self.tools.tools() {
+            lines.push(format!("  {:<18} {}", t.commands.join(", "), t.description));
+        }
+        lines.push("Commands:".into());
+        for (name, title) in SESSION_COMMANDS {
+            lines.push(format!("  {name:<18} {title}"));
+        }
+        lines.push(POINT_INPUT_HELP.into());
+        lines
+    }
+
     /// Runs a session command ([`SESSION_COMMANDS`] and aliases); `false` if `text` is not one.
+    /// A command ends the active tool first (as starting another tool does).
     pub fn run_command(&mut self, text: &str) -> bool {
-        match text.to_ascii_lowercase().as_str() {
+        let lower = text.to_ascii_lowercase();
+        let Some(command) = canonical_command(&lower) else {
+            return false;
+        };
+        if command == "help" {
+            let help = self.help_lines().join("\n");
+            self.log.info(help);
+            return true;
+        }
+        if self.active_tool.id() != SELECT_TOOL_ID {
+            self.set_tool(SELECT_TOOL_ID);
+        }
+        match command {
             "undo" => self.undo(),
             "redo" => self.redo(),
-            "delete" | "erase" => self.delete_selection(),
+            "delete" => self.delete_selection(),
             "explode" => self.explode_selection(),
             "join" => self.join_selection(),
             "reverse" => self.reverse_selection(),
-            "average" | "avg" => self.average_selection(),
-            "list" | "li" => self.list_selection(),
-            "linework" | "f2f" => {
+            "average" => self.average_selection(),
+            "list" => self.list_selection(),
+            "linework" => {
                 let library = self.project.doc.meta().feature_codes.clone();
                 let only_selected = !self.project.selection.is_empty();
                 self.process_linework(library, only_selected, false);
             }
-            "mkparcel" | "parcel" => self.parcels_from_selection(),
+            "mkparcel" => self.parcels_from_selection(),
             "mkalign" => self.alignment_from_selection(),
             "contours" => self.contours_to_polylines(),
             _ => return false,

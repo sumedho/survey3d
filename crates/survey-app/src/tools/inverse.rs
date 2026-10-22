@@ -70,13 +70,8 @@ impl Tool for InverseTool {
                 ToolOutcome::Continue
             }
             ToolEvent::Region(_) => ToolOutcome::Continue,
-            ToolEvent::Finish | ToolEvent::Cancel => {
-                if self.from.take().is_some() {
-                    ToolOutcome::Continue
-                } else {
-                    ToolOutcome::Done
-                }
-            }
+            // Enter or Escape ends the command (as the prompt says).
+            ToolEvent::Finish | ToolEvent::Cancel => ToolOutcome::Done,
         }
     }
 

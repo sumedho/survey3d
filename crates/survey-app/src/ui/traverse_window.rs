@@ -385,6 +385,7 @@ impl TraverseWindow {
                 closed,
                 code: "TRAV".into(),
                 layer: doc.current_layer(),
+                heights_known: true,
             }));
         }
         let mut summary = format!("Traverse: created {created} points{precision}");

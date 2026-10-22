@@ -24,6 +24,8 @@ Most work goes through run_commands, which types lines into the application's co
 'help' lists the tools and commands; a tool such as 'pl' (polyline) then takes points as E,N[,Z], @dE,dN, @distance<bearing or a point name; \
 '' (empty) is Enter, which finishes; tools have options such as 'c' to close. Coordinates, bearings and distances follow the project's conventions (see project_info). \
 Commands such as delete, join, list, mkparcel act on the selection: set it with select. \
+Set up the job first: set_project (name, coordinate system), set_feature_codes (what point codes mean, their symbols, layers and linework) and set_layer (colours, line styles). \
+Point codes are strung into lines with 'linework'; text such as street names goes in with add_text; fix names, codes and layers with edit_entities. \
 Every edit is one undoable step ('undo', 'redo') recorded in the project's audit trail. \
 Nothing is written to disk until save_project or export_file.";
 

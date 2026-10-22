@@ -1,6 +1,16 @@
 //! Tool names, descriptions and input schemas (what `tools/list` returns).
 
 use serde_json::{Value, json};
+use survey_core::style::{LineStyle, Symbol};
+use survey_model::TextAlign;
+
+fn symbol_keys() -> Vec<&'static str> {
+    Symbol::ALL.iter().map(|s| s.key()).collect()
+}
+
+fn line_style_keys() -> Vec<&'static str> {
+    LineStyle::ALL.iter().map(|s| s.key()).collect()
+}
 
 /// Filter shared by `query` and `select`.
 fn filter_schema() -> Value {
@@ -50,13 +60,13 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "name": "query",
             "title": "Query the project",
-            "description": "Lists objects as JSON. points: id, name, e, n, z (null when the height is unknown), code, description, layer. polylines: id, name, code, layer, closed, vertices [[e,n,z]], bulges (arcs, if any), plan length, area (closed). layers, surfaces, clouds: summaries. sheet/parcel/alignment/traverse/field_data: the full records with their ids (edit them with set_record). selection: the selected objects. audit: the most recent audit trail entries, newest first. Paged with offset/limit.",
+            "description": "Lists objects as JSON. points: id, name, e, n, z (null when the height is unknown), code, description, layer. polylines: id, name, code, layer, closed, vertices ([e,n,z], or [e,n] for a plan-only line without heights), bulges (arcs, if any), plan length, area (closed). texts: id, text, e, n, height_mm, rotation, align, layer. feature_codes: the code library (filter.names picks codes). layers, surfaces, clouds: summaries. sheet/parcel/alignment/traverse/field_data: the full records with their ids (edit them with set_record). selection: the selected objects. audit: the most recent audit trail entries, newest first. Paged with offset/limit.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["points", "polylines", "layers", "surfaces", "clouds", "sheet", "parcel", "alignment", "traverse", "field_data", "selection", "audit"]
+                        "enum": ["points", "polylines", "texts", "layers", "feature_codes", "surfaces", "clouds", "sheet", "parcel", "alignment", "traverse", "field_data", "selection", "audit"]
                     },
                     "filter": filter_schema(),
                     "offset": { "type": "integer", "minimum": 0, "default": 0 },
@@ -75,7 +85,7 @@ pub fn definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "mode": { "type": "string", "enum": ["set", "add", "remove", "clear"], "default": "set" },
-                    "kind": { "type": "string", "enum": ["points", "polylines", "all"], "default": "all" },
+                    "kind": { "type": "string", "enum": ["points", "polylines", "texts", "all"], "default": "all" },
                     "filter": filter_schema()
                 },
                 "additionalProperties": false
@@ -101,7 +111,7 @@ pub fn definitions() -> Vec<Value> {
                             "additionalProperties": false
                         }
                     },
-                    "layer": { "type": "string", "description": "Layer name; created if missing. Default: the current layer." }
+                    "layer": { "type": "string", "description": "Layer name; created if missing. Default: the layer of each point's feature code (created in the code's colour), else the current layer." }
                 },
                 "required": ["points"],
                 "additionalProperties": false
@@ -110,7 +120,7 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "name": "add_polyline",
             "title": "Add a polyline",
-            "description": "Adds a polyline through the given vertices, each [e, n] or [e, n, z] in metres or the name of an existing point. bulges (optional, one per segment) make arcs: tan(sweep/4), positive anticlockwise.",
+            "description": "Adds a polyline through the given vertices, each [e, n, z] or [e, n] in metres or the name of an existing point. Give heights for every vertex, or for none: a line without heights is plan-only (heights unknown; left out of surfaces). bulges (optional, one per segment) make arcs: tan(sweep/4), positive anticlockwise.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -134,15 +144,162 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "name": "set_record",
             "title": "Create or edit a record",
-            "description": "Creates a record (no id) or changes one (id given) — a plan sheet, parcel, alignment or saved traverse. When editing, only the fields given change (nested objects merge), e.g. {\"kind\":\"sheet\",\"id\":4,\"record\":{\"scale\":250,\"title\":{\"title\":\"Detail survey\"}}}. Read records with query to see their fields. One undoable step.",
+            "description": "Creates a record (no id) or changes one (id given) — a plan sheet, parcel, alignment or saved traverse. When editing, only the fields given change (nested objects merge), e.g. {\"kind\":\"sheet\",\"id\":4,\"record\":{\"scale\":250,\"title\":{\"title\":\"Detail survey\"}}}. For several records at once pass items: [{\"id\":7,\"record\":{\"plan\":\"DP 1234\"}}, …] instead of id/record. Read records with query to see their fields. A sheet's content.legend_position is auto (the corner with least drawing under it), top_left, top_right, bottom_left or bottom_right. One undoable step.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "kind": { "type": "string", "enum": record_kinds() },
                     "id": { "type": "integer" },
-                    "record": { "type": "object" }
+                    "record": { "type": "object" },
+                    "items": {
+                        "type": "array", "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": { "id": { "type": "integer" }, "record": { "type": "object" } },
+                            "required": ["record"],
+                            "additionalProperties": false
+                        }
+                    }
                 },
-                "required": ["kind", "record"],
+                "required": ["kind"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "edit_entities",
+            "title": "Edit objects",
+            "description": "Changes fields of the points, polylines and texts the filter matches, in one undoable step (a filter is required). Fields: name, code (points, polylines); description (points); closed (polylines); layer (any; created if missing); text, height_mm, rotation, align (texts); e, n (one point or text) and z (one point; null makes its height unknown). To move or rotate several objects use run_commands (move, rotate).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "filter": filter_schema(),
+                    "kind": { "type": "string", "enum": ["points", "polylines", "texts", "all"], "default": "all" },
+                    "set": { "type": "object", "minProperties": 1 }
+                },
+                "required": ["filter", "set"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "add_text",
+            "title": "Add text",
+            "description": "Adds text to the drawing — street names, easement labels, notes — in one undoable step. at: [e, n] or a point name, the middle of the text's height at its left, centre or right end (align). height_mm is the height of capitals on a printed plan (default 2.5), so text prints the same size at any scale; rotation is the reading direction in degrees anticlockwise from east (0 reads left to right; for a street, the street's direction). Lines can be split with \\n. Text takes its layer's colour.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "texts": {
+                        "type": "array", "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": { "type": "string" },
+                                "at": { "oneOf": [
+                                    { "type": "string" },
+                                    { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 }
+                                ] },
+                                "height_mm": { "type": "number", "minimum": 0.5, "maximum": 50 },
+                                "rotation": { "type": "number" },
+                                "align": { "type": "string", "enum": TextAlign::ALL.iter().map(|a| a.key()).collect::<Vec<_>>() }
+                            },
+                            "required": ["text", "at"],
+                            "additionalProperties": false
+                        }
+                    },
+                    "layer": { "type": "string", "description": "Layer name; created if missing. Default: the current layer." }
+                },
+                "required": ["texts"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "set_feature_codes",
+            "title": "Edit the feature codes",
+            "description": format!(
+                "Edits the feature-code library (one undoable step): what a point's code means, which layer its points and lines belong to, how they are drawn, and whether points with the code are strung into lines by the 'linework' command. A point's code is matched by its first word; a code may be a pattern with * and ?. codes: entries to add or change, matched by code (an existing code keeps the fields not given; a new one defaults to its own layer, no linework). remove: codes to delete. replace: start from an empty library; preset: 'example' starts from a small generic set. Style fields: symbol ({}), symbol_size (screen points, 7 normal), line_style ({}), line_weight (screen points, 1.5 normal), by_layer (draw in the layer's colour once that layer exists), labels ({{name, code, height, description}} booleans, or null for the global setting). color is #rrggbb. Read the current library with query kind feature_codes. Linework control words (start, end, close, arc_start, arc_end; defaults ST, END, CL, PC, PT) follow the code on a point, e.g. 'KB1 ST'.",
+                symbol_keys().join(", "),
+                line_style_keys().join(", ")
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "codes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "code": { "type": "string" },
+                                "description": { "type": "string" },
+                                "layer": { "type": "string" },
+                                "color": { "type": "string" },
+                                "linework": { "type": "boolean" },
+                                "style": {
+                                    "type": "object",
+                                    "properties": {
+                                        "symbol": { "type": "string", "enum": symbol_keys() },
+                                        "symbol_size": { "type": "number" },
+                                        "by_layer": { "type": "boolean" },
+                                        "line_style": { "type": "string", "enum": line_style_keys() },
+                                        "line_weight": { "type": "number" },
+                                        "labels": { "type": ["object", "null"] }
+                                    }
+                                }
+                            },
+                            "required": ["code"]
+                        }
+                    },
+                    "remove": { "type": "array", "items": { "type": "string" } },
+                    "replace": { "type": "boolean", "default": false },
+                    "preset": { "type": "string", "enum": ["example"] },
+                    "controls": { "type": "object" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "set_layer",
+            "title": "Create or change a layer",
+            "description": "Creates a layer (if no layer has this name) or changes one: rename, color (#rrggbb), visible, locked, line_style and line_weight (for lines on it whose feature code has no style of its own), current (where new objects go). New layers otherwise get the next colour of a palette. One undoable step.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "layer": { "type": "string" },
+                    "rename": { "type": "string" },
+                    "color": { "type": "string" },
+                    "visible": { "type": "boolean" },
+                    "locked": { "type": "boolean" },
+                    "line_style": { "type": "string", "enum": line_style_keys() },
+                    "line_weight": { "type": "number", "minimum": 0.1, "maximum": 20 },
+                    "current": { "type": "boolean" }
+                },
+                "required": ["layer"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "set_project",
+            "title": "Project settings",
+            "description": "Sets the project's name, description, conventions preset and coordinate system (shown on plan sheets and used for grid/geographic conversions). coordinate_system: {\"name\": \"MGA2020 zone 50\"} is enough for MGA (zone, south, GRS80 and EPSG 7850 follow); likewise \"MGA94 zone 56\" or \"UTM zone 33N\" (WGS84). Or give type (projected, local, unspecified), zone, hemisphere, ellipsoid (GRS80, WGS84), epsg, geoid_separation (metres), and for a local grid a description. One undoable step.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "description": { "type": "string" },
+                    "conventions": { "type": "string" },
+                    "coordinate_system": {
+                        "type": "object",
+                        "properties": {
+                            "type": { "type": "string", "enum": ["projected", "local", "unspecified"] },
+                            "name": { "type": "string" },
+                            "zone": { "type": "integer", "minimum": 1, "maximum": 60 },
+                            "hemisphere": { "type": "string", "enum": ["north", "south"] },
+                            "ellipsoid": { "type": "string", "enum": ["GRS80", "WGS84"] },
+                            "epsg": { "type": "integer" },
+                            "geoid_separation": { "type": "number" },
+                            "description": { "type": "string" }
+                        },
+                        "additionalProperties": false
+                    }
+                },
                 "additionalProperties": false
             }
         }),
@@ -171,7 +328,7 @@ pub fn definitions() -> Vec<Value> {
                     "path": { "type": "string" },
                     "format": { "type": "string", "enum": ["csv", "dxf", "landxml", "raw", "cloud"] },
                     "layout": { "type": "string", "description": "CSV column letters, e.g. PNEZD." },
-                    "layer": { "type": "string", "description": "CSV: layer for the points (created if missing)." }
+                    "layer": { "type": "string", "description": "CSV: one layer for all the points (created if missing). Default: each point's feature-code layer, else the current layer." }
                 },
                 "required": ["path"],
                 "additionalProperties": false

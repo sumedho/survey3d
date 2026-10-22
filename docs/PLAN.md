@@ -379,6 +379,9 @@ guidance (Material dark theme, WCAG):
   legend; PDF/SVG at true scale; DXF symbols as blocks and line types.
 - **Phase 7 — agents (in progress):** `survey3d-mcp`, an MCP server over a headless `Session`:
   command-line input, queries, selection, structured point/polyline input, record editing, imports,
-  exports and PNG renders of sheets (done). Next: attach to a running GUI (a localhost channel the app
+  exports and PNG renders of sheets (done). From a first real job: feature-code, layer and project
+  settings tools; text (`Entity::Text`, paper-sized, in the viewport, plans, DXF and GeoPackage, and a
+  `text` tool in the app); editing objects in place; batch record edits; layer line styles and plan-only
+  (no heights) polylines (file format v5); `help` in the session (done). Next: attach to a running GUI (a localhost channel the app
   drains each frame, so edits appear live and share its undo stack); 3D viewport snapshots; feature
   code and project settings tools.

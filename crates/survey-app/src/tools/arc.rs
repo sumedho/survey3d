@@ -95,6 +95,7 @@ fn commit(ctx: &mut ToolCtx<'_>, a: ResolvedPoint, b: ResolvedPoint, bulge: f64)
         closed: false,
         code: String::new(),
         layer: ctx.doc.current_layer(),
+        heights_known: true,
     };
     ctx.execute(ChangeSet::new("Add arc").insert_entity(Entity::Polyline(line)));
 }

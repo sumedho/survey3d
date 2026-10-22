@@ -366,6 +366,7 @@ impl SubdivideWindow {
                 closed: false,
                 code: String::new(),
                 layer: doc.current_layer(),
+                heights_known: true,
             }));
         }
         if parcels {
@@ -377,6 +378,7 @@ impl SubdivideWindow {
                     closed: true,
                     code: String::new(),
                     layer: parcel.layer,
+                    heights_known: true,
                 }));
             }
         }

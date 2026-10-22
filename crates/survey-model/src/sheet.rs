@@ -107,6 +107,39 @@ impl GridMarks {
     }
 }
 
+/// Where the legend goes in the map frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegendPosition {
+    /// The corner with the least of the drawing under it.
+    #[default]
+    Auto,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl LegendPosition {
+    pub const ALL: [LegendPosition; 5] = [
+        LegendPosition::Auto,
+        LegendPosition::TopLeft,
+        LegendPosition::TopRight,
+        LegendPosition::BottomLeft,
+        LegendPosition::BottomRight,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LegendPosition::Auto => "Clearest corner",
+            LegendPosition::TopLeft => "Top left",
+            LegendPosition::TopRight => "Top right",
+            LegendPosition::BottomLeft => "Bottom left",
+            LegendPosition::BottomRight => "Bottom right",
+        }
+    }
+}
+
 /// What a sheet shows.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -122,6 +155,7 @@ pub struct SheetContent {
     pub north_arrow: bool,
     pub scale_bar: bool,
     pub legend: bool,
+    pub legend_position: LegendPosition,
     /// Everything in black (for photocopies and faxes of old).
     pub monochrome: bool,
 }
@@ -139,6 +173,7 @@ impl Default for SheetContent {
             north_arrow: true,
             scale_bar: true,
             legend: true,
+            legend_position: LegendPosition::Auto,
             monochrome: false,
         }
     }

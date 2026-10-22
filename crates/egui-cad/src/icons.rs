@@ -96,6 +96,7 @@ pub const TABLE: &str = "\u{E476}";
 pub const TAG: &str = "\u{E478}";
 pub const TARGET: &str = "\u{E47C}";
 pub const TERMINAL: &str = "\u{E47E}";
+pub const TEXT_T: &str = "\u{E48A}";
 pub const TRASH: &str = "\u{E4A6}";
 pub const TRIANGLE: &str = "\u{E4B0}";
 pub const UPLOAD_SIMPLE: &str = "\u{E4C0}";

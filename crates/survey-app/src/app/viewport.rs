@@ -95,6 +95,7 @@ impl SurveyApp {
             .codes
             .iter()
             .any(|c| c.style.labels.is_some());
+        self.draw_texts(&painter, out.rect, &theme);
         if self.settings.labels.any() || code_labels {
             self.draw_labels(&painter, out.rect, &theme);
         }

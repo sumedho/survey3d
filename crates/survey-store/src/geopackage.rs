@@ -102,6 +102,7 @@ pub struct GpkgSummary {
     pub points: usize,
     pub lines: usize,
     pub parcels: usize,
+    pub texts: usize,
 }
 
 /// Writes the document's points, polylines and parcels to a new GeoPackage.
@@ -180,12 +181,22 @@ pub fn export_geopackage(doc: &Document) -> Result<(Vec<u8>, GpkgSummary)> {
         "name TEXT, code TEXT, layer TEXT, closed BOOLEAN, length DOUBLE",
         "Linework",
     )?;
+    table(
+        &tx,
+        "annotations",
+        "POINT",
+        "text TEXT, height_mm DOUBLE, rotation DOUBLE, align TEXT, layer TEXT",
+        "Text on the drawing (height in paper millimetres, rotation in degrees anticlockwise from east)",
+    )?;
     {
         let mut pts = tx.prepare(
             "INSERT INTO points (geom, name, code, description, layer, height_known) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
         let mut lines = tx.prepare(
             "INSERT INTO lines (geom, name, code, layer, closed, length) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        let mut texts = tx.prepare(
+            "INSERT INTO annotations (geom, text, height_mm, rotation, align, layer) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
         for (_, e) in doc.entities() {
             match e {
@@ -220,6 +231,18 @@ pub fn export_geopackage(doc: &Document) -> Result<(Vec<u8>, GpkgSummary)> {
                     summary.lines += 1;
                 }
                 Entity::Polyline(_) => {}
+                Entity::Text(t) => {
+                    grow(t.position);
+                    texts.execute(params![
+                        blob(srs, 1001, &[vec![t.position]]),
+                        t.text,
+                        t.height,
+                        t.rotation,
+                        t.align.key(),
+                        layer_name(t.layer)
+                    ])?;
+                    summary.texts += 1;
+                }
             }
         }
     }
@@ -305,6 +328,7 @@ mod tests {
             closed: true,
             code: "BDY".into(),
             layer,
+            heights_known: true,
         };
         let mut cs = ChangeSet::new("test")
             .insert_entity(Entity::Point(SurveyPoint {
@@ -337,7 +361,8 @@ mod tests {
             GpkgSummary {
                 points: 1,
                 lines: 1,
-                parcels: 1
+                parcels: 1,
+                texts: 0
             }
         );
         let mut conn = Connection::open_in_memory().expect("db");
@@ -372,6 +397,7 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("cols");
-        assert_eq!(n, 3);
+        // points, lines, annotations (text) and parcels.
+        assert_eq!(n, 4);
     }
 }

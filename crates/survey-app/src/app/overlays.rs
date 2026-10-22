@@ -12,6 +12,57 @@ use super::*;
 const LABEL_GAP: f32 = 7.0;
 
 impl SurveyApp {
+    /// Text notes in view, at their paper size, in their layer's colour.
+    pub(super) fn draw_texts(&self, painter: &egui::Painter, rect: egui::Rect, theme: &CadTheme) {
+        let cam = &self.viewport.camera;
+        let doc = &self.session.project.doc;
+        let selection = &self.session.project.selection;
+        let view = cam.rect_frustum(glam::DVec2::ZERO, cam.viewport);
+        let mut ids = Vec::new();
+        doc.query(&|b| view.intersects_aabb(b), &mut ids);
+        for id in ids {
+            let Some(Entity::Text(t)) = doc.entity(id) else {
+                continue;
+            };
+            let Some(layer) = doc.layer(t.layer).filter(|l| l.visible) else {
+                continue;
+            };
+            let Some(place) = crate::scene_build::text_placement(cam, t) else {
+                continue;
+            };
+            let color = if selection.contains(id) {
+                theme.selection
+            } else {
+                let [r, g, b, a] = crate::scene_build::layer_color(layer.color.0, theme);
+                Color32::from_rgba_unmultiplied(r, g, b, a)
+            };
+            let font = egui::FontId::proportional(place.font_px as f32);
+            let angle = place.along.y.atan2(place.along.x) as f32;
+            let lines: Vec<&str> = t.text.lines().collect();
+            let step = place.font_px * crate::scene_build::TEXT_LINE_SPACING;
+            let along = crate::scene_build::align_fraction(t.align);
+            for (i, line) in lines.iter().enumerate() {
+                let width = f64::from(
+                    painter
+                        .layout_no_wrap(line.to_string(), font.clone(), color)
+                        .size()
+                        .x,
+                );
+                let shift = ((lines.len() - 1) as f64 / 2.0 - i as f64) * step;
+                let centre = place.anchor + place.along * (width * (0.5 - along)) + place.up * shift;
+                halo_text(
+                    painter,
+                    to_screen(rect, centre),
+                    line.to_string(),
+                    &font,
+                    angle,
+                    color,
+                    theme.viewport_bg,
+                );
+            }
+        }
+    }
+
     pub(super) fn draw_overlays(
         &mut self,
         painter: &egui::Painter,
@@ -33,6 +84,12 @@ impl SurveyApp {
                     let stroke = Stroke::new(3.0, theme.hover.gamma_multiply(0.8));
                     for part in l.tessellate(cam.world_per_pixel() * 0.1) {
                         draw_world_polyline(painter, rect, cam, &part, stroke, false);
+                    }
+                }
+                Some(Entity::Text(t)) => {
+                    if let Some(corners) = text_corners(cam, rect, t) {
+                        let stroke = Stroke::new(1.5, theme.hover);
+                        painter.add(egui::Shape::closed_line(corners.to_vec(), stroke));
                     }
                 }
                 None => {}
@@ -541,6 +598,16 @@ fn halo_text(
         );
     }
     painter.add(egui::epaint::TextShape::new(origin, galley, color).with_angle(angle));
+}
+
+/// A text note's box on screen.
+fn text_corners(
+    cam: &cad_render::Camera,
+    rect: egui::Rect,
+    t: &survey_model::TextNote,
+) -> Option<[egui::Pos2; 4]> {
+    let place = crate::scene_build::text_placement(cam, t)?;
+    Some(place.corners.map(|c| to_screen(rect, c)))
 }
 
 /// Draws text in a small box near `pos`, kept inside `bounds`.

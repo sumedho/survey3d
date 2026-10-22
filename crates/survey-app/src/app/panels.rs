@@ -9,18 +9,6 @@ use crate::ui::surfaces::{SurfaceAction, surfaces_panel};
 
 use super::*;
 
-/// Palette for new layers.
-const LAYER_COLORS: [Color; 8] = [
-    Color::rgb(0x7d, 0xd3, 0xfc),
-    Color::rgb(0xfb, 0xbf, 0x24),
-    Color::rgb(0x4a, 0xde, 0x80),
-    Color::rgb(0xf4, 0x72, 0xb6),
-    Color::rgb(0xa7, 0x8b, 0xfa),
-    Color::rgb(0xf8, 0x71, 0x71),
-    Color::rgb(0x2d, 0xd4, 0xbf),
-    Color::rgb(0xfd, 0xba, 0x74),
-];
-
 impl SurveyApp {
     // ------------------------------------------------------------------ status bar
 
@@ -356,7 +344,7 @@ impl SurveyApp {
                     .map(|i| format!("Layer {i}"))
                     .find(|name| doc.layer_by_name(name).is_none())
                     .unwrap_or_default();
-                let color = LAYER_COLORS[n % LAYER_COLORS.len()];
+                let color = Layer::palette_color(n);
                 let layer = Layer::new(LayerId(0), name.clone(), color);
                 self.session.execute(Box::new(
                     ChangeSet::new(format!("Add layer {name}")).insert_layer(layer),

@@ -159,7 +159,12 @@ impl CsvImportDialog {
                             let current = doc
                                 .layer(doc.current_layer())
                                 .map_or("current", |l| l.name.as_str());
-                            ui.radio_value(&mut self.new_layer, false, format!("Current ({current})"));
+                            ui.radio_value(
+                                &mut self.new_layer,
+                                false,
+                                format!("Code's layer, else {current}"),
+                            )
+                            .on_hover_text("Points whose code is in the feature library go on its layer");
                             ui.radio_value(&mut self.new_layer, true, "New:");
                             ui.add_enabled(
                                 self.new_layer,

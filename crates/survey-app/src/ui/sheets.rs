@@ -7,7 +7,7 @@ use egui_cad::{CadTheme, icons};
 use glam::DVec2;
 use survey_core::style::LabelSet;
 use survey_io::plot::{CAP_HEIGHT, Item, Plot, Rgb};
-use survey_model::sheet::{GridMarks, Paper, STANDARD_SCALES, SheetRecord};
+use survey_model::sheet::{GridMarks, LegendPosition, Paper, STANDARD_SCALES, SheetRecord};
 use survey_model::{Document, Keyed, RecordId};
 
 use crate::plan::{build_plot, frame_size_world};
@@ -412,6 +412,17 @@ fn settings(ui: &mut egui::Ui, s: &mut SheetRecord, doc: &Document, view: &ViewI
     switch_row(ui, &mut c.north_arrow, "North arrow");
     switch_row(ui, &mut c.scale_bar, "Scale bar");
     switch_row(ui, &mut c.legend, "Legend");
+    if c.legend {
+        row(ui, "Legend at", |ui| {
+            egui::ComboBox::from_id_salt("legend_position")
+                .selected_text(c.legend_position.label())
+                .show_ui(ui, |ui| {
+                    for p in LegendPosition::ALL {
+                        ui.selectable_value(&mut c.legend_position, p, p.label());
+                    }
+                });
+        });
+    }
     switch_row(ui, &mut c.monochrome, "Black and white");
     row(ui, "Grid", |ui| {
         egui::ComboBox::from_id_salt("grid")

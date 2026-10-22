@@ -760,6 +760,20 @@ impl SurveyApp {
 
     /// Session commands, then view, file and window commands.
     fn run_app_command(&mut self, ctx: &egui::Context, text: &str) -> bool {
+        // The application's help also lists its own (window, view, file) commands.
+        if matches!(text.to_ascii_lowercase().as_str(), "help" | "?") {
+            let mut lines = vec!["Tools:".to_string()];
+            for t in self.session.tools.tools() {
+                lines.push(format!("  {:<18} {}", t.commands.join(", "), t.description));
+            }
+            lines.push("Commands:".into());
+            for c in APP_COMMANDS {
+                lines.push(format!("  {:<18} {}", c.name, c.title));
+            }
+            lines.push(crate::session::POINT_INPUT_HELP.into());
+            self.session.log.info(lines.join("\n"));
+            return true;
+        }
         if self.session.run_command(text) {
             return true;
         }
@@ -861,18 +875,6 @@ impl SurveyApp {
                     ThemeMode::Dark => ThemeMode::Light,
                     ThemeMode::Light => ThemeMode::Dark,
                 };
-            }
-            "help" | "?" => {
-                let mut lines = vec!["Tools:".to_string()];
-                for t in self.session.tools.tools() {
-                    lines.push(format!("  {:<18} {}", t.commands.join(", "), t.description));
-                }
-                lines.push("Commands:".into());
-                for c in APP_COMMANDS {
-                    lines.push(format!("  {:<18} {}", c.name, c.title));
-                }
-                lines.push("Point input: E,N[,Z]  @dE,dN[,dZ]  @dist<bearing  or a point name".into());
-                self.session.log.info(lines.join("\n"));
             }
             _ => return false,
         }
@@ -1088,6 +1090,13 @@ impl SurveyApp {
         }
     }
 
+    /// Opens a project file (e.g. one named on the command line).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_path(&mut self, path: &std::path::Path) {
+        let name = crate::platform::file_name(path);
+        self.open_store(ProjectStore::open_file(path), name);
+    }
+
     fn open_store(&mut self, result: Result<ProjectStore, survey_store::StoreError>, name: String) {
         let project = result.and_then(|store| Project::from_store(store, name.clone(), &self.settings));
         match project {
@@ -1199,10 +1208,7 @@ impl SurveyApp {
                     FileKind::Report | FileKind::GeoPackage | FileKind::Pdf | FileKind::Svg => {}
                 },
                 #[cfg(not(target_arch = "wasm32"))]
-                FileEvent::ProjectPath(path) => {
-                    let name = crate::platform::file_name(&path);
-                    self.open_store(ProjectStore::open_file(&path), name);
-                }
+                FileEvent::ProjectPath(path) => self.open_path(&path),
                 #[cfg(target_arch = "wasm32")]
                 FileEvent::Recovery { bytes } => {
                     self.recovery = bytes;

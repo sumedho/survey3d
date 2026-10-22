@@ -9,6 +9,7 @@ Architecture, decisions and roadmap: [`docs/PLAN.md`](docs/PLAN.md).
 
 ```sh
 cargo run                    # native (survey-app is the default member)
+cargo run -- job.s3d         # native, opening a project
 ./scripts/serve-web.sh       # web, http://127.0.0.1:8765 (needs `cargo install trunk --locked --version 0.21.14`)
 cargo test --workspace
 ```
@@ -144,10 +145,12 @@ stay in memory), `--user NAME` (audit trail; default `$USER`).
 |---|---|
 | `project_info` | File, conventions, counts, layers, surfaces, clouds, records, selection, active tool and prompt, undo/redo |
 | `run_commands` | Types lines on the command line (`help`, `pl`, `1000,2000`, `@10<90`, `c`, `inverse`, `undo`…) and returns the output and reports |
-| `query` | Points, polylines, layers, surfaces, clouds, sheets/parcels/alignments/traverses/field data, selection, audit trail — filtered and paged |
+| `query` | Points, polylines, text, layers, feature codes, surfaces, clouds, sheets/parcels/alignments/traverses/field data, selection, audit trail — filtered and paged |
 | `select` | Sets the selection that commands such as `delete`, `join`, `list`, `mkparcel`, `linework` act on |
-| `add_points`, `add_polyline` | Structured input in one undo step |
-| `set_record`, `delete_record` | Create or edit (merging fields) sheets, parcels, alignments and traverses by id |
+| `set_project`, `set_feature_codes`, `set_layer` | Job setup: name and coordinate system (e.g. `"MGA2020 zone 50"`), the feature-code library (symbols, layers, line styles, linework), layer colours, line styles and the current layer |
+| `add_points`, `add_polyline`, `add_text` | Structured input in one undo step (a polyline without heights is plan-only) |
+| `edit_entities` | Rename, recode, move to another layer, edit text — the objects a filter matches, in one undo step |
+| `set_record`, `delete_record` | Create or edit (merging fields) sheets, parcels, alignments and traverses by id, one or many at once |
 | `import_file`, `export_file` | CSV points, DXF, LandXML, GSI/JobXML, LAS/XYZ in; DXF, LandXML, GeoPackage, CSV, PDF, SVG out (no silent overwrites) |
 | `render` | A PNG of a plan sheet, or an overview of the whole drawing, so the agent can see its work |
 | `new_project`, `open_project`, `save_project` | Won't drop unsaved changes unless told to |

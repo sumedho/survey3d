@@ -52,6 +52,7 @@ impl Session {
             .filter(|id| doc.is_entity_editable(*id))
             .collect();
         if ids.is_empty() {
+            self.log.warn("Select objects to delete first");
             return;
         }
         let mut cs = ChangeSet::new(format!("Delete {} objects", ids.len()));
@@ -145,6 +146,13 @@ impl Session {
                 }
                 Some(Entity::Polyline(l)) => {
                     text.push_str(&crate::listing::polyline_listing(l, conv));
+                }
+                Some(Entity::Text(t)) => {
+                    text.push_str(&format!(
+                        "TEXT  \"{}\" at {}\n",
+                        t.text.replace('\n', " / "),
+                        conv.format_coord(t.position, false)
+                    ));
                 }
                 None => {}
             }
@@ -560,6 +568,7 @@ impl Session {
                 closed: c.closed,
                 code: String::new(),
                 layer: doc.current_layer(),
+                heights_known: true,
             };
             cmd.add(if c.major { major } else { minor }, Entity::Polyline(line));
         }

@@ -389,6 +389,7 @@ mod tests {
             closed,
             code: String::new(),
             layer: LayerId(0),
+            heights_known: true,
         }
     }
 

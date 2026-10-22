@@ -187,6 +187,7 @@ impl ClosureWindow {
             closed: closes && self.closed_polyline,
             code: String::new(),
             layer: doc.current_layer(),
+            heights_known: true,
         }));
         (cs, format!("Closure: drew {name}"))
     }

@@ -102,6 +102,12 @@ impl ChangeSet {
         self.ops.is_empty()
     }
 
+    /// The same changes under another label (when it depends on what was collected).
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
+    }
+
     pub fn insert_entity(mut self, entity: Entity) -> Self {
         self.push_insert_entity(entity);
         self

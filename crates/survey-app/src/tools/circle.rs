@@ -112,6 +112,7 @@ impl CircleTool {
             closed: true,
             code: String::new(),
             layer: ctx.doc.current_layer(),
+            heights_known: true,
         };
         ctx.execute(ChangeSet::new("Add circle").insert_entity(Entity::Polyline(line)));
     }

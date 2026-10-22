@@ -209,3 +209,89 @@ fn unnamed_points_number_on_from_the_batch_and_project() {
         Some("Import 3 points from test")
     );
 }
+
+#[test]
+fn commands_end_the_active_tool_and_help_works() {
+    let mut s = session();
+    for line in ["point", "0,0", "10,0", "", "inverse", "1", "2", ""] {
+        s.run(line);
+    }
+    assert_eq!(s.active_tool.id(), SELECT_TOOL_ID, "Enter finishes the inverse");
+    s.run("inverse");
+    s.run("1");
+    s.run("delete");
+    assert_eq!(s.active_tool.id(), SELECT_TOOL_ID, "a command ends the tool");
+    assert_eq!(
+        last_log(&s),
+        (LogKind::Warning, "Select objects to delete first".into())
+    );
+    s.run("help");
+    let text: Vec<String> = s.log.lines().map(|l| l.text.clone()).collect();
+    assert!(
+        text.iter().any(|l| l.trim_start().starts_with("polyline, pl")),
+        "{text:?}"
+    );
+    assert!(text.iter().any(|l| l.contains("mkparcel")));
+    assert!(text.iter().any(|l| l.starts_with("Point input")));
+}
+
+#[test]
+fn text_tool_places_notes() {
+    let mut s = session();
+    for line in ["text", "100,200", "SMITH STREET", "", "tx", "110,200", "pl"] {
+        s.run(line);
+    }
+    let texts: Vec<(String, f64)> = s
+        .project
+        .doc
+        .entities()
+        .filter_map(|(_, e)| match e {
+            Entity::Text(t) => Some((t.text.clone(), t.position.x)),
+            _ => None,
+        })
+        .collect();
+    // Typed after placing, even a command name is text.
+    assert_eq!(
+        texts,
+        [("SMITH STREET".to_string(), 100.0), ("pl".to_string(), 110.0)]
+    );
+}
+
+#[test]
+fn imported_points_go_to_their_codes_layer() {
+    let mut s = session();
+    let mut library = survey_core::field_to_finish::FeatureLibrary::default();
+    library.codes.push(survey_core::field_to_finish::FeatureCode::new(
+        "SSM",
+        "State survey mark",
+        "CONTROL",
+        [200, 0, 0],
+        false,
+    ));
+    s.apply_feature_codes(library);
+    let p = |name: &str, code: &str| survey_io::ImportedPoint {
+        name: name.into(),
+        easting: 0.0,
+        northing: 0.0,
+        height: None,
+        code: code.into(),
+        description: String::new(),
+    };
+    s.add_points(&[p("1", "SSM"), p("2", "XYZ"), p("3", "")], None, "test");
+    s.add_points(&[p("4", "SSM")], Some("Mine"), "test");
+    let doc = &s.project.doc;
+    let layer_of = |name: &str| {
+        let (_, point) = doc.find_point_by_name(name).expect("point");
+        doc.layer(point.layer).map(|l| l.name.clone()).unwrap_or_default()
+    };
+    assert_eq!(layer_of("1"), "CONTROL", "the code's layer");
+    assert_eq!(layer_of("2"), "0", "unknown code: the current layer");
+    assert_eq!(layer_of("3"), "0");
+    assert_eq!(layer_of("4"), "Mine", "a layer asked for wins");
+    let control = doc.layer_by_name("CONTROL").expect("created");
+    assert_eq!(
+        control.color,
+        survey_model::Color::rgb(200, 0, 0),
+        "in the code's colour"
+    );
+}

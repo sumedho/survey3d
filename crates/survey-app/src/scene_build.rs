@@ -127,10 +127,11 @@ fn build_scene(doc: &Document, highlight: Option<&Selection>, theme: &CadTheme, 
         if !layer.visible {
             continue;
         }
-        let code = match entity {
-            Entity::Point(p) => p.code.as_str(),
-            Entity::Polyline(l) => l.code.as_str(),
-        };
+        // Text is sized on paper and drawn over the scene (see the viewport overlays).
+        if matches!(entity, Entity::Text(_)) {
+            continue;
+        }
+        let code = entity.code();
         let style = styles.get(code);
         let color = if is_selected {
             selected
@@ -152,9 +153,11 @@ fn build_scene(doc: &Document, highlight: Option<&Selection>, theme: &CadTheme, 
                 b.add_point(p.position, color, size, symbol);
             }
             Entity::Polyline(l) => {
-                let (mut line_style, weight) = style.map_or((Default::default(), LINE_WIDTH), |(s, _)| {
-                    (s.line_style, s.line_weight)
-                });
+                // A code's style wins; otherwise the layer's.
+                let (mut line_style, weight) = style
+                    .map_or((layer.line_style, layer.line_weight), |(s, _)| {
+                        (s.line_style, s.line_weight)
+                    });
                 // Highlights are solid: a wider dashed copy would not line up with
                 // the dashes of the line underneath.
                 if is_selected {
@@ -170,6 +173,7 @@ fn build_scene(doc: &Document, highlight: Option<&Selection>, theme: &CadTheme, 
                     }
                 }
             }
+            Entity::Text(_) => {}
         }
     }
     b.build(revision)
@@ -180,7 +184,7 @@ fn build_scene(doc: &Document, highlight: Option<&Selection>, theme: &CadTheme, 
 /// never changed; on a light canvas, near-white becomes the text colour and
 /// other very bright colours (DXF yellow, green, cyan…) are darkened so they
 /// stay readable — the same adaptation CAD packages apply to white/black.
-fn layer_color(c: [u8; 4], theme: &CadTheme) -> [u8; 4] {
+pub(crate) fn layer_color(c: [u8; 4], theme: &CadTheme) -> [u8; 4] {
     if theme.mode != ThemeMode::Light {
         return c;
     }
@@ -229,6 +233,13 @@ impl SnapProvider for DocSnapProvider<'_> {
                     },
                     tag,
                 }),
+                Entity::Text(t) => out.push(SnapSource {
+                    geom: SnapGeom::Point {
+                        p: t.position,
+                        height_known: false,
+                    },
+                    tag,
+                }),
                 Entity::Polyline(l) => {
                     for (a, b, bulge) in l.segments() {
                         let (geom, bounds) = match ArcSegment::from_bulge(a, b, bulge) {
@@ -254,7 +265,7 @@ pub fn hit_test(doc: &Document, cam: &Camera, cursor: DVec2, aperture_px: f64) -
     let mut ids = Vec::new();
     doc.query(&|b| frustum.intersects_aabb(b), &mut ids);
     let mut best: Option<(f64, EntityId)> = None;
-    for id in ids {
+    for &id in &ids {
         if !doc.is_entity_editable(id) {
             continue;
         }
@@ -268,7 +279,8 @@ pub fn hit_test(doc: &Document, cam: &Camera, cursor: DVec2, aperture_px: f64) -
                 .flat_map(|part| part.windows(2))
                 .filter_map(|w| distance_to_segment_px(cam, cursor, w[0], w[1]))
                 .reduce(f64::min),
-            None => None,
+            // Text is found below, by its whole box.
+            Some(Entity::Text(_)) | None => None,
         };
         if let Some(d) = d
             && d <= aperture_px
@@ -277,7 +289,101 @@ pub fn hit_test(doc: &Document, cam: &Camera, cursor: DVec2, aperture_px: f64) -
             best = Some((d, id));
         }
     }
+    // Text reaches beyond its insertion point (the only place indexed), so look
+    // through the notes in view. Over the letters counts as 2 px away: a point
+    // or line right under the cursor still wins, anything further does not.
+    let view = cam.rect_frustum(DVec2::ZERO, cam.viewport);
+    ids.clear();
+    doc.query(&|b| view.intersects_aabb(b), &mut ids);
+    for id in ids {
+        let Some(Entity::Text(t)) = doc.entity(id) else {
+            continue;
+        };
+        if doc.is_entity_editable(id)
+            && let Some(place) = text_placement(cam, t)
+            && let d = place.distance(cursor).max(2.0)
+            && d <= aperture_px
+            && best.is_none_or(|(bd, _)| d < bd)
+        {
+            best = Some((d, id));
+        }
+    }
     best.map(|(_, id)| id)
+}
+
+/// Screen size of text: pixels per paper millimetre of capital height. Text
+/// keeps this size at any zoom, as point labels do.
+pub const TEXT_PX_PER_MM: f64 = 4.4;
+
+/// Where a text note sits on screen (viewport pixels, y down).
+pub struct TextPlacement {
+    /// The insertion point.
+    pub anchor: DVec2,
+    /// Unit vectors along the reading direction and towards the top of the letters.
+    pub along: DVec2,
+    pub up: DVec2,
+    /// Font size (em) in pixels.
+    pub font_px: f64,
+    /// Box corners: bottom-left, bottom-right, top-right, top-left.
+    pub corners: [DVec2; 4],
+}
+
+impl TextPlacement {
+    /// Pixels from `p` to the box (0 inside).
+    pub fn distance(&self, p: DVec2) -> f64 {
+        let c = &self.corners;
+        let local = DVec2::new((p - c[0]).dot(self.along), (p - c[0]).dot(self.up));
+        let size = DVec2::new((c[1] - c[0]).length(), (c[3] - c[0]).length());
+        (local - local.clamp(DVec2::ZERO, size)).length()
+    }
+}
+
+/// Line height as a multiple of the font size, for multi-line text.
+pub const TEXT_LINE_SPACING: f64 = 1.25;
+
+/// The note's place on screen, or `None` when its insertion point is not in front of the camera.
+pub fn text_placement(cam: &Camera, t: &survey_model::TextNote) -> Option<TextPlacement> {
+    let (anchor, _) = cam.world_to_screen(t.position)?;
+    // The reading direction as seen: project a short step along it.
+    let (s, c) = t.rotation.to_radians().sin_cos();
+    let step = glam::DVec3::new(c, s, 0.0) * cam.world_per_pixel() * 20.0;
+    let along = cam
+        .world_to_screen(t.position + step)
+        .map(|(p, _)| p - anchor)
+        .filter(|d| d.length() > 1e-6)
+        .map_or(DVec2::X, |d| d.normalize());
+    let up = DVec2::new(along.y, -along.x);
+    let font_px = t.height * TEXT_PX_PER_MM / survey_io::plot::CAP_HEIGHT;
+    let lines: Vec<&str> = t.text.lines().collect();
+    let width = lines
+        .iter()
+        .map(|l| survey_io::plot::text_width(l, font_px, false))
+        .fold(0.0, f64::max);
+    let height = font_px * TEXT_LINE_SPACING * lines.len().max(1) as f64;
+    let left = -width * align_fraction(t.align);
+    let corner = |x: f64, y: f64| anchor + along * x + up * y;
+    let corners = [
+        corner(left, -height / 2.0),
+        corner(left + width, -height / 2.0),
+        corner(left + width, height / 2.0),
+        corner(left, height / 2.0),
+    ];
+    Some(TextPlacement {
+        anchor,
+        along,
+        up,
+        font_px,
+        corners,
+    })
+}
+
+/// How far along the text its insertion point is (0 left, ½ centre, 1 right).
+pub fn align_fraction(align: survey_model::TextAlign) -> f64 {
+    match align {
+        survey_model::TextAlign::Left => 0.0,
+        survey_model::TextAlign::Centre => 0.5,
+        survey_model::TextAlign::Right => 1.0,
+    }
 }
 
 /// Editable entities chosen by a window/crossing box.
@@ -291,6 +397,7 @@ pub fn select_in_box(doc: &Document, cam: &Camera, sel: &SelectionBox) -> Vec<En
             && match doc.entity(*id) {
                 Some(Entity::Point(p)) => sel.selects(cam, &[vec![p.position]]),
                 Some(Entity::Polyline(l)) => sel.selects(cam, &l.tessellate(tolerance)),
+                Some(Entity::Text(t)) => sel.selects(cam, &[vec![t.position]]),
                 None => false,
             }
     });

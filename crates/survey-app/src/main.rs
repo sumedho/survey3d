@@ -4,9 +4,11 @@
 
 use survey_app::SurveyApp;
 
+/// `survey3d [FILE.s3d]` opens the project given, if any.
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     env_logger::init();
+    let project = std::env::args_os().nth(1).map(std::path::PathBuf::from);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("survey3d")
@@ -17,7 +19,13 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "survey3d",
         options,
-        Box::new(|cc| Ok(Box::new(SurveyApp::new(cc)))),
+        Box::new(move |cc| {
+            let mut app = SurveyApp::new(cc);
+            if let Some(path) = &project {
+                app.open_path(path);
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
 

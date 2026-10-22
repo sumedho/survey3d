@@ -30,12 +30,16 @@ pub struct ImportEntities {
 
 impl ImportEntities {
     /// Points read from a file (or given by a script). They go on the layer
-    /// named `layer`, created if the project has none of that name, else on the
+    /// named `layer`, created if the project has none of that name. Without
+    /// one, a point whose code is in the feature library goes on the code's
+    /// layer (created in the code's colour, as linework does) and others on the
     /// current layer. Points without a name are numbered on from the largest
     /// number in use, in the project or among `points`.
     pub fn points(doc: &Document, label: String, points: &[ImportedPoint], layer: Option<&str>) -> Self {
         let mut cmd = Self::new(label);
-        let layer = cmd.layer_named(doc, layer);
+        let chosen = layer.map(str::trim).filter(|n| !n.is_empty());
+        let fixed = cmd.layer_named(doc, chosen);
+        let library = &doc.meta().feature_codes;
         let in_batch = points.iter().filter_map(|p| p.name.parse::<u64>().ok()).max();
         let in_doc: u64 = doc.next_point_name().parse().unwrap_or(1);
         let mut next = in_doc.max(in_batch.map_or(0, |n| n + 1));
@@ -54,6 +58,13 @@ impl ImportEntities {
                 description: p.description.clone(),
                 layer: doc.current_layer(),
             };
+            let layer = match library.feature_for(&p.code) {
+                Some(f) if chosen.is_none() && !f.layer.trim().is_empty() => {
+                    let [r, g, b] = f.color;
+                    cmd.layer_in(doc, &f.layer, Some(Color::rgb(r, g, b)))
+                }
+                _ => fixed,
+            };
             cmd.add(layer, Entity::Point(point));
         }
         cmd
@@ -63,18 +74,28 @@ impl ImportEntities {
     /// or the current layer when `name` is `None` or blank.
     pub fn layer_named(&mut self, doc: &Document, name: Option<&str>) -> LayerRef {
         match name.map(str::trim).filter(|n| !n.is_empty()) {
-            Some(name) => match doc.layer_by_name(name) {
-                Some(l) => LayerRef::Existing(l.id),
-                None => match self
-                    .new_layers
-                    .iter()
-                    .position(|(n, _, _)| n.eq_ignore_ascii_case(name))
-                {
-                    Some(i) => LayerRef::New(i),
-                    None => self.add_layer(name.to_string(), Color::rgb(0x7d, 0xd3, 0xfc), true),
-                },
-            },
+            Some(name) => self.layer_in(doc, name, None),
             None => LayerRef::Existing(doc.current_layer()),
+        }
+    }
+
+    /// The layer called `name`, added by this command in `color` (else the next
+    /// palette colour, so new layers are told apart) if the project has none.
+    pub fn layer_in(&mut self, doc: &Document, name: &str, color: Option<Color>) -> LayerRef {
+        if let Some(l) = doc.layer_by_name(name) {
+            return LayerRef::Existing(l.id);
+        }
+        match self
+            .new_layers
+            .iter()
+            .position(|(n, _, _)| n.eq_ignore_ascii_case(name))
+        {
+            Some(i) => LayerRef::New(i),
+            None => {
+                let color =
+                    color.unwrap_or_else(|| Layer::palette_color(doc.layers().len() + self.new_layers.len()));
+                self.add_layer(name.trim().to_string(), color, true)
+            }
         }
     }
 

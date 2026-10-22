@@ -51,6 +51,11 @@ pub fn grips(doc: &Document, selection: &Selection) -> Vec<Grip> {
                 kind: GripKind::Point,
                 position: p.position,
             }),
+            Some(Entity::Text(t)) => out.push(Grip {
+                entity: id,
+                kind: GripKind::Point,
+                position: t.position,
+            }),
             Some(Entity::Polyline(l)) => {
                 for (i, v) in l.vertices.iter().enumerate() {
                     out.push(Grip {
@@ -92,6 +97,7 @@ pub fn apply_grip(entity: &Entity, grip: &Grip, to: &Pick) -> Option<Entity> {
             p.position = place(to, p.position.z);
             p.height_known |= to.height_known;
         }
+        (Entity::Text(t), GripKind::Point) => t.position = place(to, t.position.z),
         (Entity::Polyline(l), GripKind::Vertex(i)) => {
             let v = l.vertices.get_mut(i)?;
             *v = place(to, v.z);
@@ -159,6 +165,7 @@ mod tests {
             closed: false,
             code: String::new(),
             layer: LayerId(1),
+            heights_known: true,
         })
     }
 

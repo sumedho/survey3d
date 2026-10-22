@@ -62,10 +62,10 @@ impl PolylineTool {
     }
 
     fn commit(&mut self, ctx: &mut ToolCtx<'_>, closing_bulge: Option<f64>) {
-        let vertices: Vec<DVec3> = std::mem::take(&mut self.vertices)
-            .into_iter()
-            .map(|v| v.position)
-            .collect();
+        let picked = std::mem::take(&mut self.vertices);
+        // No vertex with a height (typed E,N or picked in empty space): a plan-only line.
+        let heights_known = picked.iter().any(|v| v.height_known);
+        let vertices: Vec<DVec3> = picked.into_iter().map(|v| v.position).collect();
         let mut bulges = std::mem::take(&mut self.bulges);
         self.through = None;
         self.three_point = false;
@@ -85,6 +85,7 @@ impl PolylineTool {
             closed,
             code: String::new(),
             layer: ctx.doc.current_layer(),
+            heights_known,
         };
         ctx.log.result(format!(
             "Polyline: {n} vertices{}",
@@ -220,6 +221,7 @@ impl Tool for PolylineTool {
                 closed: false,
                 code: String::new(),
                 layer: survey_model::LayerId(0),
+                heights_known: true,
             };
             out.polylines.extend(line.tessellate(1e-3));
         }

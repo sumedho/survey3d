@@ -105,6 +105,23 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         colors      BLOB
     );
     "#,
+    // v5: layer line style and weight; plan-only strings (no heights); text.
+    r#"
+    ALTER TABLE layers ADD COLUMN line_style TEXT NOT NULL DEFAULT 'solid';
+    ALTER TABLE layers ADD COLUMN line_weight REAL NOT NULL DEFAULT 1.5;
+    ALTER TABLE strings ADD COLUMN heights_known INTEGER NOT NULL DEFAULT 1;
+    CREATE TABLE texts (
+        id       INTEGER PRIMARY KEY,
+        text     TEXT NOT NULL,
+        e        REAL NOT NULL,
+        n        REAL NOT NULL,
+        z        REAL NOT NULL,
+        height   REAL NOT NULL,
+        rotation REAL NOT NULL,
+        align    TEXT NOT NULL,
+        layer_id INTEGER NOT NULL
+    );
+    "#,
 ];
 
 pub const SCHEMA_VERSION: i32 = MIGRATIONS.len() as i32;

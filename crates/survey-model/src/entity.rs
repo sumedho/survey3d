@@ -30,6 +30,63 @@ pub struct Polyline {
     pub closed: bool,
     pub code: String,
     pub layer: LayerId,
+    /// Whether the vertices have real heights. A polyline drawn from plan
+    /// coordinates only (no heights) has `z` 0 and is left out of surfaces.
+    #[serde(default = "yes")]
+    pub heights_known: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// How text sits on its insertion point.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAlign {
+    Left,
+    #[default]
+    Centre,
+    Right,
+}
+
+impl TextAlign {
+    pub const ALL: [TextAlign; 3] = [TextAlign::Left, TextAlign::Centre, TextAlign::Right];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            TextAlign::Left => "left",
+            TextAlign::Centre => "centre",
+            TextAlign::Right => "right",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|a| a.key().eq_ignore_ascii_case(s) || (s == "center" && *a == TextAlign::Centre))
+    }
+}
+
+/// Text on the drawing: street names, easement labels, notes. Its height is
+/// in paper millimetres, so it prints the same size at any plan scale (and is
+/// drawn at a matching size on screen).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextNote {
+    pub text: String,
+    /// Insertion point: the middle of the text's height, at the left, centre
+    /// or right end as `align` says.
+    pub position: DVec3,
+    /// Paper millimetres.
+    pub height: f64,
+    /// Reading direction, degrees anticlockwise from east (0 reads left to right).
+    pub rotation: f64,
+    pub align: TextAlign,
+    pub layer: LayerId,
+}
+
+impl TextNote {
+    pub const DEFAULT_HEIGHT: f64 = 2.5;
 }
 
 impl Polyline {
@@ -154,6 +211,7 @@ pub fn join_polylines(lines: &[Polyline], tolerance: f64) -> Vec<Polyline> {
 pub enum Entity {
     Point(SurveyPoint),
     Polyline(Polyline),
+    Text(TextNote),
 }
 
 impl Entity {
@@ -161,6 +219,7 @@ impl Entity {
         match self {
             Entity::Point(p) => p.layer,
             Entity::Polyline(l) => l.layer,
+            Entity::Text(t) => t.layer,
         }
     }
 
@@ -168,14 +227,17 @@ impl Entity {
         match self {
             Entity::Point(p) => p.layer = layer,
             Entity::Polyline(l) => l.layer = layer,
+            Entity::Text(t) => t.layer = layer,
         }
     }
 
     /// Applies `f` to every stored position. Bulges are kept, so `f` must be a
-    /// rigid motion that preserves orientation (translation or rotation).
+    /// rigid motion that preserves orientation (translation or rotation); text
+    /// keeps its reading direction (see [`Self::rotate_text`]).
     pub fn map_positions(&mut self, f: impl Fn(DVec3) -> DVec3) {
         match self {
             Entity::Point(p) => p.position = f(p.position),
+            Entity::Text(t) => t.position = f(t.position),
             Entity::Polyline(l) => {
                 for v in &mut l.vertices {
                     *v = f(*v);
@@ -184,10 +246,28 @@ impl Entity {
         }
     }
 
+    /// Turns text with a rotation of the drawing (degrees anticlockwise).
+    pub fn rotate_text(&mut self, degrees: f64) {
+        if let Entity::Text(t) = self {
+            t.rotation = (t.rotation + degrees).rem_euclid(360.0);
+        }
+    }
+
+    /// The name of a point or polyline; the text of a note.
     pub fn name(&self) -> &str {
         match self {
             Entity::Point(p) => &p.name,
             Entity::Polyline(l) => &l.name,
+            Entity::Text(t) => &t.text,
+        }
+    }
+
+    /// Feature code (text has none).
+    pub fn code(&self) -> &str {
+        match self {
+            Entity::Point(p) => &p.code,
+            Entity::Polyline(l) => &l.code,
+            Entity::Text(_) => "",
         }
     }
 
@@ -195,12 +275,15 @@ impl Entity {
         match self {
             Entity::Point(_) => "Point",
             Entity::Polyline(_) => "Polyline",
+            Entity::Text(_) => "Text",
         }
     }
 
     pub fn bounds(&self) -> Aabb3 {
         match self {
             Entity::Point(p) => Aabb3::from_point(p.position),
+            // Text is sized on paper, so only its insertion point has a place in the world.
+            Entity::Text(t) => Aabb3::from_point(t.position),
             Entity::Polyline(l) => {
                 let mut b = Aabb3::from_points(l.vertices.iter().copied());
                 for (a, c, bulge) in l.segments() {
@@ -230,6 +313,7 @@ mod tests {
             closed: false,
             code: "KB".into(),
             layer: LayerId(1),
+            heights_known: true,
         }
     }
 

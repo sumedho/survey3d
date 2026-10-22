@@ -128,6 +128,11 @@ impl Server {
             "add_points" => self.add_points(args),
             "add_polyline" => self.add_polyline(args),
             "set_record" => self.set_record(args),
+            "set_feature_codes" => self.set_feature_codes(args),
+            "set_layer" => self.set_layer(args),
+            "set_project" => self.set_project(args),
+            "add_text" => self.add_text(args),
+            "edit_entities" => self.edit_entities(args),
             "delete_record" => self.delete_record(args),
             "import_file" => self.import_file(args),
             "export_file" => self.export_file(args),
@@ -174,12 +179,13 @@ impl Server {
         let doc = &p.doc;
         let meta = doc.meta();
         let mut counts = std::collections::HashMap::<LayerId, usize>::new();
-        let (mut points, mut polylines) = (0, 0);
+        let (mut points, mut polylines, mut texts) = (0, 0, 0);
         for (_, e) in doc.entities() {
             *counts.entry(e.layer()).or_default() += 1;
             match e {
                 Entity::Point(_) => points += 1,
                 Entity::Polyline(_) => polylines += 1,
+                Entity::Text(_) => texts += 1,
             }
         }
         let bounds = doc.bounds();
@@ -197,19 +203,18 @@ impl Server {
             "coordinate_system": meta.coord_system.display_name(),
             "conventions": doc.conventions(),
             "conventions_presets": Conventions::presets().into_iter().map(|c| c.name).collect::<Vec<_>>(),
-            "counts": { "points": points, "polylines": polylines },
+            "counts": { "points": points, "polylines": polylines, "texts": texts },
+            "feature_codes": meta.feature_codes.codes.len(),
             "bounds": (!bounds.is_empty()).then(|| json!({
                 "min": [bounds.min.x, bounds.min.y, bounds.min.z],
                 "max": [bounds.max.x, bounds.max.y, bounds.max.z],
             })),
-            "layers": doc.layers().iter().map(|l| json!({
-                "id": l.id.0,
-                "name": l.name,
-                "visible": l.visible,
-                "locked": l.locked,
-                "current": l.id == doc.current_layer(),
-                "objects": counts.get(&l.id).copied().unwrap_or(0),
-            })).collect::<Vec<_>>(),
+            "layers": doc.layers().iter().map(|l| {
+                let mut row = layer_row(l);
+                row["current"] = json!(l.id == doc.current_layer());
+                row["objects"] = json!(counts.get(&l.id).copied().unwrap_or(0));
+                row
+            }).collect::<Vec<_>>(),
             "surfaces": doc.surfaces().map(|(id, s)| json!({
                 "id": id.0, "name": s.name, "points": s.tin.vertices.len(), "triangles": s.tin.triangles.len(),
             })).collect::<Vec<_>>(),
@@ -271,6 +276,9 @@ impl Server {
     fn save_project(&mut self, args: &Value) -> Outcome {
         if self.read_only {
             return Err("This server is read-only (--read-only): the project file is never written".into());
+        }
+        if let Some(path) = str_arg(args, "path") {
+            ensure_folder(Path::new(path))?;
         }
         let project = &mut self.session.project;
         let current = project.store.file_path().map(Path::to_path_buf);
@@ -398,27 +406,39 @@ impl Server {
             .and_then(Value::as_array)
             .filter(|v| v.len() >= 2)
             .ok_or("vertices: give two or more vertices")?;
+        // Each vertex with whether its height is known.
         let mut vertices = Vec::new();
         for (i, v) in items.iter().enumerate() {
-            let position = match v {
+            let vertex = match v {
                 Value::String(name) => {
-                    doc.find_point_by_name(name)
+                    let p = doc
+                        .find_point_by_name(name)
                         .ok_or_else(|| format!("vertices[{i}]: no point named '{name}'"))?
-                        .1
-                        .position
+                        .1;
+                    (p.position, p.height_known)
                 }
                 Value::Array(c) => {
                     let c: Vec<f64> = c.iter().filter_map(Value::as_f64).collect();
                     match c[..] {
-                        [e, n] => DVec3::new(e, n, 0.0),
-                        [e, n, z] => DVec3::new(e, n, z),
+                        [e, n] => (DVec3::new(e, n, 0.0), false),
+                        [e, n, z] => (DVec3::new(e, n, z), true),
                         _ => return Err(format!("vertices[{i}]: [e, n] or [e, n, z]")),
                     }
                 }
                 _ => return Err(format!("vertices[{i}]: a point name or [e, n, z]")),
             };
-            vertices.push(position);
+            vertices.push(vertex);
         }
+        // A line has heights at every vertex or at none (a plan-only line).
+        let heights_known = vertices.iter().all(|(_, h)| *h);
+        if !heights_known && vertices.iter().any(|(_, h)| *h) {
+            return Err(
+                "vertices: give heights for every vertex or for none (a plan-only line); \
+                        named points without heights count as none"
+                    .into(),
+            );
+        }
+        let vertices: Vec<DVec3> = vertices.into_iter().map(|(p, _)| p).collect();
         let bulges: Vec<f64> = args
             .get("bulges")
             .and_then(Value::as_array)
@@ -431,6 +451,7 @@ impl Server {
             closed: flag(args, "closed"),
             code: str_arg(args, "code").unwrap_or_default().to_string(),
             layer: doc.current_layer(),
+            heights_known,
         };
         let mut cmd = ImportEntities::new(format!("Add polyline {}", line.name).trim().to_string());
         let layer = cmd.layer_named(doc, str_arg(args, "layer"));
@@ -453,55 +474,113 @@ impl Server {
 
     fn set_record(&mut self, args: &Value) -> Outcome {
         let kind = required_str(args, "kind")?;
-        let id = args.get("id").and_then(Value::as_i64).map(RecordId);
-        let patch = args
-            .get("record")
-            .filter(|r| r.is_object())
-            .cloned()
-            .ok_or("record: give the record's fields as an object")?;
-        let value = match kind {
-            "sheet" => self.set_typed::<SheetRecord>(id, patch),
-            "parcel" => self.set_typed::<ParcelRecord>(id, patch),
-            "alignment" => self.set_typed::<AlignmentRecord>(id, patch),
-            "traverse" => self.set_typed::<TraverseRecord>(id, patch),
+        // One record (`id`, `record`), or several (`items`) as one undo step.
+        let batch = args.get("items").and_then(Value::as_array);
+        let items: Vec<(Option<RecordId>, Value)> = match batch {
+            Some(items) if !items.is_empty() => items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    let record = item
+                        .get("record")
+                        .filter(|r| r.is_object())
+                        .cloned()
+                        .ok_or_else(|| format!("items[{i}].record: the record's fields as an object"))?;
+                    Ok((item.get("id").and_then(Value::as_i64).map(RecordId), record))
+                })
+                .collect::<Result<_, String>>()?,
+            Some(_) => return Err("items: give one or more items".into()),
+            None => {
+                let record = args
+                    .get("record")
+                    .filter(|r| r.is_object())
+                    .cloned()
+                    .ok_or("record: give the record's fields as an object (or items for several)")?;
+                vec![(args.get("id").and_then(Value::as_i64).map(RecordId), record)]
+            }
+        };
+        let values = match kind {
+            "sheet" => self.set_records::<SheetRecord>(items),
+            "parcel" => self.set_records::<ParcelRecord>(items),
+            "alignment" => self.set_records::<AlignmentRecord>(items),
+            "traverse" => self.set_records::<TraverseRecord>(items),
             other => Err(format!("kind: records of kind '{other}' cannot be set")),
         }?;
-        Ok(ToolResult::json(&value))
+        Ok(ToolResult::json(&match batch {
+            Some(_) => json!(values),
+            None => values.into_iter().next().unwrap_or_default(),
+        }))
     }
 
-    /// Creates (`id` `None`) or merges `patch` into a record; returns it with its id.
-    fn set_typed<T>(&mut self, id: Option<RecordId>, mut patch: Value) -> Result<Value, String>
+    /// Creates records (no id) or merges fields into existing ones, all as one
+    /// undo step; returns them with their ids.
+    fn set_records<T>(&mut self, items: Vec<(Option<RecordId>, Value)>) -> Result<Vec<Value>, String>
     where
         T: Record + Serialize + DeserializeOwned + PartialEq,
     {
-        if let Some(fields) = patch.as_object_mut() {
-            fields.remove("id");
-        }
-        let id = match id {
-            Some(id) => {
-                let current = self
-                    .doc()
-                    .record::<T>(id)
-                    .ok_or_else(|| format!("No {} with id {}", T::KIND.label(), id.0))?;
-                let mut value = serde_json::to_value(current).map_err(|e| e.to_string())?;
-                merge(&mut value, patch);
-                let record: T = serde_json::from_value(value).map_err(|e| format!("record: {e}"))?;
-                self.session.update_record(id, record);
-                id
-            }
-            None => {
-                let record: T = serde_json::from_value(patch).map_err(|e| format!("record: {e}"))?;
-                self.session
-                    .add_record(record)
-                    .ok_or("The record was not added")?
+        let what = T::KIND.label();
+        let many = items.len() > 1;
+        let at = |i: usize| {
+            if many {
+                format!("items[{i}]: ")
+            } else {
+                String::new()
             }
         };
-        let record = self.doc().record::<T>(id).ok_or("The record has gone")?;
-        let mut value = serde_json::to_value(record).map_err(|e| e.to_string())?;
-        if let Some(fields) = value.as_object_mut() {
-            fields.insert("id".into(), json!(id.0));
+        let mut cs = ChangeSet::new(String::new());
+        let mut ids = Vec::new();
+        let mut names = Vec::new();
+        for (i, (id, mut patch)) in items.into_iter().enumerate() {
+            if let Some(fields) = patch.as_object_mut() {
+                fields.remove("id");
+            }
+            match id {
+                Some(id) => {
+                    let current = self
+                        .doc()
+                        .record::<T>(id)
+                        .ok_or_else(|| format!("{}no {what} with id {}", at(i), id.0))?;
+                    let mut value = serde_json::to_value(current).map_err(|e| e.to_string())?;
+                    merge(&mut value, patch);
+                    let record: T =
+                        serde_json::from_value(value).map_err(|e| format!("{}record: {e}", at(i)))?;
+                    if &record != current {
+                        names.push(record.name().to_string());
+                        cs = cs.update_record(id, record);
+                    }
+                    ids.push(Some(id));
+                }
+                None => {
+                    let record: T =
+                        serde_json::from_value(patch).map_err(|e| format!("{}record: {e}", at(i)))?;
+                    names.push(record.name().to_string());
+                    cs = cs.insert_record(record);
+                    ids.push(None);
+                }
+            }
         }
-        Ok(value)
+        if !cs.is_empty() {
+            let label = match &names[..] {
+                [one] => format!("Set {what} {one}"),
+                _ => format!("Set {} {what} records", names.len()),
+            };
+            self.session.execute(Box::new(cs.with_label(label)));
+        }
+        // New records were added at the end of the list, in order.
+        let list = self.doc().record_list::<T>();
+        let added = ids.iter().filter(|id| id.is_none()).count();
+        let mut new_ids = list[list.len() - added..].iter().map(|r| r.id);
+        ids.into_iter()
+            .map(|id| {
+                let id = id.or_else(|| new_ids.next()).ok_or("A record was not added")?;
+                let record = self.doc().record::<T>(id).ok_or("A record has gone")?;
+                let mut value = serde_json::to_value(record).map_err(|e| e.to_string())?;
+                if let Some(fields) = value.as_object_mut() {
+                    fields.insert("id".into(), json!(id.0));
+                }
+                Ok(value)
+            })
+            .collect()
     }
 
     fn delete_record(&mut self, args: &Value) -> Outcome {
@@ -592,6 +671,7 @@ impl Server {
                 path.display()
             ));
         }
+        ensure_folder(&path)?;
         self.session.log = CommandLineState::default();
         let bytes: Vec<u8> = match required_str(args, "format")? {
             "dxf" => self.session.dxf(self.sheet(args, false)?.as_ref()).0.into_bytes(),
@@ -681,15 +761,19 @@ impl Server {
                 .filter_map(|id| Some((*id, doc.entity(*id)?)))
                 .map(|(id, e)| entity_row(doc, id, e))
                 .collect(),
-            "layers" => doc
-                .layers()
+            "layers" => doc.layers().iter().map(layer_row).collect(),
+            "texts" => doc
+                .entities()
+                .filter(|(id, e)| matches!(e, Entity::Text(_)) && filter.matches(doc, *id, e))
+                .map(|(id, e)| entity_row(doc, id, e))
+                .collect(),
+            "feature_codes" => doc
+                .meta()
+                .feature_codes
+                .codes
                 .iter()
-                .map(|l| {
-                    json!({
-                        "id": l.id.0, "name": l.name, "color": color_hex(l.color),
-                        "visible": l.visible, "locked": l.locked,
-                    })
-                })
+                .filter(|c| filter.names.as_ref().is_none_or(|n| n.contains(&c.code)))
+                .filter_map(|c| serde_json::to_value(c).ok())
                 .collect(),
             "surfaces" => doc
                 .surfaces()
@@ -764,6 +848,15 @@ fn open(path: &Path, settings: &AppSettings) -> Result<Project, String> {
     Project::from_store(store, name, settings).map_err(|e| format!("Could not open {}: {e}", path.display()))
 }
 
+/// Creates the folder a file is to be written in, if it is missing.
+fn ensure_folder(path: &Path) -> Result<(), String> {
+    match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(dir) if !dir.exists() => std::fs::create_dir_all(dir)
+            .map_err(|e| format!("Could not create the folder {}: {e}", dir.display())),
+        _ => Ok(()),
+    }
+}
+
 fn same_file(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
@@ -810,9 +903,33 @@ fn layer_name(doc: &Document, id: LayerId) -> String {
     doc.layer(id).map(|l| l.name.clone()).unwrap_or_default()
 }
 
+fn layer_row(l: &survey_model::Layer) -> Value {
+    json!({
+        "id": l.id.0,
+        "name": l.name,
+        "color": color_hex(l.color),
+        "visible": l.visible,
+        "locked": l.locked,
+        "line_style": l.line_style.key(),
+        // f32 in the model; rounded so 1.2 reads as 1.2.
+        "line_weight": (f64::from(l.line_weight) * 1000.0).round() / 1000.0,
+    })
+}
+
 fn entity_row(doc: &Document, id: EntityId, e: &Entity) -> Value {
     match e {
         Entity::Point(p) => point_row(doc, id, p),
+        Entity::Text(t) => json!({
+            "type": "text",
+            "id": id.0,
+            "text": t.text,
+            "e": t.position.x,
+            "n": t.position.y,
+            "height_mm": t.height,
+            "rotation": t.rotation,
+            "align": t.align.key(),
+            "layer": layer_name(doc, t.layer),
+        }),
         Entity::Polyline(l) => {
             let (length, length_3d, area) = polyline_metrics(&l.vertices, &l.bulges, l.closed);
             let mut row = Map::new();
@@ -822,15 +939,27 @@ fn entity_row(doc: &Document, id: EntityId, e: &Entity) -> Value {
             row.insert("code".into(), json!(l.code));
             row.insert("layer".into(), json!(layer_name(doc, l.layer)));
             row.insert("closed".into(), json!(l.closed));
-            row.insert(
-                "vertices".into(),
-                json!(l.vertices.iter().map(|v| [v.x, v.y, v.z]).collect::<Vec<_>>()),
-            );
+            // Plan-only lines give [e, n]; lines with heights [e, n, z].
+            let vertices: Vec<Value> = l
+                .vertices
+                .iter()
+                .map(|v| {
+                    if l.heights_known {
+                        json!([v.x, v.y, v.z])
+                    } else {
+                        json!([v.x, v.y])
+                    }
+                })
+                .collect();
+            row.insert("vertices".into(), json!(vertices));
+            row.insert("heights_known".into(), json!(l.heights_known));
             if l.bulges.iter().any(|b| *b != 0.0) {
                 row.insert("bulges".into(), json!(l.bulges));
             }
             row.insert("length".into(), json!(length));
-            row.insert("length_3d".into(), json!(length_3d));
+            if l.heights_known {
+                row.insert("length_3d".into(), json!(length_3d));
+            }
             if l.closed {
                 row.insert("area".into(), json!(area.abs()));
             }
@@ -866,6 +995,7 @@ fn records<T: Record + Serialize>(doc: &Document, filter: &Filter) -> Vec<Value>
 enum Kind {
     Points,
     Polylines,
+    Texts,
     All,
 }
 
@@ -874,6 +1004,7 @@ impl Kind {
         match s {
             "points" => Ok(Kind::Points),
             "polylines" => Ok(Kind::Polylines),
+            "texts" => Ok(Kind::Texts),
             "all" => Ok(Kind::All),
             other => Err(format!("kind: unknown kind '{other}'")),
         }
@@ -882,7 +1013,10 @@ impl Kind {
     fn accepts(self, e: &Entity) -> bool {
         matches!(
             (self, e),
-            (Kind::All, _) | (Kind::Points, Entity::Point(_)) | (Kind::Polylines, Entity::Polyline(_))
+            (Kind::All, _)
+                | (Kind::Points, Entity::Point(_))
+                | (Kind::Polylines, Entity::Polyline(_))
+                | (Kind::Texts, Entity::Text(_))
         )
     }
 }
@@ -941,10 +1075,7 @@ impl Filter {
     }
 
     fn matches(&self, _doc: &Document, id: EntityId, e: &Entity) -> bool {
-        let (name, code) = match e {
-            Entity::Point(p) => (&p.name, &p.code),
-            Entity::Polyline(l) => (&l.name, &l.code),
-        };
+        let (name, code) = (e.name(), e.code());
         self.ids.as_ref().is_none_or(|ids| ids.contains(&id.0))
             && self.names.as_ref().is_none_or(|n| n.contains(name))
             && self.code.as_ref().is_none_or(|c| c.eq_ignore_ascii_case(code))
@@ -956,5 +1087,7 @@ impl Filter {
     }
 }
 
+mod drawing;
+mod settings;
 #[cfg(test)]
 mod tests;

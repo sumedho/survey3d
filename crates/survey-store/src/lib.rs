@@ -16,10 +16,11 @@ use std::path::{Path, PathBuf};
 use glam::DVec3;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
+use survey_core::style::LineStyle;
 use survey_core::tin::Tin;
 use survey_model::{
     AuditAction, AuditRecord, Color, Document, Entity, EntityId, Layer, LayerId, PointCloud, PointCloudId,
-    Polyline, ProjectMeta, RecordKind, Records, Surface, SurfaceId, SurveyPoint,
+    Polyline, ProjectMeta, RecordKind, Records, Surface, SurfaceId, SurveyPoint, TextAlign, TextNote,
 };
 use thiserror::Error;
 
@@ -87,7 +88,14 @@ impl ProjectStore {
     /// Loads a project from serialized bytes (e.g. an uploaded file on the web).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let mut conn = Connection::open_in_memory()?;
-        conn.deserialize_read_exact(rusqlite::MAIN_DB, bytes, bytes.len(), false)
+        // Files saved by the desktop app are in WAL mode, which an in-memory
+        // database cannot read; their contents are complete (saves checkpoint),
+        // so open them as an ordinary rollback-journal database.
+        let mut bytes = std::borrow::Cow::Borrowed(bytes);
+        if bytes.get(18..20) == Some(&[2, 2]) {
+            bytes.to_mut()[18..20].copy_from_slice(&[1, 1]);
+        }
+        conn.deserialize_read_exact(rusqlite::MAIN_DB, &bytes[..], bytes.len(), false)
             .map_err(|_| StoreError::NotAProject)?;
         schema::check_and_migrate(&conn)?;
         Ok(Self { conn, path: None })
@@ -135,6 +143,7 @@ impl ProjectStore {
         let layers = self.load_layers()?;
         let mut entities = self.load_points()?;
         entities.extend(self.load_polylines()?);
+        entities.extend(self.load_texts()?);
         let mut doc = Document::from_parts(meta, layers, entities);
         doc.load_records(self.load_records()?);
         doc.load_surfaces(self.load_surfaces()?);
@@ -302,7 +311,7 @@ impl ProjectStore {
     fn load_layers(&self) -> Result<Vec<Layer>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, color, visible, locked FROM layers ORDER BY sort_order, id")?;
+            .prepare("SELECT id, name, color, visible, locked, line_style, line_weight FROM layers ORDER BY sort_order, id")?;
         let rows = stmt.query_map([], |r| {
             Ok(Layer {
                 id: LayerId(r.get(0)?),
@@ -310,6 +319,8 @@ impl ProjectStore {
                 color: Color::from_u32(r.get::<_, i64>(2)? as u32),
                 visible: r.get(3)?,
                 locked: r.get(4)?,
+                line_style: LineStyle::from_key(&r.get::<_, String>(5)?).unwrap_or_default(),
+                line_weight: r.get::<_, f64>(6)? as f32,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -350,7 +361,7 @@ impl ProjectStore {
         }
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, closed, code, layer_id FROM strings ORDER BY id")?;
+            .prepare("SELECT id, name, closed, code, layer_id, heights_known FROM strings ORDER BY id")?;
         let rows = stmt.query_map([], |r| {
             let id: i64 = r.get(0)?;
             Ok((
@@ -362,6 +373,7 @@ impl ProjectStore {
                     closed: r.get(2)?,
                     code: r.get(3)?,
                     layer: LayerId(r.get(4)?),
+                    heights_known: r.get(5)?,
                 }),
             ))
         })?;
@@ -381,6 +393,26 @@ impl ProjectStore {
         Ok(out)
     }
 
+    fn load_texts(&self) -> Result<Vec<(EntityId, Entity)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, text, e, n, z, height, rotation, align, layer_id FROM texts ORDER BY id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                EntityId(r.get(0)?),
+                Entity::Text(TextNote {
+                    text: r.get(1)?,
+                    position: DVec3::new(r.get(2)?, r.get(3)?, r.get(4)?),
+                    height: r.get(5)?,
+                    rotation: r.get(6)?,
+                    align: TextAlign::parse(&r.get::<_, String>(7)?).unwrap_or_default(),
+                    layer: LayerId(r.get(8)?),
+                }),
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     // ------------------------------------------------------------------ save
 
     /// Writes dirty records and appends `audit` in one transaction. On success the
@@ -390,6 +422,12 @@ impl ProjectStore {
         write_changes(&tx, doc, audit, app_version)?;
         tx.commit()?;
         doc.take_dirty();
+        if self.path.is_some() {
+            // Move the save from the write-ahead log into the project file, so
+            // the file alone is the whole project (copied, emailed, uploaded).
+            self.conn
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        }
         Ok(())
     }
 
@@ -649,7 +687,8 @@ fn write_meta(tx: &Transaction<'_>, meta: &ProjectMeta) -> Result<()> {
 fn write_layers(tx: &Transaction<'_>, doc: &Document) -> Result<()> {
     tx.execute("DELETE FROM layers", [])?;
     let mut ins = tx.prepare_cached(
-        "INSERT INTO layers (id, name, color, visible, locked, sort_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO layers (id, name, color, visible, locked, sort_order, line_style, line_weight)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
     for (i, l) in doc.layers().iter().enumerate() {
         ins.execute(params![
@@ -658,7 +697,9 @@ fn write_layers(tx: &Transaction<'_>, doc: &Document) -> Result<()> {
             i64::from(l.color.to_u32()),
             l.visible,
             l.locked,
-            i as i64
+            i as i64,
+            l.line_style.key(),
+            f64::from(l.line_weight),
         ])?;
     }
     Ok(())
@@ -671,6 +712,8 @@ fn write_entity(tx: &Transaction<'_>, id: EntityId, entity: Option<&Entity>) -> 
     tx.prepare_cached("DELETE FROM string_vertices WHERE string_id = ?1")?
         .execute([id.0])?;
     tx.prepare_cached("DELETE FROM strings WHERE id = ?1")?
+        .execute([id.0])?;
+    tx.prepare_cached("DELETE FROM texts WHERE id = ?1")?
         .execute([id.0])?;
     match entity {
         None => {}
@@ -692,15 +735,32 @@ fn write_entity(tx: &Transaction<'_>, id: EntityId, entity: Option<&Entity>) -> 
         }
         Some(Entity::Polyline(l)) => {
             tx.prepare_cached(
-                "INSERT INTO strings (id, name, closed, code, layer_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO strings (id, name, closed, code, layer_id, heights_known) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?
-            .execute(params![id.0, l.name, l.closed, l.code, l.layer.0])?;
+            .execute(params![id.0, l.name, l.closed, l.code, l.layer.0, l.heights_known])?;
             let mut ins = tx.prepare_cached(
                 "INSERT INTO string_vertices (string_id, seq, e, n, z, bulge) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
             for (seq, v) in l.vertices.iter().enumerate() {
                 ins.execute(params![id.0, seq as i64, v.x, v.y, v.z, l.bulge(seq)])?;
             }
+        }
+        Some(Entity::Text(t)) => {
+            tx.prepare_cached(
+                "INSERT INTO texts (id, text, e, n, z, height, rotation, align, layer_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?
+            .execute(params![
+                id.0,
+                t.text,
+                t.position.x,
+                t.position.y,
+                t.position.z,
+                t.height,
+                t.rotation,
+                t.align.key(),
+                t.layer.0
+            ])?;
         }
     }
     Ok(())

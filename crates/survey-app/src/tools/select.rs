@@ -117,6 +117,7 @@ impl Tool for SelectTool {
                 out.polylines.extend(l.tessellate(tolerance));
             }
             Some(Entity::Point(p)) => out.points.push(p.position),
+            Some(Entity::Text(t)) => out.points.push(t.position),
             None => {}
         }
     }

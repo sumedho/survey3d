@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use survey_core::style::{LineStyle, Prim, Symbol, outline};
 use survey_io::dxf::{BlockShape, DxfBlock, DxfDrawing, DxfEntity, DxfGeometry, DxfLayer, DxfLinetype};
-use survey_model::{Color, Document, Entity, Polyline, SurveyPoint};
+use survey_model::{Color, Document, Entity, Polyline, SurveyPoint, TextAlign, TextNote};
 
 use crate::import_command::{ImportEntities, LayerRef};
 
@@ -36,7 +36,7 @@ pub fn dxf_import(doc: &Document, drawing: &DxfDrawing, file_name: &str) -> Impo
                     cmd.add_layer(e.layer.clone(), Color::rgb(color[0], color[1], color[2]), visible)
                 }
             });
-        if matches!(e.geometry, DxfGeometry::Insert { .. } | DxfGeometry::Text { .. }) {
+        if matches!(e.geometry, DxfGeometry::Insert { .. }) {
             continue;
         }
         let entity = match &e.geometry {
@@ -62,8 +62,26 @@ pub fn dxf_import(doc: &Document, drawing: &DxfDrawing, file_name: &str) -> Impo
                 closed: *closed,
                 code: String::new(),
                 layer: doc.current_layer(),
+                heights_known: true,
             }),
-            DxfGeometry::Insert { .. } | DxfGeometry::Text { .. } => continue,
+            // TEXT is placed by the left end of its baseline; notes by the middle of their capitals.
+            DxfGeometry::Text {
+                at,
+                height,
+                text,
+                rotation,
+            } => {
+                let up = glam::DVec2::from_angle(rotation.to_radians()).perp() * (height / 2.0);
+                Entity::Text(TextNote {
+                    text: text.clone(),
+                    position: *at + up.extend(0.0),
+                    height: height / DxfExportOptions::default().metres_per_mm(),
+                    rotation: rotation.rem_euclid(360.0),
+                    align: TextAlign::Left,
+                    layer: doc.current_layer(),
+                })
+            }
+            DxfGeometry::Insert { .. } => continue,
         };
         cmd.add(layer, entity);
     }
@@ -249,16 +267,49 @@ pub fn dxf_export(doc: &Document, opts: &DxfExportOptions) -> DxfDrawing {
                         closed: l.closed,
                     },
                 );
-                if let Some((s, color)) = style_of(&l.code) {
-                    line.style.color = color;
-                    if s.line_style != LineStyle::Solid {
-                        line.style.linetype = Some(linetype_name(s.line_style));
-                        if !linetypes.contains(&s.line_style) {
-                            linetypes.push(s.line_style);
-                        }
+                // A code's style wins; otherwise the layer's line type.
+                let line_style = match style_of(&l.code) {
+                    Some((s, color)) => {
+                        line.style.color = color;
+                        s.line_style
+                    }
+                    None => doc
+                        .layer(l.layer)
+                        .map_or(LineStyle::Solid, |layer| layer.line_style),
+                };
+                if line_style != LineStyle::Solid {
+                    line.style.linetype = Some(linetype_name(line_style));
+                    if !linetypes.contains(&line_style) {
+                        linetypes.push(line_style);
                     }
                 }
                 entities.push(line);
+            }
+            Entity::Text(t) => {
+                // One TEXT per line, each placed by the left end of its baseline.
+                let height = t.height * k;
+                let size = height / survey_io::plot::CAP_HEIGHT;
+                let along = glam::DVec2::from_angle(t.rotation.to_radians());
+                let up = along.perp();
+                let lines: Vec<&str> = t.text.lines().collect();
+                let fraction = crate::scene_build::align_fraction(t.align);
+                for (i, line) in lines.iter().enumerate() {
+                    let width = survey_io::plot::text_width(line, size, false);
+                    let middle = ((lines.len() - 1) as f64 / 2.0 - i as f64)
+                        * size
+                        * crate::scene_build::TEXT_LINE_SPACING;
+                    let at =
+                        t.position.truncate() + along * (-width * fraction) + up * (middle - height / 2.0);
+                    entities.push(DxfEntity::new(
+                        layer.clone(),
+                        DxfGeometry::Text {
+                            at: at.extend(t.position.z),
+                            height,
+                            text: line.to_string(),
+                            rotation: t.rotation,
+                        },
+                    ));
+                }
             }
         }
     }
@@ -386,6 +437,7 @@ mod tests {
                 closed: false,
                 code: "KB".into(),
                 layer,
+                heights_known: true,
             }));
         history.execute(Box::new(cmd), &mut doc);
         let opts = DxfExportOptions {

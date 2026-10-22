@@ -17,6 +17,7 @@ mod offset;
 mod point;
 mod polyline;
 mod select;
+mod text;
 
 use egui_cad::command_line::CommandLineState;
 use egui_cad::icons;
@@ -246,6 +247,16 @@ impl DomainModule for CoreModule {
             group: ToolGroup::Draw,
             description: "Draw a polyline (string); Enter finishes, C closes, U undoes a vertex",
             create: || Box::<polyline::PolylineTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: text::ID,
+            name: "Text",
+            commands: &["text", "tx"],
+            icon: icons::TEXT_T,
+            palette: true,
+            group: ToolGroup::Draw,
+            description: "Place text (street names, notes): pick where, then type it",
+            create: || Box::<text::TextTool>::default(),
         });
         tools.register(ToolDescriptor {
             id: arc::ID,
