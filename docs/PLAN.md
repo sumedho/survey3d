@@ -154,6 +154,27 @@ Known follow-ups: traverse observations are not yet stored in the project (only 
 scale factors / combined scale factor for traverse distances (Phase 5 projections); mirror/scale/trim/
 extend; drag-to-move grips; coordinate CSV export from the points table.
 
+## Phase 6 plan (2026-10-22): plan output
+
+Getting a finished drawing out of the app: plan sheets at a true scale, printed to PDF/SVG.
+
+- **6a — plot writers** (`survey-io::plot`): a paper-space drawing (paths with pens and dash patterns,
+  circles, text with alignment/rotation/halo, even-odd clip groups) in millimetres, written as SVG and
+  as PDF (hand-written, base-14 Helvetica with its metrics, Flate-compressed content). No new
+  dependencies beyond `miniz_oxide` (already in the tree).
+- **6b — sheets and the plan builder:** `SheetRecord` in the project (paper A4–A0/ANSI/custom,
+  orientation, scale 1:n, centre, rotation, title block fields, content switches, text/symbol sizes in
+  paper mm). The builder turns the document into a plot: linework with code styles and line types,
+  point symbols, point labels (collision-avoided), parcel bearings/distances/areas, contours with
+  labels, alignment chainages, coordinate grid (ticks, crosses or lines with labels), north arrow,
+  scale bar, legend of the codes shown and a title block. Paper colours: bright layer colours are
+  darkened for white paper; optional monochrome.
+- **6c — sheets window:** list of sheets, settings, live preview drawn from the same plot (so it is what
+  gets printed), "centre on view" / "fit drawing", the sheet frame drawn in the viewport, PDF and SVG
+  export (download on the web).
+- **6d — DXF export:** point symbols as BLOCKs inserted at a plan scale, line types (LTYPE table) from
+  code styles, point names as TEXT.
+
 ## Phase 5 status (2026-10-22): complete
 
 - **5a projections:** `survey_core::projection` — Transverse Mercator by Krüger's series to n⁶ (Karney
@@ -320,3 +341,5 @@ guidance (Material dark theme, WCAG):
   construction (alignments, chainage/offset, setout); mining (pickups, EOM volumes, stockpiles, point cloud LOD).
 - **Phase 5 — advanced (done):** least-squares network adjustment, JobXML/GSI raw data, projections & scale
   factors, point cloud streaming, GeoPackage export.
+- **Phase 6 — plan output (in progress):** plan sheets with title block, grid, north arrow, scale bar and
+  legend; PDF/SVG at true scale; DXF symbols as blocks and line types.

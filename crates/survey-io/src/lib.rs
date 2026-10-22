@@ -8,6 +8,7 @@ pub mod code_sheet;
 pub mod csv_points;
 pub mod dxf;
 pub mod landxml;
+pub mod plot;
 pub mod pointcloud;
 pub mod rawdata;
 

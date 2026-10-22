@@ -16,3 +16,4 @@ csv.workspace = true
 quick-xml.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+miniz_oxide.workspace = true

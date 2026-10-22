@@ -3310,6 +3310,7 @@ version = "0.1.0"
 dependencies = [
  "csv",
  "glam",
+ "miniz_oxide 0.8.9",
  "quick-xml 0.42.0",
  "serde",
  "survey-core",
