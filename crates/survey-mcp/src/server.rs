@@ -133,6 +133,9 @@ impl Server {
             "set_project" => self.set_project(args),
             "add_text" => self.add_text(args),
             "edit_entities" => self.edit_entities(args),
+            "create_surface" => self.create_surface(args),
+            "set_surface" => self.set_surface(args),
+            "delete_surface" => self.delete_surface(args),
             "delete_record" => self.delete_record(args),
             "import_file" => self.import_file(args),
             "export_file" => self.export_file(args),
@@ -780,7 +783,8 @@ impl Server {
                 .map(|(id, s)| {
                     json!({
                         "id": id.0, "name": s.name, "points": s.tin.vertices.len(),
-                        "triangles": s.tin.triangles.len(), "definition": s.definition, "style": s.style,
+                        "triangles": s.tin.triangles.len(), "definition": s.definition,
+                        "style": surfaces::style_json(&s.style),
                     })
                 })
                 .collect(),
@@ -1089,5 +1093,6 @@ impl Filter {
 
 mod drawing;
 mod settings;
+mod surfaces;
 #[cfg(test)]
 mod tests;

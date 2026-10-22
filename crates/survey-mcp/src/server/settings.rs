@@ -195,7 +195,7 @@ impl Server {
 }
 
 /// `#rrggbb` (or `rrggbb`).
-fn parse_color(text: &str) -> Result<Color, String> {
+pub(super) fn parse_color(text: &str) -> Result<Color, String> {
     let hex = text.trim().trim_start_matches('#');
     let channel = |i: usize| u8::from_str_radix(hex.get(i..i + 2).unwrap_or(""), 16);
     match (hex.len(), channel(0), channel(2), channel(4)) {

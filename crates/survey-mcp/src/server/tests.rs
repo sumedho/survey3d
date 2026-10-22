@@ -468,3 +468,124 @@ fn reported_gaps_are_closed() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn surfaces_are_created_styled_rebuilt_and_deleted() {
+    let mut s = Server::new_for_tests();
+    // A 5 × 5 grid of ground shots on a slope, a plan-only kerb and a limit.
+    let shots: Vec<Value> = (0..25)
+        .map(|i| {
+            let (x, y) = (f64::from(i % 5) * 10.0, f64::from(i / 5) * 10.0);
+            json!({ "e": x, "n": y, "z": 100.0 + x * 0.1, "code": "NS" })
+        })
+        .collect();
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": shots, "layer": "GROUND" }),
+    );
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": [{ "e": 25.0, "n": 25.0, "code": "NS" }], "layer": "GROUND" }),
+    );
+    ok(
+        &mut s,
+        "add_polyline",
+        json!({ "vertices": [[5, 5], [35, 5]], "code": "KB" }),
+    );
+    ok(
+        &mut s,
+        "add_polyline",
+        json!({ "name": "SURFACE_LIMIT", "vertices": [[0, 0], [40, 0], [40, 40], [0, 40]], "closed": true }),
+    );
+
+    let made = ok_json(
+        &mut s,
+        "create_surface",
+        json!({
+            "name": "Existing ground",
+            "point_layers": ["GROUND"],
+            "breakline_codes": ["KB"],
+            "boundary": "SURFACE_LIMIT",
+            "style": { "color": "#336699", "contours": { "show": true, "interval": 0.5 } }
+        }),
+    );
+    assert_eq!(made["points"], 25, "{made}");
+    assert!(made["triangles"].as_u64() > Some(10));
+    assert_eq!(made["heights"], json!([100.0, 104.0]));
+    assert_eq!(made["style"]["color"], "#336699");
+    assert_eq!(made["style"]["contours"]["interval"], 0.5);
+    let warnings = made["warnings"].to_string();
+    assert!(
+        warnings.contains("1 selected points have no height"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("1 selected breaklines are plan-only"),
+        "{warnings}"
+    );
+    let id = made["id"].as_i64().expect("id");
+    assert_eq!(
+        ok_json(&mut s, "project_info", json!({}))["surfaces"][0]["name"],
+        "Existing ground"
+    );
+
+    let (text, error) = call(&mut s, "create_surface", json!({ "name": "existing ground" }));
+    assert!(error && text.contains("already"), "{text}");
+    ok(
+        &mut s,
+        "add_polyline",
+        json!({ "name": "open", "vertices": [[0, 0], [1, 1]] }),
+    );
+    let (text, error) = call(
+        &mut s,
+        "create_surface",
+        json!({ "name": "X", "boundary": "open" }),
+    );
+    assert!(error && text.contains("not closed"), "{text}");
+
+    // Restyle, rename, then rebuild after the ground changes.
+    let changed = ok_json(
+        &mut s,
+        "set_surface",
+        json!({ "surface": id, "rename": "EGL", "style": { "contours": { "major_every": 4 } } }),
+    );
+    assert_eq!(changed["name"], "EGL");
+    assert_eq!(
+        changed["style"]["contours"]["interval"], 0.5,
+        "other style fields kept"
+    );
+    assert_eq!(changed["style"]["contours"]["major_every"], 4);
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": [{ "e": 15.0, "n": 15.0, "z": 120.0 }], "layer": "GROUND" }),
+    );
+    let rebuilt = ok_json(
+        &mut s,
+        "set_surface",
+        json!({ "surface": "EGL", "rebuild": true }),
+    );
+    assert_eq!(rebuilt["points"], 26);
+    assert_eq!(rebuilt["heights"][1], 120.0);
+    let redefined = ok_json(
+        &mut s,
+        "set_surface",
+        json!({ "surface": "EGL", "boundary": null, "max_edge": 15.0 }),
+    );
+    assert_eq!(redefined["definition"]["boundary"], Value::Null);
+
+    // Contours show on the sheet.
+    let plan = s.call("render", &json!({ "width": 400 })).to_json();
+    assert_eq!(plan["isError"], false, "{plan}");
+
+    ok(&mut s, "delete_surface", json!({ "surface": "EGL" }));
+    assert_eq!(ok_json(&mut s, "project_info", json!({}))["surfaces"], json!([]));
+    ok(&mut s, "run_commands", json!({ "lines": ["undo"] }));
+    assert_eq!(
+        ok_json(&mut s, "query", json!({ "kind": "surfaces" }))["total"],
+        1
+    );
+    assert!(call(&mut s, "set_surface", json!({ "surface": 99, "rebuild": true })).1);
+}

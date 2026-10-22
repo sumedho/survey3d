@@ -31,6 +31,46 @@ fn filter_schema() -> Value {
     })
 }
 
+fn surface_style_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "visible": { "type": "boolean" },
+            "shaded": { "type": "boolean" },
+            "elevation_colors": { "type": "boolean" },
+            "triangles": { "type": "boolean" },
+            "color": { "type": "string" },
+            "isopach": { "type": "boolean" },
+            "contours": {
+                "type": "object",
+                "properties": {
+                    "show": { "type": "boolean" },
+                    "interval": { "type": "number", "exclusiveMinimum": 0 },
+                    "major_every": { "type": "integer", "minimum": 1 },
+                    "labels": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            }
+        },
+        "additionalProperties": false
+    })
+}
+
+/// Properties for creating a surface: its name, definition and style.
+fn surface_properties() -> Value {
+    json!({
+        "name": { "type": "string" },
+        "point_layers": { "type": "array", "items": { "type": "string" } },
+        "point_codes": { "type": "array", "items": { "type": "string" } },
+        "breakline_layers": { "type": "array", "items": { "type": "string" } },
+        "breakline_codes": { "type": "array", "items": { "type": "string" } },
+        "boundary": { "type": ["integer", "string"] },
+        "holes": { "type": "array", "items": { "type": ["integer", "string"] } },
+        "max_edge": { "type": "number", "exclusiveMinimum": 0 },
+        "style": surface_style_schema()
+    })
+}
+
 fn record_kinds() -> Value {
     json!(["sheet", "parcel", "alignment", "traverse"])
 }
@@ -302,6 +342,52 @@ pub fn definitions() -> Vec<Value> {
                 },
                 "additionalProperties": false
             }
+        }),
+        json!({
+            "name": "create_surface",
+            "title": "Create a surface",
+            "description": "Builds a surface (TIN) from the drawing and makes it the active surface, in one undoable step. Points: those with heights on point_layers and/or matching point_codes (patterns with * and ?; both empty: every point with a height). Breaklines: polylines on breakline_layers or matching breakline_codes (plan-only lines are left out). boundary: a closed polyline (id or name) the surface stops at; holes: closed polylines cut out; max_edge: drop longer triangle edges (metres) around an irregular edge. style: visible, shaded, elevation_colors, triangles, color (#rrggbb), isopach, and contours {show, interval (m), major_every, labels} — contours show on the drawing and plan sheets; turn them into polylines with run_commands 'contours'. The result lists points and triangles used, the height range, and warnings for selected points or breaklines without heights.",
+            "inputSchema": {
+                "type": "object",
+                "properties": surface_properties(),
+                "required": ["name"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "set_surface",
+            "title": "Change a surface",
+            "description": "Changes a surface (by id or name) in one undoable step: rename; any definition field (as in create_surface; the surface is rebuilt); style fields (merged, e.g. {\"contours\": {\"show\": true, \"interval\": 0.5}}); rebuild: true rebuilds it from the drawing as it is now (after points or breaklines changed).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "surface": { "type": ["integer", "string"] },
+                    "rename": { "type": "string" },
+                    "rebuild": { "type": "boolean", "default": false },
+                    "point_layers": { "type": "array", "items": { "type": "string" } },
+                    "point_codes": { "type": "array", "items": { "type": "string" } },
+                    "breakline_layers": { "type": "array", "items": { "type": "string" } },
+                    "breakline_codes": { "type": "array", "items": { "type": "string" } },
+                    "boundary": { "type": ["integer", "string", "null"] },
+                    "holes": { "type": "array", "items": { "type": ["integer", "string"] } },
+                    "max_edge": { "type": ["number", "null"] },
+                    "style": surface_style_schema()
+                },
+                "required": ["surface"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "delete_surface",
+            "title": "Delete a surface",
+            "description": "Deletes a surface (by id or name). One undoable step; the points and lines it was built from stay.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "surface": { "type": ["integer", "string"] } },
+                "required": ["surface"],
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": true }
         }),
         json!({
             "name": "delete_record",

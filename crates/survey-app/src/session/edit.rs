@@ -5,7 +5,7 @@ use survey_core::field_to_finish::FeatureLibrary;
 use survey_core::traverse::TraverseRecord;
 use survey_model::{
     AlignmentRecord, ChangeSet, CloudStyle, Color, Entity, EntityId, ParcelRecord, PointCloudId, Polyline,
-    Record, RecordId, Surface, SurfaceId, SurfaceStyle, SurveyPoint,
+    Record, RecordId, Surface, SurfaceDefinition, SurfaceId, SurfaceStyle, SurveyPoint,
 };
 
 use super::{Event, Panel, Session, Toast};
@@ -483,6 +483,72 @@ impl Session {
         // New surfaces get the highest id.
         self.active_surface = self.project.doc.surfaces().last().map(|(id, _)| id);
         self.success(summary);
+    }
+
+    /// Builds a surface from `definition` and adds it as the active surface.
+    pub fn build_surface(
+        &mut self,
+        name: &str,
+        definition: SurfaceDefinition,
+        style: SurfaceStyle,
+    ) -> Result<SurfaceId, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("A surface needs a name".into());
+        }
+        if self.project.doc.surface_by_name(name).is_some() {
+            return Err(format!("There is already a surface called {name}"));
+        }
+        let tin = crate::ui::surfaces::build_from(&self.project.doc, &definition)
+            .map_err(|e| format!("Surface {name}: {e}"))?;
+        self.create_surface(Surface {
+            name: name.to_string(),
+            definition: Some(definition),
+            tin,
+            style,
+        });
+        self.active_surface
+            .ok_or_else(|| "The surface was not added".into())
+    }
+
+    /// Renames, restyles or redefines a surface (rebuilding it from its
+    /// definition when that changes, or when `rebuild`) in one undo step.
+    pub fn change_surface(
+        &mut self,
+        id: SurfaceId,
+        name: Option<String>,
+        definition: Option<SurfaceDefinition>,
+        style: Option<SurfaceStyle>,
+        rebuild: bool,
+    ) -> Result<(), String> {
+        let doc = &self.project.doc;
+        let mut surface = doc.surface(id).ok_or("No such surface")?.clone();
+        if let Some(name) = name.map(|n| n.trim().to_string()).filter(|n| *n != surface.name) {
+            if doc.surface_by_name(&name).is_some_and(|(other, _)| other != id) {
+                return Err(format!("There is already a surface called {name}"));
+            }
+            surface.name = name;
+        }
+        let rebuild = rebuild || definition.is_some();
+        if let Some(definition) = definition {
+            surface.definition = Some(definition);
+        }
+        if rebuild {
+            let definition = surface
+                .definition
+                .as_ref()
+                .ok_or("This surface was imported, not built from the drawing, so it cannot be rebuilt")?;
+            surface.tin = crate::ui::surfaces::build_from(doc, definition)
+                .map_err(|e| format!("Surface {}: {e}", surface.name))?;
+        }
+        if let Some(style) = style {
+            surface.style = style;
+        }
+        if doc.surface(id) != Some(&surface) {
+            let label = format!("Change surface {}", surface.name);
+            self.execute(Box::new(ChangeSet::new(label).update_surface(id, surface)));
+        }
+        Ok(())
     }
 
     pub fn update_surface(&mut self, id: SurfaceId, surface: Surface) {

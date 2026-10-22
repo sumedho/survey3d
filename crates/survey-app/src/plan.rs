@@ -1263,28 +1263,39 @@ pub fn build_plot(doc: &Document, sheet: &SheetRecord, labels: LabelSet) -> Plot
     let legend = (!rows.is_empty()).then(|| {
         // The legend's box in each corner: clear of the title block (bottom
         // right), the scale bar (bottom left) and the north arrow (top right),
-        // as many rows as fit in 60% of the frame's height.
+        // no taller than 60% of the frame. Rows that do not fit in one column
+        // go on in more, up to half the frame's width.
         let room = f.height() * 0.6 - 8.0;
+        let max_columns = ((f.width() * 0.5 / LEGEND_WIDTH).floor() as usize).clamp(1, 3);
         let fit = |below: f64| {
             let room = (room - below).max(LEGEND_ROW);
-            let shown = rows.len().min((room / LEGEND_ROW).floor() as usize).max(1);
+            let per_column = ((room / LEGEND_ROW).floor() as usize).max(1);
+            let columns = rows.len().div_ceil(per_column).clamp(1, max_columns);
+            let shown = rows.len().min(per_column * columns);
+            // Even columns: as few rows in each as the shown rows allow.
+            let per_column = shown.div_ceil(columns);
             let more = usize::from(shown < rows.len());
-            (8.0 + (shown + more) as f64 * LEGEND_ROW + 1.5, shown)
+            LegendFit {
+                width: columns as f64 * LEGEND_WIDTH,
+                height: 8.0 + (per_column + more) as f64 * LEGEND_ROW + 1.5,
+                shown,
+                per_column,
+            }
         };
         let title_top = if lay.strip { f.min[1] } else { lay.title.max[1] };
         let bar_top = f.min[1] + if content.scale_bar { 16.0 } else { 0.0 };
         let arrow_bottom = f.max[1] - if content.north_arrow { 24.0 } else { 0.0 };
-        let (left, right) = (f.min[0], f.max[0] - LEGEND_WIDTH);
         let corner = |position: LegendPosition| {
-            let (x, bottom, top) = match position {
-                LegendPosition::BottomRight | LegendPosition::Auto => (right, Some(title_top), None),
-                LegendPosition::BottomLeft => (left, Some(bar_top), None),
-                LegendPosition::TopRight => (right, None, Some(arrow_bottom)),
-                LegendPosition::TopLeft => (left, None, Some(f.max[1])),
+            let (right, bottom, top) = match position {
+                LegendPosition::BottomRight | LegendPosition::Auto => (true, Some(title_top), None),
+                LegendPosition::BottomLeft => (false, Some(bar_top), None),
+                LegendPosition::TopRight => (true, None, Some(arrow_bottom)),
+                LegendPosition::TopLeft => (false, None, Some(f.max[1])),
             };
-            let (height, shown) = fit(bottom.map_or(f.max[1] - top.unwrap_or(f.max[1]), |b| b - f.min[1]));
-            let y = bottom.unwrap_or_else(|| top.unwrap_or(f.max[1]) - height);
-            (Rect::new(x, y, x + LEGEND_WIDTH, y + height), shown)
+            let size = fit(bottom.map_or(f.max[1] - top.unwrap_or(f.max[1]), |b| b - f.min[1]));
+            let x = if right { f.max[0] - size.width } else { f.min[0] };
+            let y = bottom.unwrap_or_else(|| top.unwrap_or(f.max[1]) - size.height);
+            (Rect::new(x, y, x + size.width, y + size.height), size)
         };
         match content.legend_position {
             // The corner covering least of the drawing; bottom right on a tie.
@@ -1394,9 +1405,9 @@ pub fn build_plot(doc: &Document, sheet: &SheetRecord, labels: LabelSet) -> Plot
         plot.push(Item::rect(r.min, r.max, Some(box_pen.clone()), Some(WHITE)));
         scale_bar(&mut plot, r, bar_len, bar_mm, sheet, &conv);
     }
-    if let Some((r, shown)) = legend {
+    if let Some((r, size)) = legend {
         plot.push(Item::rect(r.min, r.max, Some(box_pen.clone()), Some(WHITE)));
-        legend_box(&mut plot, r, &rows, shown, doc, sheet);
+        legend_box(&mut plot, r, &rows, &size, doc, sheet);
     }
     if content.north_arrow {
         north_arrow(&mut plot, north_centre, t.dir(DVec2::Y));
@@ -1445,14 +1456,26 @@ fn scale_bar(
     }
 }
 
+/// How the legend's rows are laid out.
+struct LegendFit {
+    width: f64,
+    height: f64,
+    /// Rows shown (the rest are counted as "and n more").
+    shown: usize,
+    per_column: usize,
+}
+
 fn legend_box(
     plot: &mut Plot,
     r: Rect,
     rows: &[LegendRow],
-    shown: usize,
+    size: &LegendFit,
     doc: &Document,
     sheet: &SheetRecord,
 ) {
+    let LegendFit {
+        shown, per_column, ..
+    } = *size;
     let library = &doc.meta().feature_codes;
     plot.push(Item::Text(
         Text::new([r.min[0] + 3.0, r.max[1] - 2.5], "LEGEND", 2.2)
@@ -1460,15 +1483,17 @@ fn legend_box(
             .bold(),
     ));
     let mono = sheet.content.monochrome;
-    let mut y = r.max[1] - 8.0 - LEGEND_ROW / 2.0;
-    for &(i, lines, points) in rows.iter().take(shown) {
+    let top = r.max[1] - 8.0 - LEGEND_ROW / 2.0;
+    for (k, &(i, lines, points)) in rows.iter().take(shown).enumerate() {
+        let column = (k / per_column) as f64;
+        let y = top - (k % per_column) as f64 * LEGEND_ROW;
         let f = &library.codes[i];
         let color = match doc.layer_by_name(&f.layer) {
             Some(layer) if f.style.by_layer => [layer.color.0[0], layer.color.0[1], layer.color.0[2]],
             _ => f.color,
         };
         let color = paper_color(color, mono);
-        let x = r.min[0] + 3.0;
+        let x = r.min[0] + column * LEGEND_WIDTH + 3.0;
         if lines {
             let width = f64::from(f.style.line_weight) * sheet.line_scale;
             let unit = width.max(0.2);
@@ -1497,17 +1522,17 @@ fn legend_box(
         } else {
             format!("{}  {}", f.code, f.description)
         };
-        let room = r.max[0] - (x + 12.0) - 2.0;
+        // The column less its margins and the symbol.
+        let room = LEGEND_WIDTH - 17.0;
         let size = fit(&label, 2.0, room, false);
         plot.push(Item::Text(
             Text::new([x + 12.0, y], label, size).align(Align::Left, VAlign::Middle),
         ));
-        y -= LEGEND_ROW;
     }
     if shown < rows.len() {
         plot.push(Item::Text(
             Text::new(
-                [r.min[0] + 15.0, y],
+                [r.min[0] + 15.0, top - per_column as f64 * LEGEND_ROW],
                 format!("and {} more", rows.len() - shown),
                 1.8,
             )
@@ -1867,5 +1892,49 @@ mod tests {
         sheet.content.legend_position = LegendPosition::BottomRight;
         let at = legend_at(&sheet);
         assert!(at[0] > w / 2.0 && at[1] < h / 2.0, "where it was put: {at:?}");
+    }
+
+    /// More codes than one column holds: the legend grows columns rather than
+    /// leaving codes out.
+    #[test]
+    fn a_long_legend_takes_more_columns() {
+        let mut doc = Document::new();
+        let layer = doc.layers()[0].id;
+        let mut meta = doc.meta().clone();
+        let mut cs = ChangeSet::new("seed");
+        for i in 0..20 {
+            let code = format!("C{i:02}");
+            meta.feature_codes
+                .codes
+                .push(FeatureCode::new(&code, "Feature", "F", [0, 0, 0], false));
+            cs.push_insert_entity(Entity::Point(SurveyPoint {
+                name: i.to_string(),
+                position: DVec3::new(f64::from(i), 0.0, 0.0),
+                height_known: false,
+                code,
+                description: String::new(),
+                layer,
+            }));
+        }
+        cs.set_meta(meta).apply(&mut doc);
+        let mut sheet = SheetRecord {
+            paper: survey_model::sheet::Paper::A4,
+            ..Default::default()
+        };
+        // Above the title block, where one column holds about a dozen rows.
+        sheet.content.legend_position = LegendPosition::BottomRight;
+        let plot = build_plot(&doc, &sheet, LabelSet::default());
+        let legend = texts(&plot)
+            .iter()
+            .filter(|t| t.text.ends_with("Feature"))
+            .map(|t| (t.at[0] * 10.0).round() as i64)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(legend.len() >= 2, "more than one column: {legend:?}");
+        let texts: Vec<String> = texts(&plot).iter().map(|t| t.text.clone()).collect();
+        for i in 0..20 {
+            let label = format!("C{i:02}  Feature");
+            assert!(texts.contains(&label), "{label} in the legend");
+        }
+        assert!(!texts.iter().any(|t| t.ends_with("more")), "nothing left out");
     }
 }

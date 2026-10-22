@@ -6,7 +6,7 @@ use survey_core::field_to_finish::glob_match;
 use survey_core::tin::{Tin, TinInput};
 
 use crate::document::Document;
-use crate::entity::Entity;
+use crate::entity::{Entity, Polyline, SurveyPoint};
 use crate::ids::EntityId;
 use crate::layer::Color;
 
@@ -149,34 +149,61 @@ pub fn outline(doc: &Document, id: EntityId) -> Option<Vec<DVec2>> {
     }
 }
 
+/// What a definition selects but cannot use: points without heights and
+/// plan-only breaklines.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Unused {
+    pub points_without_height: usize,
+    pub plan_only_breaklines: usize,
+}
+
 impl SurfaceDefinition {
+    fn selects_point(&self, doc: &Document, p: &SurveyPoint) -> bool {
+        (self.point_layers.is_empty() || on_layers(doc, &self.point_layers, p.layer))
+            && (self.point_codes.is_empty() || matches(&self.point_codes, &p.code))
+    }
+
+    fn selects_breakline(&self, doc: &Document, id: EntityId, l: &Polyline) -> bool {
+        let limit = self.boundary == Some(id) || self.holes.contains(&id);
+        let by_layer = !self.breakline_layers.is_empty() && on_layers(doc, &self.breakline_layers, l.layer);
+        let by_code = !self.breakline_codes.is_empty() && matches(&self.breakline_codes, &l.code);
+        !limit && (by_layer || by_code)
+    }
+
+    /// Selected objects left out of the surface for want of heights.
+    pub fn unused(&self, doc: &Document) -> Unused {
+        let mut unused = Unused::default();
+        for (id, e) in doc.entities() {
+            match e {
+                Entity::Point(p) if !p.height_known && self.selects_point(doc, p) => {
+                    unused.points_without_height += 1;
+                }
+                Entity::Polyline(l) if !l.heights_known && self.selects_breakline(doc, id, l) => {
+                    unused.plan_only_breaklines += 1;
+                }
+                _ => {}
+            }
+        }
+        unused
+    }
+
     /// The points, breaklines and limits this definition selects from `doc`.
     pub fn gather(&self, doc: &Document) -> TinInput {
         let mut input = TinInput {
             max_edge: self.max_edge,
             ..Default::default()
         };
-        let excluded: Vec<EntityId> = self.boundary.iter().chain(&self.holes).copied().collect();
         for (id, e) in doc.entities() {
             match e {
                 Entity::Point(p) => {
-                    let layer_ok =
-                        self.point_layers.is_empty() || on_layers(doc, &self.point_layers, p.layer);
-                    let code_ok = self.point_codes.is_empty() || matches(&self.point_codes, &p.code);
-                    if p.height_known && layer_ok && code_ok {
+                    if p.height_known && self.selects_point(doc, p) {
                         input.points.push(p.position);
                     }
                 }
                 Entity::Text(_) => {}
                 Entity::Polyline(l) => {
                     // A plan-only line has no heights to model the ground with.
-                    if excluded.contains(&id) || !l.heights_known {
-                        continue;
-                    }
-                    let by_layer =
-                        !self.breakline_layers.is_empty() && on_layers(doc, &self.breakline_layers, l.layer);
-                    let by_code = !self.breakline_codes.is_empty() && matches(&self.breakline_codes, &l.code);
-                    if by_layer || by_code {
+                    if l.heights_known && self.selects_breakline(doc, id, l) {
                         let mut pts: Vec<DVec3> = Vec::new();
                         for part in l.tessellate(ARC_TOLERANCE) {
                             for p in part {

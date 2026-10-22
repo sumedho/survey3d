@@ -150,6 +150,7 @@ stay in memory), `--user NAME` (audit trail; default `$USER`).
 | `set_project`, `set_feature_codes`, `set_layer` | Job setup: name and coordinate system (e.g. `"MGA2020 zone 50"`), the feature-code library (symbols, layers, line styles, linework), layer colours, line styles and the current layer |
 | `add_points`, `add_polyline`, `add_text` | Structured input in one undo step (a polyline without heights is plan-only) |
 | `edit_entities` | Rename, recode, move to another layer, edit text — the objects a filter matches, in one undo step |
+| `create_surface`, `set_surface`, `delete_surface` | Surfaces from point layers/codes, breaklines, a boundary and holes; contour and display style; rebuild after the drawing changes |
 | `set_record`, `delete_record` | Create or edit (merging fields) sheets, parcels, alignments and traverses by id, one or many at once |
 | `import_file`, `export_file` | CSV points, DXF, LandXML, GSI/JobXML, LAS/XYZ in; DXF, LandXML, GeoPackage, CSV, PDF, SVG out (no silent overwrites) |
 | `render` | A PNG of a plan sheet, or an overview of the whole drawing, so the agent can see its work |
