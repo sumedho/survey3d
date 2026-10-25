@@ -2,7 +2,7 @@
 //! (both draw [`survey_core::style`]'s primitives) and compact pickers.
 
 use egui::{Color32, Mesh, Painter, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2};
-use survey_core::style::{LineStyle, Prim, Symbol, outline};
+use survey_core::style::{LineStyle, Part, Prim, Symbol, outline, parts};
 
 use crate::CadTheme;
 
@@ -16,8 +16,32 @@ pub fn paint_symbol(painter: &Painter, center: Pos2, radius: f32, color: Color32
     let stroke = Stroke::new(stroke_width(radius), color);
     // Unit coordinates are y-up; the screen is y-down.
     let at = |p: [f32; 2]| center + vec2(p[0], -p[1]) * radius;
-    for prim in symbol.prims() {
-        match *prim {
+    for part in parts(symbol) {
+        let prim = match part {
+            Part::Prim(prim) => prim,
+            Part::Ring { outer, inner } => {
+                // A strip of quads between the rings.
+                let mut mesh = Mesh::default();
+                for (o, i) in outer.iter().zip(&inner) {
+                    mesh.colored_vertex(at(*o), color);
+                    mesh.colored_vertex(at(*i), color);
+                }
+                let n = outer.len() as u32;
+                for k in 0..n {
+                    let (a, b) = (2 * k, 2 * ((k + 1) % n));
+                    mesh.add_triangle(a, b, b + 1);
+                    mesh.add_triangle(a, b + 1, a + 1);
+                }
+                painter.add(Shape::mesh(mesh));
+                // Meshes are not anti-aliased: soften both edges.
+                let edge = Stroke::new(0.8, color);
+                for ring in [&outer, &inner] {
+                    painter.add(Shape::closed_line(ring.iter().map(|p| at(*p)).collect(), edge));
+                }
+                continue;
+            }
+        };
+        match prim {
             Prim::Circle { c, r, fill } => {
                 if fill {
                     painter.circle_filled(at(c), r * radius, color);
@@ -34,10 +58,10 @@ pub fn paint_symbol(painter: &Painter, center: Pos2, radius: f32, color: Color32
                 }
             }
             Prim::Polygon { fill, .. } | Prim::Star { fill, .. } => {
-                let pts: Vec<Pos2> = outline(prim).into_iter().map(at).collect();
+                let pts: Vec<Pos2> = outline(&prim).into_iter().map(at).collect();
                 if fill {
                     // A fan from the centre fills stars (not convex) as well as polygons.
-                    let c = match *prim {
+                    let c = match prim {
                         Prim::Polygon { c, .. } | Prim::Star { c, .. } => at(c),
                         _ => center,
                     };
@@ -58,6 +82,7 @@ pub fn paint_symbol(painter: &Painter, center: Pos2, radius: f32, color: Color32
             Prim::Segment { a, b } => {
                 painter.line_segment([at(a), at(b)], stroke);
             }
+            Prim::Hole { .. } => {}
         }
     }
 }

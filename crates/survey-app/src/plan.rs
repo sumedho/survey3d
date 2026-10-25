@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use glam::DVec2;
-use survey_core::style::{CodeStyle, LabelSet, Prim, Symbol, outline};
+use survey_core::style::{CodeStyle, LabelSet, Part, Prim, Symbol, outline, parts};
 use survey_io::plot::{
     Align, BLACK, CAP_HEIGHT, Item, Pen, Plot, Rgb, Text, VAlign, WHITE, rect_ring, text_width,
 };
@@ -515,8 +515,20 @@ impl<'a> Builder<'a> {
                 (Some(pen.clone()), None)
             }
         };
-        for prim in symbol.prims() {
-            match *prim {
+        for part in parts(symbol) {
+            let prim = match part {
+                Part::Prim(prim) => prim,
+                Part::Ring { outer, inner } => {
+                    out.push(Item::Path {
+                        points: Part::keyhole(&outer, &inner).into_iter().map(p).collect(),
+                        closed: true,
+                        pen: None,
+                        fill: Some(color),
+                    });
+                    continue;
+                }
+            };
+            match prim {
                 Prim::Circle { c, r: cr, fill } => {
                     let (pen, fill) = paint(fill);
                     out.push(Item::Circle {
@@ -538,13 +550,14 @@ impl<'a> Builder<'a> {
                 Prim::Polygon { fill, .. } | Prim::Star { fill, .. } => {
                     let (pen, fill) = paint(fill);
                     out.push(Item::Path {
-                        points: outline(prim).into_iter().map(p).collect(),
+                        points: outline(&prim).into_iter().map(p).collect(),
                         closed: true,
                         pen,
                         fill,
                     });
                 }
                 Prim::Segment { a, b } => out.push(Item::line(vec![p(a), p(b)], pen.clone())),
+                Prim::Hole { .. } => {}
             }
         }
     }

@@ -21,7 +21,8 @@ fn px_to_ndc(px: vec2<f32>) -> vec2<f32> {
 // ---------------------------------------------------------------- symbols
 
 // Point symbols and line patterns (see `survey_core::style`). Each symbol is a
-// run of primitives, each two vec4s: (kind, fill, x, y) and its parameters.
+// run of primitives, each two vec4s: (kind, fill, x, y) and its parameters
+// (kinds: 0 circle, 1 square, 2 polygon, 3 star, 4 segment, 5 hole).
 struct SymbolTable {
     // (first primitive, count, -, -) per symbol.
     ranges: array<vec4<u32>, 64>,
@@ -100,6 +101,11 @@ fn sd_symbol(p: vec2<f32>, id: u32, half: f32) -> f32 {
         let kind = u32(a.x + 0.5);
         let fill = a.y > 0.5;
         let c = a.zw;
+        if kind == 5u {
+            // A hole cut from what is drawn so far.
+            d = max(d, b.x - length(p - c));
+            continue;
+        }
         var dk: f32;
         switch kind {
             case 0u: { dk = length(p - c) - b.x; }

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use survey_core::style::{LineStyle, Prim, Symbol, outline};
+use survey_core::style::{LineStyle, Part, Prim, Symbol, outline, parts};
 use survey_io::dxf::{BlockShape, DxfBlock, DxfDrawing, DxfEntity, DxfGeometry, DxfLayer, DxfLinetype};
 use survey_model::{Color, Document, Entity, Polyline, SurveyPoint, TextAlign, TextNote};
 
@@ -143,8 +143,25 @@ fn linetype_name(style: LineStyle) -> String {
 fn symbol_block(symbol: Symbol) -> DxfBlock {
     let p = |c: [f32; 2]| [f64::from(c[0]), f64::from(c[1])];
     let mut shapes = Vec::new();
-    for prim in symbol.prims() {
-        match *prim {
+    for part in parts(symbol) {
+        let prim = match part {
+            Part::Prim(prim) => prim,
+            Part::Ring { outer, inner } => {
+                // Quads around the band.
+                let n = outer.len();
+                for k in 0..n {
+                    let next = (k + 1) % n;
+                    shapes.push(BlockShape::Solid(vec![
+                        p(outer[k]),
+                        p(outer[next]),
+                        p(inner[next]),
+                        p(inner[k]),
+                    ]));
+                }
+                continue;
+            }
+        };
+        match prim {
             Prim::Circle { c, r, fill } => shapes.push(BlockShape::Circle {
                 center: p(c),
                 radius: f64::from(r),
@@ -164,7 +181,7 @@ fn symbol_block(symbol: Symbol) -> DxfBlock {
                 });
             }
             Prim::Polygon { c, fill, .. } | Prim::Star { c, fill, .. } => {
-                let ring: Vec<[f64; 2]> = outline(prim).into_iter().map(p).collect();
+                let ring: Vec<[f64; 2]> = outline(&prim).into_iter().map(p).collect();
                 if !fill {
                     shapes.push(BlockShape::Polygon(ring));
                 } else if ring.len() <= 4 {
@@ -177,6 +194,7 @@ fn symbol_block(symbol: Symbol) -> DxfBlock {
                 }
             }
             Prim::Segment { a, b } => shapes.push(BlockShape::Line(p(a), p(b))),
+            Prim::Hole { .. } => {}
         }
     }
     DxfBlock {
