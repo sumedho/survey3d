@@ -612,3 +612,116 @@ fn lot_by_bearing_and_distance() {
     let out = ok(&mut s, "run_commands", json!({ "lines": ["mkparcel"] }));
     assert!(out.contains("Created 1 parcel"), "{out}");
 }
+
+#[test]
+fn site_calibration_previews_then_applies() {
+    let mut s = Server::new_for_tests();
+    // GNSS (MGA) shots of four control marks and a detail point, and the
+    // marks' local coordinates: the local grid is the MGA one shifted, turned
+    // 1° clockwise and 40 m lower.
+    let (cx, cy) = (391_000.0, 6_450_000.0);
+    let turn = 1f64.to_radians();
+    let local = |e: f64, n: f64| {
+        let (de, dn) = (e - cx, n - cy);
+        (
+            1000.0 + de * turn.cos() + dn * turn.sin(),
+            5000.0 - de * turn.sin() + dn * turn.cos(),
+        )
+    };
+    let mut gnss = Vec::new();
+    let mut control = Vec::new();
+    for (i, (de, dn)) in [(-300.0, -250.0), (320.0, -260.0), (310.0, 280.0), (-290.0, 270.0)]
+        .iter()
+        .enumerate()
+    {
+        let (e, n) = (cx + de, cy + dn);
+        gnss.push(json!({ "name": format!("G{}", i + 1), "e": e, "n": n, "z": 60.0 + i as f64 }));
+        let (le, ln) = local(e, n);
+        control.push(json!({ "name": format!("C{}", i + 1), "e": le, "n": ln, "z": 20.0 + i as f64 }));
+    }
+    gnss.push(json!({ "name": "D1", "e": cx + 10.0, "n": cy + 20.0, "z": 61.5 }));
+    ok(&mut s, "add_points", json!({ "points": gnss, "layer": "GNSS" }));
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": control, "layer": "Control" }),
+    );
+    // C4 mistyped by 10 cm: it shows up in the preview.
+    let pairs: Vec<Value> = (1..=4)
+        .map(|i| json!({ "measured": format!("G{i}"), "control": format!("C{i}") }))
+        .collect();
+    let preview = ok_json(&mut s, "site_calibration", json!({ "pairs": pairs }));
+    assert!(preview["preview"].is_string());
+    assert!(preview["max_residual_h"].as_f64().expect("max") < 1e-3);
+    assert!(preview["max_residual_v"].as_f64().expect("max") < 1e-3);
+    assert!(
+        (preview["horizontal"]["rotation_degrees_clockwise"]
+            .as_f64()
+            .expect("rot")
+            - 1.0)
+            .abs()
+            < 1e-9
+    );
+    assert!(preview["warnings"].as_array().expect("w").is_empty(), "{preview}");
+    assert_eq!(preview["vertical"]["method"], "plane");
+    let d1 = |s: &mut Server| {
+        let q = ok_json(
+            s,
+            "query",
+            json!({ "kind": "points", "filter": { "names": ["D1"] } }),
+        );
+        (
+            q["rows"][0]["e"].as_f64().expect("e"),
+            q["rows"][0]["n"].as_f64().expect("n"),
+            q["rows"][0]["z"].as_f64().expect("z"),
+        )
+    };
+    assert_eq!(d1(&mut s).0, cx + 10.0, "preview changes nothing");
+
+    // A doubtful pair is flagged; turning it off clears the flag.
+    let mut bad = pairs.clone();
+    bad[3] = json!({ "measured": "G4", "control": format!("{},{}", local(cx - 290.0, cy + 270.0).0 + 0.1, local(cx - 290.0, cy + 270.0).1) });
+    let flagged = ok_json(&mut s, "site_calibration", json!({ "pairs": bad }));
+    assert_eq!(flagged["pairs"][3]["over_limit"], true, "{flagged}");
+    assert!(
+        flagged["warnings"]
+            .to_string()
+            .contains("over the residual limits")
+    );
+    bad[3]["horizontal"] = json!(false);
+    let left_out = ok_json(&mut s, "site_calibration", json!({ "pairs": bad }));
+    assert!(left_out["max_residual_h"].as_f64().expect("max") < 1e-3);
+    assert!(
+        (left_out["pairs"][3]["residual_e"].as_f64().expect("e") - 0.1).abs() < 1e-3,
+        "{left_out}"
+    );
+    assert_eq!(
+        left_out["pairs"][3]["over_limit"], false,
+        "not used, so not flagged"
+    );
+
+    let applied = ok_json(
+        &mut s,
+        "site_calibration",
+        json!({ "pairs": pairs, "apply": "all_except_control" }),
+    );
+    assert!(
+        applied["applied"]
+            .as_str()
+            .expect("summary")
+            .contains("applied to 5 objects"),
+        "{applied}"
+    );
+    let (e, n, z) = d1(&mut s);
+    let (le, ln) = local(cx + 10.0, cy + 20.0);
+    assert!(
+        (e - le).abs() < 1e-3 && (n - ln).abs() < 1e-3 && (z - 21.5).abs() < 0.05,
+        "{e} {n} {z}"
+    );
+    let info = ok_json(&mut s, "project_info", json!({}));
+    assert_eq!(info["site_calibration"]["applied"], true);
+    assert_eq!(info["site_calibration"]["pairs"], 4);
+    // One undoable step.
+    ok(&mut s, "run_commands", json!({ "lines": ["undo"] }));
+    assert_eq!(d1(&mut s).0, cx + 10.0);
+}

@@ -39,7 +39,7 @@ general knowledge, as no feature list for it was found.
 | Field data import | RW5, JobXML, GSI, Topcon, Sokkia SDR; raw data editing | Partial | GSI and JobXML only; no raw editing |
 | GNSS processing | Baseline processing, RTK and PPK review (TBC) | Missing | Out of scope for now |
 | Field-to-finish | Codes to symbols, layers and linework, with curve and offset control codes | Has | Control codes to check against Carlson's set |
-| Coordinate systems | Projections, geoid models, site calibration, grid and ground | Partial | Projection calculator with combined scale factor and one geoid separation per project; no geoid grids, calibration or project-wide grid/ground |
+| Coordinate systems | Projections, geoid models, site calibration, grid and ground | Partial | Projection calculator with combined scale factor, one geoid separation per project, site calibration; no geoid grids or project-wide grid/ground |
 | Surfaces and volumes | TIN, breaklines, contours, volumes, sections, TIN editing, slope analysis | Has | No interactive TIN editing or slope analysis |
 | Point clouds | Import, classification, feature extraction, cloud to surface, sections | Partial | COPC streaming and conversion; no classification, snapping to the full cloud or sections |
 | Imagery | Orthophotos and basemaps under the drawing | Missing | Phase 13 |
@@ -113,8 +113,9 @@ project holds a single geoid separation and nothing ties coordinates to local co
 
 - [ ] **Geoid grids:** load common models (for example AUSGeoid2020, GEOID18, EGM2008) and convert ellipsoid
   heights to orthometric heights per point, replacing the single project separation.
-- [ ] **Site calibration (localization):** fit GNSS coordinates to local control points, with residuals
-  reported.
+- [x] **Site calibration (localization):** fit GNSS coordinates to local control points, with residuals
+  reported. Done: `sitecal` window and the MCP `site_calibration` tool (similarity fit, free or fixed
+  scale; constant or inclined-plane heights; live residuals and best-practice warnings).
 - [ ] **Grid and ground across the project:** a project or per-point combined scale factor, and distances in
   inverses, listings and plans shown as grid or ground.
 - [ ] **Project coordinate system in exports:** carried into LandXML, DXF metadata and COPC.

@@ -124,6 +124,7 @@ const SURVEY_MENU: &[MenuEntry] = &[
     Item("Import raw data (GSI, JobXML)…", "rawin"),
     Item("Network adjustment…", "netadj"),
     Item("Projection calculator…", "projcalc"),
+    Item("Site calibration…", "sitecal"),
     Separator,
     Item("Feature codes…", "codes"),
     Item("Process linework", "linework"),

@@ -177,6 +177,15 @@ impl SurveyApp {
         if let Some((title, text)) = self.calculator.show(ctx, self.session.project.doc.conventions()) {
             self.reports.add(title, text);
         }
+        match self.calibration_window.show(
+            ctx,
+            &self.session.project.doc,
+            self.session.project.selection.ids(),
+        ) {
+            Some(CalibrationAction::Apply(cmd, summary)) => self.session.apply(cmd, summary),
+            Some(CalibrationAction::Report(title, text)) => self.reports.add(title, text),
+            None => {}
+        }
         match self.resection_window.show(ctx, &self.session.project.doc) {
             Some(ResectionAction::Create(cmd, summary)) => self.session.apply(cmd, summary),
             Some(ResectionAction::Report(title, text)) => self.reports.add(title, text),

@@ -10,6 +10,7 @@ pub mod adjustment;
 pub mod alignment;
 pub mod angle;
 pub mod arc;
+pub mod calibration;
 pub mod closure;
 pub mod cogo;
 pub mod contour;

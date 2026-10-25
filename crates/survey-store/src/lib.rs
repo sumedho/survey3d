@@ -297,6 +297,9 @@ impl ProjectStore {
         if let Some(o) = self.meta_value("network_options")? {
             meta.network_options = serde_json::from_str(&o)?;
         }
+        if let Some(c) = self.meta_value("calibration")? {
+            meta.calibration = serde_json::from_str(&c)?;
+        }
         Ok(meta)
     }
 
@@ -712,6 +715,7 @@ fn write_meta(tx: &Transaction<'_>, meta: &ProjectMeta) -> Result<()> {
         "network_options",
         serde_json::to_string(&meta.network_options)?
     ])?;
+    put.execute(params!["calibration", serde_json::to_string(&meta.calibration)?])?;
     tx.execute(
         "INSERT OR REPLACE INTO coord_system (id, definition_json) VALUES (1, ?1)",
         [serde_json::to_string(&meta.coord_system)?],

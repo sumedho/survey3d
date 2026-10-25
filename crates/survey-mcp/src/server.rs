@@ -131,6 +131,7 @@ impl Server {
             "set_feature_codes" => self.set_feature_codes(args),
             "set_layer" => self.set_layer(args),
             "set_project" => self.set_project(args),
+            "site_calibration" => self.site_calibration(args),
             "add_text" => self.add_text(args),
             "edit_entities" => self.edit_entities(args),
             "create_surface" => self.create_surface(args),
@@ -208,6 +209,10 @@ impl Server {
             "conventions_presets": Conventions::presets().into_iter().map(|c| c.name).collect::<Vec<_>>(),
             "counts": { "points": points, "polylines": polylines, "texts": texts },
             "feature_codes": meta.feature_codes.codes.len(),
+            "site_calibration": {
+                "pairs": meta.calibration.pairs.iter().filter(|p| !p.measured.trim().is_empty()).count(),
+                "applied": meta.calibration.applied.is_some(),
+            },
             "bounds": (!bounds.is_empty()).then(|| json!({
                 "min": [bounds.min.x, bounds.min.y, bounds.min.z],
                 "max": [bounds.max.x, bounds.max.y, bounds.max.z],
@@ -1091,6 +1096,7 @@ impl Filter {
     }
 }
 
+mod calibration;
 mod drawing;
 mod settings;
 mod surfaces;

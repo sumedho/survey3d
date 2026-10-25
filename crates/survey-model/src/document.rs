@@ -33,6 +33,9 @@ pub struct ProjectMeta {
     /// A priori precision used by the network adjustment.
     #[serde(default)]
     pub network_options: survey_core::network::NetworkOptions,
+    /// Site calibration (GNSS grid to local control).
+    #[serde(default)]
+    pub calibration: survey_core::calibration::SiteCalibration,
 }
 
 impl Default for ProjectMeta {
@@ -45,6 +48,7 @@ impl Default for ProjectMeta {
             feature_codes: FeatureLibrary::default(),
             tolerances: Tolerances::default(),
             network_options: Default::default(),
+            calibration: Default::default(),
         }
     }
 }

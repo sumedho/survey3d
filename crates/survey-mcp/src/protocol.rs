@@ -28,6 +28,7 @@ Lots and traverses from a plan: 'bd', a start point, then one 'bearing distance[
 'c' takes the last leg as returning to the start: it reports the misclosure (bearing, distance, 1:N precision), perimeter and area, unadjusted, and draws the closed boundary (select it and run mkparcel to make a parcel); \
 's' toggles sideshots (a point without moving on), 'u' undoes the last leg, '' ends an open run. \
 Field side shots: 'rad', the station, a backsight point or bearing, then 'angle distance[ dZ]' (clockwise from the backsight); 't' toggles traverse mode, occupying each new point with the last as backsight. \
+GNSS data onto local control: site_calibration with pairs (measured GNSS point, control point or E,N[,Z]); it previews residuals and warnings first; drop doubtful pairs and refit, then apply (all_except_control or selection). \
 Set up the job first: set_project (name, coordinate system), set_feature_codes (what point codes mean, their symbols, layers and linework) and set_layer (colours, line styles). \
 Point codes are strung into lines with 'linework'; text such as street names goes in with add_text; fix names, codes and layers with edit_entities. \
 Every edit is one undoable step ('undo', 'redo') recorded in the project's audit trail. \

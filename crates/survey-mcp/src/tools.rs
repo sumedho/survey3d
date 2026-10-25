@@ -344,6 +344,37 @@ pub fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "site_calibration",
+            "title": "Site calibration",
+            "description": "Site calibration (localisation): fits GNSS-measured points (projected grid, e.g. MGA) to the local control the site is built on, then moves the measured data onto it. Horizontal: least-squares shifts, rotation and scale (fixed_scale: true holds scale at 1); vertical: none, constant shift or an inclined plane (needs 3+ points with heights). pairs: each measured (GNSS point name) and control (control point name, or its coordinates 'E,N[,Z]' in the project's order); horizontal/vertical (default true) include it in each fit. Omit pairs to reuse the project's saved ones. Without apply (or apply: none) this only previews: per-pair residuals (control minus calibrated, metres) flagged over_limit against tolerance_h/tolerance_v (default 0.02/0.03 m), the scale (ppm), rotation, shifts, plane slopes, redundancy, points outside the control area, and plain-language warnings. Good practice: 3 or more horizontal pairs (4+ better) spread around and enclosing the work, 4+ vertical points; a scale far from 1 or a steep tilt usually means a mismatched pair; turn off a pair with a large residual (horizontal/vertical: false) and refit, rather than accepting it. Then apply: all_except_control (everything except the control points) or selection (the selected objects, see select) moves them in one undoable step and saves the calibration with the project. save: true stores the pairs without applying. In the app the same is the 'sitecal' window (Survey > Site calibration).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pairs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "measured": { "type": "string", "description": "Name of the GNSS-measured point." },
+                                "control": { "type": "string", "description": "Control point name, or 'E,N[,Z]'." },
+                                "horizontal": { "type": "boolean", "default": true },
+                                "vertical": { "type": "boolean", "default": true }
+                            },
+                            "required": ["measured", "control"],
+                            "additionalProperties": false
+                        }
+                    },
+                    "fixed_scale": { "type": "boolean", "default": false },
+                    "vertical": { "type": "string", "enum": ["none", "constant", "plane"], "default": "plane" },
+                    "tolerance_h": { "type": "number", "exclusiveMinimum": 0, "default": 0.02 },
+                    "tolerance_v": { "type": "number", "exclusiveMinimum": 0, "default": 0.03 },
+                    "apply": { "type": "string", "enum": ["none", "all_except_control", "selection"], "default": "none" },
+                    "save": { "type": "boolean", "default": false }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
             "name": "create_surface",
             "title": "Create a surface",
             "description": "Builds a surface (TIN) from the drawing and makes it the active surface, in one undoable step. Points: those with heights on point_layers and/or matching point_codes (patterns with * and ?; both empty: every point with a height). Breaklines: polylines on breakline_layers or matching breakline_codes (plan-only lines are left out). boundary: a closed polyline (id or name) the surface stops at; holes: closed polylines cut out; max_edge: drop longer triangle edges (metres) around an irregular edge. style: visible, shaded, elevation_colors, triangles, color (#rrggbb), isopach, and contours {show, interval (m), major_every, labels} — contours show on the drawing and plan sheets; turn them into polylines with run_commands 'contours'. The result lists points and triangles used, the height range, and warnings for selected points or breaklines without heights.",

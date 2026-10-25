@@ -41,6 +41,7 @@ use crate::tools::{Preview, SELECT_TOOL_ID, ToolEvent};
 use crate::ui::alignments::AlignmentsWindow;
 use crate::ui::audit_window::AuditWindow;
 use crate::ui::calculator::{CalcTab, CalculatorWindow};
+use crate::ui::calibration_window::{CalibrationAction, CalibrationWindow};
 use crate::ui::closure_window::{ClosureAction, ClosureWindow};
 use crate::ui::clouds::{CloudAction, CloudPanel};
 use crate::ui::csv_import::{CsvDialogResult, CsvImportDialog};
@@ -296,6 +297,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::GLOBE,
     ),
     cmd(
+        "sitecal",
+        "Site calibration (fit GNSS points to local control)",
+        "Survey",
+        icons::MAP_PIN,
+    ),
+    cmd(
         "mkparcel",
         "Parcels from selected closed polylines",
         "Cadastral",
@@ -414,6 +421,7 @@ pub struct SurveyApp {
     sheets_window: SheetsWindow,
     subdivide_window: SubdivideWindow,
     resection_window: ResectionWindow,
+    calibration_window: CalibrationWindow,
     codes_window: FeatureCodesWindow,
     reports: ReportsWindow,
     points_window: PointsWindow,
@@ -553,6 +561,7 @@ impl SurveyApp {
             sheets_window: SheetsWindow::default(),
             subdivide_window: SubdivideWindow::default(),
             resection_window: ResectionWindow::default(),
+            calibration_window: CalibrationWindow::default(),
             codes_window: FeatureCodesWindow::default(),
             reports: ReportsWindow::default(),
             points_window: PointsWindow::default(),
@@ -874,6 +883,9 @@ impl SurveyApp {
                 .volumes_window
                 .open(&self.session.project.doc, self.session.active_surface),
             "projcalc" | "projection" | "geo" => self.projection_window.open = true,
+            "sitecal" | "calibrate" | "calibration" | "localise" | "localize" => {
+                self.calibration_window.open = true
+            }
             "netadj" | "adjust" | "lsa" => self.network_window.open_with(&self.session.project.doc),
             "accuracy" | "tolerances" => self.settings_window.open_at_accuracy(),
             "codes" | "featurecodes" => self.codes_window.open(),
