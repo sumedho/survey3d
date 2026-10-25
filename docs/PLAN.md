@@ -386,3 +386,6 @@ guidance (Material dark theme, WCAG):
   rebuild, delete); legends in columns (done). Next: attach to a running GUI (a localhost channel the app
   drains each frame, so edits appear live and share its undo stack); 3D viewport snapshots; feature
   code and project settings tools.
+
+The phases after these (8 onwards: production hardening, cadastral deliverables, field data, coordinate
+systems, point cloud survey tools, imagery and data exchange) are in [`ROADMAP.md`](ROADMAP.md).

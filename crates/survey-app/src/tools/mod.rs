@@ -359,7 +359,8 @@ impl DomainModule for CoreModule {
             (
                 cogo::IntersectKind::BearingDistance,
                 "Intersect bearing–distance",
-                &["bd", "brgdist"][..],
+                // `bd` is the bearing & distance (traverse) tool.
+                &["brgdist"][..],
                 "Point on a bearing from one point at a distance from another",
             ),
             (

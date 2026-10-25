@@ -149,8 +149,8 @@ impl Session {
     /// whole LOD levels to view it through the in-memory renderer.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn import_copc(&mut self, path: &std::path::Path) {
-        // A light overview to show immediately; the view-dependent streamer
-        // refines it (and reads only what the camera needs) from here on.
+        // An overview kept in memory for snapping and surfaces; the view
+        // streams its detail from the file (see `cloud_stream`).
         const INITIAL_PREVIEW: usize = 2_000_000;
         let (raw, summary) = match survey_io::copc::read_copc_coarse(path, INITIAL_PREVIEW) {
             Ok(v) => v,
@@ -170,13 +170,9 @@ impl Session {
         let cloud = survey_model::PointCloud::from_source(&stem, source, &raw.points, raw.colors);
         drop(raw.points);
         let loaded = cloud.len();
-        let coarse = (loaded as u64) < summary.total;
-        if coarse {
-            self.log.warn(format!(
-                "{stem} has {} points; showing a coarse preview of {loaded} ({} LOD level{})",
-                summary.total,
-                summary.levels_read,
-                if summary.levels_read == 1 { "" } else { "s" },
+        if (loaded as u64) < summary.total {
+            self.log.info(format!(
+                "{stem}: drawn in detail where you look; snapping and surfaces use an overview of {loaded} points"
             ));
         }
         self.execute(Box::new(
@@ -186,10 +182,7 @@ impl Session {
             self.emit(Event::SelectCloud(id));
         }
         self.emit(Event::ZoomExtents);
-        self.success(format!(
-            "Loaded COPC {stem}: {loaded} points{}",
-            if coarse { " (coarse preview)" } else { "" }
-        ));
+        self.success(format!("Loaded COPC {stem}: {} points", summary.total));
     }
 
     pub fn import_landxml(&mut self, name: &str, bytes: &[u8]) {

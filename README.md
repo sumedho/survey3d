@@ -3,7 +3,8 @@
 Surveying CAD for cadastral, construction and mining work — Rust, [egui](https://github.com/emilk/egui)
 and [wgpu](https://wgpu.rs), running natively and in the browser (WebGPU with WebGL2 fallback).
 
-Architecture, decisions and roadmap: [`docs/PLAN.md`](docs/PLAN.md).
+Architecture, decisions and completed phases: [`docs/PLAN.md`](docs/PLAN.md); what comes next:
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Run
 

@@ -94,7 +94,7 @@ const COGO_MENU: &[MenuEntry] = &[
         "Intersection",
         &[
             Item("Bearing – bearing", "bb"),
-            Item("Bearing – distance", "bd"),
+            Item("Bearing – distance", "brgdist"),
             Item("Distance – distance", "dd"),
         ],
     ),

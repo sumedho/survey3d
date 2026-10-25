@@ -19,8 +19,10 @@ thiserror.workspace = true
 miniz_oxide.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# COPC reading is native only (no filesystem/decoder path on wasm).
-copc-rs.workspace = true
-# Pins the shared laz version so copc-rs 0.5.0 builds (see workspace Cargo.toml).
+# COPC reading and writing are native only (no filesystem/decoder path on wasm).
 las.workspace = true
 laz.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# An independent COPC reader, to check what the writer produces.
+copc-rs.workspace = true

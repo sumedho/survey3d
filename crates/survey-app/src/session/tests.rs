@@ -378,3 +378,26 @@ fn radiate_traverse_moves_the_setup() {
     assert!(has_point_at(&s, 10.0, 0.0), "{:?}", point_positions(&s));
     assert!(has_point_at(&s, 10.0, 10.0), "{:?}", point_positions(&s));
 }
+
+/// Each command name starts one thing: a tool, or a session command.
+#[test]
+fn command_names_are_unique() {
+    let s = session();
+    let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let session_names = SESSION_COMMANDS
+        .iter()
+        .map(|(n, _)| (*n, "session command"))
+        .chain(COMMAND_ALIASES.iter().map(|(a, _)| (*a, "session alias")));
+    for t in s.tools.tools() {
+        for c in t.commands {
+            if let Some(other) = seen.insert(c.to_string(), t.id.to_string()) {
+                panic!("'{c}' starts both {other} and {}", t.id);
+            }
+        }
+    }
+    for (name, what) in session_names {
+        if let Some(tool) = seen.get(name) {
+            panic!("'{name}' is both the tool {tool} and a {what}");
+        }
+    }
+}

@@ -90,11 +90,10 @@ mod gpu {
     use super::{CELLS, CELLS_PER_SIDE, CloudColoring, CloudFrame};
     use crate::camera::{Camera, Projection};
 
-    /// Largest drawn point size (logical px). Potree allows 50, but where a
-    /// coarse level is drawn near the camera (still loading, or the budget)
-    /// points that large stand up off a ground seen at a shallow angle as an
-    /// opaque, streaky sheet with a hard edge; small gaps are filled in
-    /// screen space instead (see `cloud_edl.wgsl`).
+    /// Largest drawn point size (logical px). Potree allows 50; a lower cap
+    /// keeps a coarse level drawn near the camera (while finer nodes load)
+    /// from turning into large blocks, and small gaps are filled in screen
+    /// space instead (see `cloud_edl.wgsl`).
     const MAX_SIZE_PX: f32 = 10.0;
     /// Points are drawn this many spacings across, so randomly placed points
     /// overlap rather than leave gaps.
@@ -584,7 +583,8 @@ mod gpu {
                     // A node drawn in part takes more of its sparse columns and
                     // less of its dense ones (all of a column at most), so a node
                     // mixing woodland and field reaches the same spacing over
-                    // both. Full nodes draw everything.
+                    // both. Full nodes draw everything. The selection counts the
+                    // same shares: keep in step with `survey_io::copc::drawn_share`.
                     let per_side = CELLS_PER_SIDE;
                     let mut columns = [0u32; CELLS_PER_SIDE * CELLS_PER_SIDE];
                     for c in 0..CELLS {

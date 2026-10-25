@@ -10,7 +10,6 @@
 
 use std::path::Path;
 
-use copc_rs::CopcReader;
 use glam::DVec3;
 
 use crate::IoError;
@@ -24,14 +23,41 @@ pub struct CopcSummary {
     /// File bounds (all points), from the LAS header.
     pub min: DVec3,
     pub max: DVec3,
-    /// Octree levels actually read (0 = root only).
-    pub levels_read: i32,
     /// Whether the read points carry colour.
     pub has_color: bool,
 }
 
 fn invalid(e: impl std::fmt::Display) -> IoError {
     IoError::Invalid(format!("COPC: {e}"))
+}
+
+/// The COPC info record: the octree's cube and the first hierarchy page.
+struct CopcInfo {
+    center: DVec3,
+    halfsize: f64,
+    root_hier_offset: u64,
+    root_hier_size: u64,
+}
+
+/// A COPC file's LAS header and info record.
+fn open_header(path: &Path) -> Result<(las::Header, CopcInfo), IoError> {
+    let reader = las::Reader::from_path(path).map_err(|e| invalid(format!("opening the file: {e}")))?;
+    let header = reader.header().clone();
+    let data = header
+        .all_vlrs()
+        .find(|v| v.user_id.eq_ignore_ascii_case("copc") && v.record_id == 1)
+        .map(|v| v.data.clone())
+        .filter(|d| d.len() >= 56)
+        .ok_or_else(|| invalid("not a COPC file (no COPC info record); convert it first"))?;
+    let f64_at = |i: usize| f64::from_le_bytes(data[i..i + 8].try_into().unwrap_or_default());
+    let u64_at = |i: usize| u64::from_le_bytes(data[i..i + 8].try_into().unwrap_or_default());
+    let info = CopcInfo {
+        center: DVec3::new(f64_at(0), f64_at(8), f64_at(16)),
+        halfsize: f64_at(24),
+        root_hier_offset: u64_at(40),
+        root_hier_size: u64_at(48),
+    };
+    Ok((header, info))
 }
 
 /// A short description of a LAS point record, for diagnosing decode failures.
@@ -49,11 +75,10 @@ fn describe_format(header: &las::Header) -> String {
 /// `max_points`. The result is a spatially balanced sample of the whole cloud,
 /// not a cropped corner, so it is representative at a glance.
 pub fn read_copc_coarse(path: &Path, max_points: usize) -> Result<(RawCloud, CopcSummary), IoError> {
-    let reader =
-        CopcReader::from_path(path).map_err(|e| IoError::Invalid(format!("COPC: opening the file: {e}")))?;
+    let (header, _) = open_header(path)?;
     // `format` describes the point record so a decode failure is diagnosable.
     let (total, min, max, format) = {
-        let h = reader.header();
+        let h = &header;
         let b = h.bounds();
         (
             h.number_of_points(),
@@ -62,9 +87,7 @@ pub fn read_copc_coarse(path: &Path, max_points: usize) -> Result<(RawCloud, Cop
             describe_format(h),
         )
     };
-    drop(reader);
-
-    let (raw, levels_read) = CopcSource::shared(path)
+    let raw = CopcSource::shared(path)
         .and_then(|src| src.read_levels(max_points))
         .map_err(|e| {
             IoError::Invalid(format!(
@@ -82,7 +105,6 @@ pub fn read_copc_coarse(path: &Path, max_points: usize) -> Result<(RawCloud, Cop
             total,
             min,
             max,
-            levels_read,
             has_color,
         },
     ))
@@ -235,7 +257,8 @@ fn whole_levels(
 /// the node is drawn in full; else the fraction scaled by the inverse of the
 /// cell's column density relative to the node's (so sparse columns give more
 /// and dense ones less, evening the node out), at most all of it. The
-/// renderer (`cad_render::clouds`) draws the same shares.
+/// renderer draws the same shares (`column_share` in `cad_render::clouds`,
+/// which cannot depend on this crate): change both together.
 pub fn drawn_share(cells: &[u32; CELLS + 1], c: usize, fraction: f64) -> f64 {
     let total = cells[CELLS];
     if fraction >= 1.0 || total == 0 {
@@ -302,9 +325,7 @@ impl CopcSource {
 
     pub fn open(path: &Path) -> Result<Self, IoError> {
         use std::io::{Read, Seek, SeekFrom};
-        let reader = CopcReader::from_path(path).map_err(invalid)?;
-        let header = reader.header();
-        let info = reader.copc_info().clone();
+        let (header, info) = open_header(path)?;
         let format = *header.point_format();
         let fmt = format.to_u8().map_err(invalid)?;
         let t = header.transforms();
@@ -319,7 +340,6 @@ impl CopcSource {
             [t.x.scale, t.y.scale, t.z.scale],
             [t.x.offset, t.y.offset, t.z.offset],
         );
-        drop(reader);
 
         // Walk the hierarchy pages (32-byte entries; count -1 points at a child page).
         let mut file = std::io::BufReader::new(std::fs::File::open(path).map_err(invalid)?);
@@ -358,11 +378,7 @@ impl CopcSource {
             wide_color: false,
             scale,
             offset,
-            root_min: DVec3::new(
-                info.center.x - info.halfsize,
-                info.center.y - info.halfsize,
-                info.center.z - info.halfsize,
-            ),
+            root_min: info.center - DVec3::splat(info.halfsize),
             root_size: info.halfsize * 2.0,
             entries,
             base_levels,
@@ -580,28 +596,11 @@ impl CopcSource {
     /// screen first, until `max_points` are drawn (counting only a node's
     /// cells inside the frustum). COPC's coarse levels are dense, so a node is
     /// drawn only in the share the view needs to bring points to
-    /// `spacing_px` apart (see [`NodePoints`]), and refined only when drawn in
-    /// full. Parents come before children; levels add to their ancestors.
+    /// `spacing_px` apart (see [`NodePoints`] and [`drawn_share`]); its
+    /// children are still refined where that share leaves gaps. Parents come
+    /// before children; levels add to their ancestors.
     pub fn select(&self, view: &ViewQuery, max_points: usize) -> Vec<Selected> {
-        // When the budget can't reach the wanted spacing everywhere, coarsen
-        // the whole view rather than leave fine detail near the camera and a
-        // visible edge where the budget ran out.
-        let mut spacing = view.spacing_px;
-        let mut chosen = Vec::new();
-        for _ in 0..8 {
-            let (selection, short) = self.select_at(view, spacing, max_points);
-            chosen = selection;
-            if !short {
-                break;
-            }
-            spacing *= 1.25;
-        }
-        chosen
-    }
-
-    /// [`Self::select`] at one wanted spacing; also whether the budget fell
-    /// short of it (more than a twentieth of the budget left out).
-    fn select_at(&self, view: &ViewQuery, spacing_wanted: f64, max_points: usize) -> (Vec<Selected>, bool) {
+        let spacing_wanted = view.spacing_px;
         use std::collections::{BinaryHeap, HashMap};
         let box_in_frustum = |min: DVec3, max: DVec3| {
             view.frustum.iter().all(|(p, n)| {
@@ -723,11 +722,10 @@ impl CopcSource {
 
         let root = (0, 0, 0, 0);
         if !self.entries.contains_key(&root) {
-            return (out, false);
+            return out;
         }
         // The base, level by level (parents first), whatever the view.
         let mut total = 0usize;
-        let mut left_out = 0usize;
         let mut level = vec![root];
         while let Some(&first) = level.first()
             && first.0 < self.base_levels
@@ -767,7 +765,6 @@ impl CopcSource {
             let count = self.entries.get(&k).map_or(0, |e| e.count as usize);
             let cost = (count as f64 * fraction * visible_share(k)).ceil() as usize;
             if total + cost > max_points {
-                left_out += cost;
                 continue; // too dear: leave this place at its coarser levels
             }
             total += cost;
@@ -781,13 +778,13 @@ impl CopcSource {
                 }
             }
         }
-        (out, left_out > max_points / 20)
+        out
     }
 
     /// Whole octree levels from the root down, at most `max_points` (see
-    /// [`whole_levels`]). Returns the points and the number of levels read.
-    pub fn read_levels(&self, max_points: usize) -> Result<(RawCloud, i32), IoError> {
-        let (keys, levels) = whole_levels(&self.entries, max_points);
+    /// [`whole_levels`]).
+    pub fn read_levels(&self, max_points: usize) -> Result<RawCloud, IoError> {
+        let (keys, _) = whole_levels(&self.entries, max_points);
         self.load(&keys)?;
         let mut points = Vec::new();
         let mut colors = Vec::new();
@@ -802,6 +799,6 @@ impl CopcSource {
             }
         }
         let colors = self.has_color().then_some(colors);
-        Ok((RawCloud { points, colors }, levels))
+        Ok(RawCloud { points, colors })
     }
 }

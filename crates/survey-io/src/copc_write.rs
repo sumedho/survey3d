@@ -1108,7 +1108,7 @@ mod tests {
 
         // Every node's points lie inside its cube.
         let src = crate::copc::CopcSource::open(&copc_path).expect("our reader");
-        let (raw, _) = src.read_levels(usize::MAX).expect("levels");
+        let raw = src.read_levels(usize::MAX).expect("levels");
         assert!(!raw.points.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }

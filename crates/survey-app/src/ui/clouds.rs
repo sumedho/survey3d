@@ -90,7 +90,9 @@ impl CloudPanel {
                             "On disk (COPC). Not loaded — re-link from File → Point clouds (COPC)."
                                 .to_string()
                         } else {
-                            format!("On disk (COPC). Showing a preview of {resident} points.")
+                            format!(
+                                "On disk (COPC), drawn in detail where you look. Snapping and surfaces use an overview of {resident} points."
+                            )
                         });
                     }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {

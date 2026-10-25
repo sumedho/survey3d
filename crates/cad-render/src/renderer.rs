@@ -199,33 +199,19 @@ struct Upload {
     chunks: Vec<GpuChunk>,
 }
 
-/// A level-of-detail scene streaming in to replace an upload that is still
-/// being drawn, so a new working set never shows half-loaded.
-struct Staged {
-    upload: Upload,
-    /// Points each chunk will draw once promoted (planned every frame).
-    counts: Vec<u32>,
-    /// Frame staging began.
-    since: u64,
-}
-
 /// Points drawn per square logical pixel of a level-of-detail chunk.
 const LOD_DENSITY: f64 = 0.35;
 /// Most level-of-detail points drawn in one frame.
 const LOD_BUDGET: f64 = 4_000_000.0;
 /// Most level-of-detail points uploaded in one frame; the rest follow over
-/// the next frames, so a huge cloud never stalls a frame. Native GPUs take a
-/// full working set in a frame or two (a replacement streams in behind the
-/// scene it replaces, so this sets how soon new detail shows).
+/// the next frames, so a huge cloud never stalls a frame (native GPUs take a
+/// few million a frame comfortably).
 #[cfg(target_arch = "wasm32")]
 const STREAM_PER_FRAME: u64 = 1_500_000;
 #[cfg(not(target_arch = "wasm32"))]
 const STREAM_PER_FRAME: u64 = 4_000_000;
 /// Smallest streamed upload, so a chunk is not re-uploaded for every small zoom step.
 const STREAM_MIN: u32 = 16_384;
-/// Most frames a staged scene waits for its points before replacing the
-/// drawn one anyway (a camera that never settles must not hold it off).
-const STAGE_FRAMES: u64 = 30;
 /// Level-of-detail points kept resident on the GPU per viewport before
 /// chunks that are off screen are evicted (least recently drawn first).
 #[cfg(target_arch = "wasm32")]
@@ -243,8 +229,6 @@ struct ViewResources {
     uniform_slots: usize,
     uniform_bind_group: wgpu::BindGroup,
     uploads: Vec<Upload>,
-    /// The replacement streaming in for each upload, if any (same indices).
-    staged: Vec<Option<Staged>>,
     /// Points to draw per chunk this frame (all, or a level-of-detail prefix).
     point_counts: Vec<u32>,
     frame: u64,
@@ -364,7 +348,6 @@ impl Resources {
             if let Some(prev) = previous {
                 // Keep uploaded geometry across resizes.
                 view.uploads = prev.uploads;
-                view.staged = prev.staged;
                 view.point_counts = prev.point_counts;
                 view.uniform_buffer = prev.uniform_buffer;
                 view.uniform_slots = prev.uniform_slots;
@@ -446,7 +429,6 @@ impl ViewResources {
             uniform_slots: 16,
             uniform_bind_group,
             uploads: Vec::new(),
-            staged: Vec::new(),
             point_counts: Vec::new(),
             frame: 0,
             #[cfg(not(target_arch = "wasm32"))]
@@ -456,97 +438,58 @@ impl ViewResources {
 
     /// How many points of each chunk to draw: every point of ordinary scenes,
     /// and for level-of-detail scenes a number that suits the chunk's size on
-    /// screen (none when it is off screen), within an overall budget. Staged
-    /// scenes are planned the same way, for the points to stream ahead.
+    /// screen (none when it is off screen), within an overall budget.
     fn plan_points(&mut self, camera: &Camera) {
         self.point_counts = plan(&self.uploads, camera);
-        for s in self.staged.iter_mut().flatten() {
-            s.counts = plan(std::slice::from_ref(&s.upload), camera);
-        }
     }
 
     fn upload_scenes(&mut self, device: &wgpu::Device, scenes: &[Arc<Scene>]) {
         self.uploads.truncate(scenes.len());
-        self.staged.truncate(scenes.len());
         for (i, scene) in scenes.iter().enumerate() {
             if self.uploads.get(i).is_some_and(|u| u.revision == scene.revision) {
-                // Back to what is drawn: drop any replacement in flight.
-                if let Some(s) = self.staged.get_mut(i) {
-                    *s = None;
-                }
-                continue;
-            }
-            let staged = self.staged.get(i).and_then(Option::as_ref);
-            if staged.is_some_and(|s| s.upload.revision == scene.revision) {
                 continue;
             }
             let upload = new_upload(device, scene);
-            // A level-of-detail scene replacing another streams in behind it;
-            // anything else replaces at once (its geometry is uploaded whole).
-            if scene.lod && self.uploads.get(i).is_some_and(|u| u.lod) {
-                self.staged[i] = Some(Staged {
-                    upload,
-                    counts: Vec::new(),
-                    since: self.frame,
-                });
-            } else if i < self.uploads.len() {
+            if i < self.uploads.len() {
                 self.uploads[i] = upload;
-                self.staged[i] = None;
             } else {
                 self.uploads.push(upload);
-                self.staged.push(None);
             }
         }
     }
 
     /// Uploads the level-of-detail points this frame needs (largest needs
-    /// first, within a per-frame budget) for drawn and staged scenes, and
-    /// evicts off-screen chunks when the resident total exceeds the budget.
+    /// first, within a per-frame budget) and evicts off-screen chunks when
+    /// the resident total exceeds the budget.
     /// Returns true when some wanted points are still to be uploaded.
     fn stream_points(&mut self, device: &wgpu::Device) -> bool {
         self.frame += 1;
         let frame = self.frame;
-        // (want, upload index, staged?, chunk index)
+        // (want, upload index, chunk index)
         let mut requests = Vec::new();
-        let mut want_from = |u: &mut Upload, counts: &[u32], ui: usize, staged: bool| {
+        let mut flat = 0;
+        for (ui, u) in self.uploads.iter_mut().enumerate() {
             for (ci, c) in u.chunks.iter_mut().enumerate() {
-                let want = counts.get(ci).copied().unwrap_or(0);
+                let want = self.point_counts.get(flat).copied().unwrap_or(0);
+                flat += 1;
                 if u.lod && want > 0 {
                     c.last_used = frame;
                     let resident = c.points.as_ref().map_or(0, |(_, n)| *n);
                     if want > resident {
-                        requests.push((want, ui, staged, ci));
+                        requests.push((want, ui, ci));
                     }
                 }
-            }
-        };
-        let mut flat = 0;
-        for (ui, u) in self.uploads.iter_mut().enumerate() {
-            let n = u.chunks.len();
-            want_from(u, self.point_counts.get(flat..flat + n).unwrap_or(&[]), ui, false);
-            flat += n;
-        }
-        for (ui, s) in self.staged.iter_mut().enumerate() {
-            if let Some(s) = s {
-                want_from(&mut s.upload, &s.counts, ui, true);
             }
         }
         requests.sort_by_key(|r| std::cmp::Reverse(r.0));
         let mut uploaded = 0u64;
         let mut pending = false;
-        for (want, ui, staged, ci) in requests {
+        for (want, ui, ci) in requests {
             if uploaded >= STREAM_PER_FRAME {
                 pending = true;
                 break;
             }
-            let u = if staged {
-                match &mut self.staged[ui] {
-                    Some(s) => &mut s.upload,
-                    None => continue,
-                }
-            } else {
-                &mut self.uploads[ui]
-            };
+            let u = &mut self.uploads[ui];
             let Some(scene) = &u.scene else { continue };
             let src = &scene.chunks[ci].points;
             // Over-fetch so small zooms are served from what is resident.
@@ -555,17 +498,16 @@ impl ViewResources {
             uploaded += u64::from(n);
         }
         // Evict least recently drawn chunks that are not needed this frame.
-        let mut all: Vec<&mut Upload> = self.uploads.iter_mut().collect();
-        all.extend(self.staged.iter_mut().flatten().map(|s| &mut s.upload));
-        all.retain(|u| u.lod);
-        let mut resident: u64 = all
+        let mut resident: u64 = self
+            .uploads
             .iter()
+            .filter(|u| u.lod)
             .flat_map(|u| &u.chunks)
             .map(|c| u64::from(c.points.as_ref().map_or(0, |(_, n)| *n)))
             .sum();
         if resident > RESIDENT_BUDGET {
             let mut idle: Vec<(u64, usize, usize)> = Vec::new();
-            for (ui, u) in all.iter().enumerate() {
+            for (ui, u) in self.uploads.iter().enumerate().filter(|(_, u)| u.lod) {
                 for (ci, c) in u.chunks.iter().enumerate() {
                     if c.points.is_some() && c.last_used < frame {
                         idle.push((c.last_used, ui, ci));
@@ -577,34 +519,12 @@ impl ViewResources {
                 if resident <= RESIDENT_BUDGET {
                     break;
                 }
-                if let Some((_, n)) = all[ui].chunks[ci].points.take() {
+                if let Some((_, n)) = self.uploads[ui].chunks[ci].points.take() {
                     resident -= u64::from(n);
                 }
             }
         }
-        pending || self.staged.iter().any(Option::is_some)
-    }
-
-    /// Swaps in staged scenes whose wanted points are all resident (or that
-    /// have waited long enough). Returns true when any was promoted, so the
-    /// frame is planned again for what is now drawn.
-    fn promote_staged(&mut self) -> bool {
-        let mut promoted = false;
-        for (i, slot) in self.staged.iter_mut().enumerate() {
-            let ready = slot.as_ref().is_some_and(|s| {
-                self.frame.saturating_sub(s.since) >= STAGE_FRAMES
-                    || s.upload
-                        .chunks
-                        .iter()
-                        .zip(&s.counts)
-                        .all(|(c, want)| *want == 0 || c.points.as_ref().is_some_and(|(_, n)| n >= want))
-            });
-            if ready && let Some(s) = slot.take() {
-                self.uploads[i] = s.upload;
-                promoted = true;
-            }
-        }
-        promoted
+        pending
     }
 
     /// Draws only what is resident.
@@ -958,9 +878,6 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
         view.upload_scenes(device, &frame.scenes);
         view.plan_points(camera);
         let streaming = view.stream_points(device);
-        if view.promote_staged() {
-            view.plan_points(camera);
-        }
         view.clamp_counts();
         // Out-of-core clouds render into their own targets first; the main
         // pass composites them (with eye-dome lighting) before anything else.
