@@ -7,6 +7,7 @@
 
 mod arc;
 mod area;
+mod bd;
 mod circle;
 mod cogo;
 mod construct;
@@ -329,13 +330,23 @@ impl DomainModule for CoreModule {
             create: || Box::<construct::FilletTool>::default(),
         });
         tools.register(ToolDescriptor {
+            id: bd::ID,
+            name: "Bearing & distance",
+            commands: &["bd"],
+            icon: icons::PATH,
+            palette: true,
+            group: ToolGroup::Cogo,
+            description: "Traverse or lot entry: bearing distance per leg, moving on to each new point; c closes and reports the misclosure",
+            create: || Box::<bd::BdTool>::default(),
+        });
+        tools.register(ToolDescriptor {
             id: cogo::RADIATE_ID,
             name: "Radiate",
             commands: &["radiate", "rad"],
             icon: icons::COMPASS_TOOL,
             palette: true,
             group: ToolGroup::Cogo,
-            description: "Side shots from a station: backsight, then angle, distance[, dZ]",
+            description: "Side shots from a station: backsight, then angle, distance[, dZ]; t moves on to each new point (traverse)",
             create: || Box::<cogo::RadiateTool>::default(),
         });
         for (kind, name, commands, description) in [

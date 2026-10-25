@@ -24,6 +24,10 @@ Most work goes through run_commands, which types lines into the application's co
 'help' lists the tools and commands; a tool such as 'pl' (polyline) then takes points as E,N[,Z], @dE,dN, @distance<bearing or a point name; \
 '' (empty) is Enter, which finishes; tools have options such as 'c' to close. Coordinates, bearings and distances follow the project's conventions (see project_info). \
 Commands such as delete, join, list, mkparcel act on the selection: set it with select. \
+Lots and traverses from a plan: 'bd', a start point, then one 'bearing distance[ dZ][ code]' line per leg; each leg creates a point and moves on to it. \
+'c' takes the last leg as returning to the start: it reports the misclosure (bearing, distance, 1:N precision), perimeter and area, unadjusted, and draws the closed boundary (select it and run mkparcel to make a parcel); \
+'s' toggles sideshots (a point without moving on), 'u' undoes the last leg, '' ends an open run. \
+Field side shots: 'rad', the station, a backsight point or bearing, then 'angle distance[ dZ]' (clockwise from the backsight); 't' toggles traverse mode, occupying each new point with the last as backsight. \
 Set up the job first: set_project (name, coordinate system), set_feature_codes (what point codes mean, their symbols, layers and linework) and set_layer (colours, line styles). \
 Point codes are strung into lines with 'linework'; text such as street names goes in with add_text; fix names, codes and layers with edit_entities. \
 Every edit is one undoable step ('undo', 'redo') recorded in the project's audit trail. \

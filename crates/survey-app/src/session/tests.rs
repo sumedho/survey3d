@@ -295,3 +295,86 @@ fn imported_points_go_to_their_codes_layer() {
         "in the code's colour"
     );
 }
+
+fn point_positions(s: &Session) -> Vec<(String, glam::DVec2)> {
+    let mut v: Vec<(String, glam::DVec2)> = s
+        .project
+        .doc
+        .entities()
+        .filter_map(|(_, e)| match e {
+            Entity::Point(p) => Some((p.name.clone(), p.position.truncate())),
+            _ => None,
+        })
+        .collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
+fn has_point_at(s: &Session, e: f64, n: f64) -> bool {
+    point_positions(s)
+        .iter()
+        .any(|(_, p)| (p.x - e).abs() < 1e-6 && (p.y - n).abs() < 1e-6)
+}
+
+/// A lot keyed as bearings and distances: each leg moves on, `c` closes on
+/// the start (its end point is the start corner) and reports the misclosure.
+#[test]
+fn bearing_distance_closes_a_lot() {
+    let mut s = session();
+    for line in ["bd", "1000,2000", "0 10", "90 10", "180 10", "270 10.01", "c"] {
+        s.run(line);
+    }
+    let points = point_positions(&s);
+    assert_eq!(points.len(), 4, "start and three corners: {points:?}");
+    assert!(
+        has_point_at(&s, 1000.0, 2010.0)
+            && has_point_at(&s, 1010.0, 2010.0)
+            && has_point_at(&s, 1010.0, 2000.0)
+    );
+    let lines = polylines(&s);
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].closed && lines[0].vertices.len() == 4);
+    let report = s
+        .log
+        .lines()
+        .map(|l| l.text.clone())
+        .find(|t| t.contains("misclose"))
+        .expect("a closure report");
+    assert!(
+        report.contains("0.010") && report.contains("1:4001") && report.contains("100"),
+        "{report}"
+    );
+}
+
+#[test]
+fn bearing_distance_undo_sideshots_and_open_runs() {
+    let mut s = session();
+    for line in ["bd", "0,0", "0 10", "u"] {
+        s.run(line);
+    }
+    assert_eq!(point_positions(&s).len(), 1, "undo removed the leg's point");
+    // A sideshot does not move on; the next leg starts from the same point.
+    for line in ["s", "90 5", "s", "90 10", "0 10", ""] {
+        s.run(line);
+    }
+    assert!(has_point_at(&s, 5.0, 0.0) && has_point_at(&s, 10.0, 0.0) && has_point_at(&s, 10.0, 10.0));
+    let lines = polylines(&s);
+    assert_eq!(lines.len(), 1);
+    assert!(
+        !lines[0].closed && lines[0].vertices.len() == 3,
+        "the sideshot is not in the line"
+    );
+}
+
+/// Radiate in traverse mode occupies each new point, backsighting the last.
+#[test]
+fn radiate_traverse_moves_the_setup() {
+    let mut s = session();
+    for line in ["rad", "0,0", "0", "t", "90 10", "90 10"] {
+        s.run(line);
+    }
+    // North backsight, 90° right: east to (10, 0). Occupying it, backsight west,
+    // 90° right: north to (10, 10).
+    assert!(has_point_at(&s, 10.0, 0.0), "{:?}", point_positions(&s));
+    assert!(has_point_at(&s, 10.0, 10.0), "{:?}", point_positions(&s));
+}

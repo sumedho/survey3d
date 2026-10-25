@@ -357,9 +357,10 @@ impl CadTheme {
         w.inactive.weak_bg_fill = self.raised;
         w.inactive.bg_stroke = Stroke::new(1.0, self.border);
         w.inactive.fg_stroke = Stroke::new(1.0, self.text);
-        // Hover: one step up in elevation, stronger border.
+        // Hover: one step above the highest surface, so it shows on menus
+        // (whose background is `overlay`) as well as on panels.
         let hover_fill = match self.mode {
-            ThemeMode::Dark => self.overlay,
+            ThemeMode::Dark => Color32::from_rgb(0x38, 0x3E, 0x48),
             ThemeMode::Light => Color32::from_rgb(0xEE, 0xF0, 0xF3),
         };
         w.hovered.bg_fill = hover_fill;
@@ -463,6 +464,19 @@ mod tests {
                 assert!(on >= 4.5, "{mode:?} {accent:?} text on accent {on:.2}");
                 assert!(ui >= 3.0, "{mode:?} {accent:?} accent vs panel {ui:.2}");
             }
+        }
+    }
+
+    /// Hovered menu items and buttons must stand out from menus and panels.
+    #[test]
+    fn hover_differs_from_menus_and_panels() {
+        for t in [CadTheme::dark(), CadTheme::light()] {
+            let ctx = egui::Context::default();
+            t.apply(&ctx);
+            let v = ctx.global_style().visuals.clone();
+            let hover = v.widgets.hovered.weak_bg_fill;
+            assert_ne!(hover, v.window_fill, "{:?}: hover on menus", t.mode);
+            assert_ne!(hover, v.panel_fill, "{:?}: hover on panels", t.mode);
         }
     }
 

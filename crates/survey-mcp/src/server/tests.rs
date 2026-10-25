@@ -589,3 +589,26 @@ fn surfaces_are_created_styled_rebuilt_and_deleted() {
     );
     assert!(call(&mut s, "set_surface", json!({ "surface": 99, "rebuild": true })).1);
 }
+
+/// The lot example from run_commands' description: bearing & distance legs,
+/// closed with the misclosure reported, then made a parcel.
+#[test]
+fn lot_by_bearing_and_distance() {
+    let mut s = Server::new_for_tests();
+    let out = ok(
+        &mut s,
+        "run_commands",
+        json!({ "lines": ["bd", "1000,2000", "0 25.00", "90 40.00", "180 25.00", "270 40.00", "c"] }),
+    );
+    assert!(out.contains("Closed 4 legs: misclose 0.000"), "{out}");
+    assert!(out.contains("area 1000.000"), "{out}");
+    let points = ok_json(&mut s, "query", json!({ "kind": "points" }));
+    assert_eq!(points["total"], 4, "start and three corners");
+    let lines = ok_json(&mut s, "query", json!({ "kind": "polylines" }));
+    assert_eq!(lines["total"], 1);
+    assert_eq!(lines["rows"][0]["closed"], true);
+    ok(&mut s, "run_commands", json!({ "lines": ["select"] }));
+    ok(&mut s, "select", json!({ "kind": "polylines" }));
+    let out = ok(&mut s, "run_commands", json!({ "lines": ["mkparcel"] }));
+    assert!(out.contains("Created 1 parcel"), "{out}");
+}

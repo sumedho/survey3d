@@ -89,6 +89,7 @@ const COGO_MENU: &[MenuEntry] = &[
     Item("List selection", "list"),
     Separator,
     Item("Radiation", "radiate"),
+    Item("Bearing & distance (traverse / lot)", "bd"),
     Submenu(
         "Intersection",
         &[

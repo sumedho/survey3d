@@ -61,13 +61,16 @@ pub(super) fn new_point(
 /// Radiation (side shots): set up on a station, orient to a backsight point or
 /// bearing, then enter `angle distance [dZ]` observations. The angle is turned
 /// clockwise from the backsight; `dZ` is the height difference from the station.
-/// Non-numeric text sets the code for following points (`-` clears it).
+/// Non-numeric text sets the code for following points (`-` clears it). `t`
+/// toggles traverse mode: each shot's point becomes the station, backsighting
+/// the one before (angles are then turned from the back line).
 #[derive(Default)]
 pub struct RadiateTool {
     station: Option<ResolvedPoint>,
     backsight: Option<Bearing>,
     code: String,
     shots: Vec<DVec3>,
+    traverse: bool,
 }
 
 impl RadiateTool {
@@ -110,6 +113,18 @@ impl RadiateTool {
         ));
         self.shots.push(plan.extend(z));
         ctx.execute(ChangeSet::new(format!("Radiate point {name}")).insert_entity(point));
+        if self.traverse {
+            // Occupy the new point, backsighting the old station.
+            self.station = Some(ResolvedPoint {
+                position: plan.extend(z),
+                height_known,
+            });
+            self.backsight = Some(Bearing::new(
+                Angle::from_radians(bearing.radians() + std::f64::consts::PI).normalized(),
+            ));
+            self.shots.clear();
+            ctx.log.info(format!("Occupied {name}"));
+        }
     }
 }
 
@@ -124,10 +139,11 @@ impl Tool for RadiateTool {
         } else {
             format!(" ({})", self.code)
         };
+        let mode = if self.traverse { " traverse" } else { "" };
         match (self.station, self.backsight) {
             (None, _) => "Radiate — station (instrument) point:".into(),
             (Some(_), None) => "Radiate — backsight point or bearing:".into(),
-            (Some(_), Some(_)) => format!("Radiate{code} — angle, distance[, dZ] [code]:"),
+            (Some(_), Some(_)) => format!("Radiate{mode}{code} — angle, distance[, dZ] [code] / t:"),
         }
     }
 
@@ -138,7 +154,7 @@ impl Tool for RadiateTool {
     fn claims_text(&self, conv: &Conventions, text: &str) -> bool {
         match (self.station, self.backsight) {
             (Some(_), None) => conv.parse_bearing(text).is_ok(),
-            (Some(_), Some(_)) => is_numeric(text),
+            (Some(_), Some(_)) => is_numeric(text) || text.trim() == "t",
             _ => false,
         }
     }
@@ -180,6 +196,13 @@ impl Tool for RadiateTool {
                         Ok(b) => self.backsight = Some(b),
                         Err(e) => ctx.log.error(e.to_string()),
                     }
+                } else if self.backsight.is_some() && text.trim() == "t" {
+                    self.traverse = !self.traverse;
+                    ctx.log.info(if self.traverse {
+                        "Traverse: each shot's point becomes the station, backsighting the last"
+                    } else {
+                        "Side shots: the station stays put"
+                    });
                 } else if self.backsight.is_some() && is_numeric(text) {
                     self.observe(ctx, text);
                 } else if self.backsight.is_some() {
