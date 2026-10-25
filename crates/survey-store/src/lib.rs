@@ -153,7 +153,9 @@ impl ProjectStore {
 
     fn load_clouds(&self) -> Result<Vec<(PointCloudId, PointCloud)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, origin_json, style_json, points, colors FROM point_clouds ORDER BY id",
+            "SELECT id, name, origin_json, style_json, points, colors, \
+                    source_path, source_total, source_bounds_json, source_color \
+             FROM point_clouds ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -163,11 +165,15 @@ impl ProjectStore {
                 r.get::<_, String>(3)?,
                 r.get::<_, Vec<u8>>(4)?,
                 r.get::<_, Option<Vec<u8>>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<i64>>(7)?,
+                r.get::<_, Option<String>>(8)?,
+                r.get::<_, Option<i64>>(9)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, name, origin, style, points, colors) = row?;
+            let (id, name, origin, style, points, colors, src_path, src_total, src_bounds, src_color) = row?;
             let points = points
                 .as_chunks::<12>()
                 .0
@@ -178,14 +184,26 @@ impl ProjectStore {
                 })
                 .collect();
             let colors = colors.map(|c| c.as_chunks::<3>().0.iter().map(|x| [x[0], x[1], x[2]]).collect());
+            // A COPC-backed cloud: its points live on disk and are re-read after
+            // opening; here `points` is empty until then.
+            let source = match (src_path, src_total, src_bounds) {
+                (Some(path), Some(total), Some(bounds)) => Some(survey_model::CloudRef {
+                    path: path.into(),
+                    total: total.max(0) as u64,
+                    full_bounds: serde_json::from_str(&bounds)?,
+                    has_color: src_color.unwrap_or(0) != 0,
+                }),
+                _ => None,
+            };
             out.push((
                 PointCloudId(id),
                 PointCloud {
                     name,
                     origin: serde_json::from_str(&origin)?,
-                    points,
-                    colors,
+                    points: std::sync::Arc::new(points),
+                    colors: colors.map(std::sync::Arc::new),
                     style: serde_json::from_str(&style)?,
+                    source,
                 },
             ));
         }
@@ -594,22 +612,44 @@ fn write_cloud(tx: &Transaction<'_>, id: PointCloudId, cloud: Option<&PointCloud
     let Some(c) = cloud else {
         return Ok(());
     };
-    let mut points = Vec::with_capacity(c.points.len() * 12);
-    for p in &c.points {
-        for v in p {
-            points.extend_from_slice(&v.to_le_bytes());
+    // Out-of-core clouds persist only their reference; the points stay on disk.
+    let out_of_core = c.source.is_some();
+    let mut points = Vec::new();
+    let mut colors: Option<Vec<u8>> = None;
+    if !out_of_core {
+        points.reserve(c.points.len() * 12);
+        for p in c.points.iter() {
+            for v in p {
+                points.extend_from_slice(&v.to_le_bytes());
+            }
         }
+        colors = c.colors.as_ref().map(|cs| cs.iter().flatten().copied().collect());
     }
-    let colors: Option<Vec<u8>> = c.colors.as_ref().map(|cs| cs.iter().flatten().copied().collect());
+    let (src_path, src_total, src_bounds, src_color) = match &c.source {
+        Some(s) => (
+            Some(s.path.to_string_lossy().into_owned()),
+            Some(s.total as i64),
+            Some(serde_json::to_string(&s.full_bounds)?),
+            Some(i64::from(s.has_color)),
+        ),
+        None => (None, None, None, None),
+    };
     tx.execute(
-        "INSERT INTO point_clouds (id, name, origin_json, style_json, points, colors) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO point_clouds \
+            (id, name, origin_json, style_json, points, colors, \
+             source_path, source_total, source_bounds_json, source_color) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             id.0,
             c.name,
             serde_json::to_string(&c.origin)?,
             serde_json::to_string(&c.style)?,
             points,
-            colors
+            colors,
+            src_path,
+            src_total,
+            src_bounds,
+            src_color,
         ],
     )?;
     Ok(())

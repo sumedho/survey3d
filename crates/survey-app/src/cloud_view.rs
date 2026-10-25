@@ -1,12 +1,14 @@
 //! Drawing point clouds: one level-of-detail scene for all visible clouds,
-//! rebuilt only when a cloud (or the theme) changes.
+//! rebuilt only when a cloud (or the theme) changes. On native the rebuild runs
+//! on a background thread (millions of points take a while to bin), and the
+//! previous scene keeps drawing until the new one is ready.
 
 use std::sync::Arc;
 
 use cad_render::{Scene, SceneBuilder};
 use egui_cad::{CadTheme, ThemeMode};
 use survey_core::style::Symbol;
-use survey_model::{CloudColor, Document};
+use survey_model::{CloudColor, Document, PointCloud};
 
 use crate::surface_view::ramp;
 
@@ -19,30 +21,65 @@ pub struct CloudSceneCache {
     key: Option<(u64, ThemeMode)>,
     revision: u64,
     scene: Option<Arc<Scene>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pending: Option<std::sync::mpsc::Receiver<Option<Arc<Scene>>>>,
 }
 
 impl CloudSceneCache {
-    pub fn get(&mut self, doc: &Document, theme: &CadTheme) -> Option<Arc<Scene>> {
+    pub fn get(&mut self, doc: &Document, theme: &CadTheme, ctx: &egui::Context) -> Option<Arc<Scene>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(rx) = &self.pending {
+            match rx.try_recv() {
+                Ok(scene) => {
+                    self.scene = scene;
+                    self.pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return self.scene.clone(),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.pending = None,
+            }
+        }
         let key = (doc.clouds_revision(), theme.mode);
         if self.key != Some(key) {
-            self.revision += 1;
-            self.scene = build(doc, self.revision);
             self.key = Some(key);
+            self.revision += 1;
+            let clouds: Vec<PointCloud> = doc
+                .clouds()
+                .map(|(_, c)| c)
+                // Out-of-core clouds are drawn node by node (see `cloud_stream`).
+                .filter(|c| c.style.visible && !c.is_empty() && !c.is_out_of_core())
+                .cloned()
+                .collect();
+            let revision = self.revision;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(build(&clouds, revision));
+                    ctx.request_repaint();
+                });
+                self.pending = Some(rx);
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = ctx;
+                self.scene = build(&clouds, revision);
+            }
         }
         self.scene.clone()
     }
 
     pub fn invalidate(&mut self) {
         self.key = None;
+        self.scene = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.pending = None;
+        }
     }
 }
 
-fn build(doc: &Document, revision: u64) -> Option<Arc<Scene>> {
-    let clouds: Vec<_> = doc
-        .clouds()
-        .map(|(_, c)| c)
-        .filter(|c| c.style.visible && !c.is_empty())
-        .collect();
+fn build(clouds: &[PointCloud], revision: u64) -> Option<Arc<Scene>> {
     if clouds.is_empty() {
         return None;
     }

@@ -1,10 +1,40 @@
 //! Point clouds: many points stored compactly relative to an origin.
+//!
+//! A cloud is either *inline* (its points live in the project file, for small
+//! XYZ/LAS imports) or *out-of-core* (`source` is set: the points live in a
+//! COPC file on disk, and `points` holds only a bounded working set re-read
+//! from that file — the project stores the [`CloudRef`], never the points).
+
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use glam::{DVec3, Vec3};
 use serde::{Deserialize, Serialize, Serializer};
 use survey_core::Aabb3;
 
 use crate::layer::Color;
+
+/// A reference to an out-of-core point cloud (a COPC file on disk). The project
+/// file stores this instead of the points; the resident working set in
+/// [`PointCloud::points`] is re-read from `path` when the project opens.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CloudRef {
+    /// Path the cloud was loaded from. Resolved on open, with a fallback to the
+    /// data directory by file name when it has moved.
+    pub path: PathBuf,
+    /// Points in the whole file (not the resident working set).
+    pub total: u64,
+    /// Bounds of the whole file.
+    pub full_bounds: Aabb3,
+    /// Whether the file carries colour.
+    pub has_color: bool,
+}
+
+/// Default point size (pt) of an out-of-core cloud. There it is the smallest
+/// size of points that are otherwise sized to their spacing; below about 7 the
+/// densest areas (points clamped up to it) look visibly different from areas
+/// at the data's own spacing, a line that sweeps across the view as you zoom.
+pub const OUT_OF_CORE_POINT_SIZE: f32 = 7.0;
 
 /// How cloud points are coloured.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,7 +61,9 @@ impl Default for CloudStyle {
     fn default() -> Self {
         Self {
             visible: true,
-            point_size: 2.0,
+            // As mine3d's 6 px discs on a 2x display: neighbours drawn about
+            // 1.5 px apart (see the COPC streamer) then cover the view.
+            point_size: 3.0,
             color: CloudColor::Rgb,
             single: Color::rgb(200, 200, 200),
         }
@@ -43,9 +75,14 @@ pub struct PointCloud {
     pub name: String,
     /// Points are stored as `f32` offsets from here (sub-millimetre within kilometres).
     pub origin: DVec3,
-    pub points: Vec<[f32; 3]>,
-    pub colors: Option<Vec<[u8; 3]>>,
+    /// Shared, so the renderer's background scene build takes a reference
+    /// rather than a copy of millions of points.
+    pub points: Arc<Vec<[f32; 3]>>,
+    pub colors: Option<Arc<Vec<[u8; 3]>>>,
     pub style: CloudStyle,
+    /// Set when the cloud is backed by a COPC file on disk; then `points` is a
+    /// bounded, re-readable working set rather than the whole cloud.
+    pub source: Option<CloudRef>,
 }
 
 /// The audit trail records a cloud's name and size, not its points.
@@ -66,18 +103,83 @@ impl Serialize for PointCloud {
     }
 }
 
-impl PointCloud {
-    pub fn from_points(name: impl Into<String>, points: &[DVec3], colors: Option<Vec<[u8; 3]>>) -> Self {
+/// Points in a cloud's storage form (`f32` offsets from an origin), so a
+/// streamed working set can be prepared off the UI thread and swapped in.
+pub struct Resident {
+    pub origin: DVec3,
+    pub points: Arc<Vec<[f32; 3]>>,
+    pub colors: Option<Arc<Vec<[u8; 3]>>>,
+}
+
+impl Resident {
+    /// `points` are absolute world coordinates.
+    pub fn new(points: &[DVec3], colors: Option<Vec<[u8; 3]>>) -> Self {
         let origin = points.first().map_or(DVec3::ZERO, |p| p.floor());
         Self {
-            name: name.into(),
             origin,
-            points: points
-                .iter()
-                .map(|p| (*p - origin).as_vec3().to_array())
-                .collect(),
-            colors: colors.filter(|c| c.len() == points.len()),
+            points: Arc::new(
+                points
+                    .iter()
+                    .map(|p| (*p - origin).as_vec3().to_array())
+                    .collect(),
+            ),
+            colors: colors.filter(|c| c.len() == points.len()).map(Arc::new),
+        }
+    }
+}
+
+impl PointCloud {
+    pub fn from_points(name: impl Into<String>, points: &[DVec3], colors: Option<Vec<[u8; 3]>>) -> Self {
+        let r = Resident::new(points, colors);
+        Self {
+            name: name.into(),
+            origin: r.origin,
+            points: r.points,
+            colors: r.colors,
             style: CloudStyle::default(),
+            source: None,
+        }
+    }
+
+    /// An out-of-core cloud: a [`CloudRef`] plus a resident working set (the
+    /// points read so far). `resident` are absolute world coordinates.
+    pub fn from_source(
+        name: impl Into<String>,
+        source: CloudRef,
+        resident: &[DVec3],
+        colors: Option<Vec<[u8; 3]>>,
+    ) -> Self {
+        let mut cloud = Self::from_points(name, resident, colors);
+        cloud.source = Some(source);
+        cloud.style.point_size = OUT_OF_CORE_POINT_SIZE;
+        cloud
+    }
+
+    /// Replaces the resident working set in place (streaming or reloading from
+    /// disk). Keeps the cloud's identity, style and source.
+    pub fn set_resident(&mut self, resident: Resident) {
+        self.origin = resident.origin;
+        self.points = resident.points;
+        self.colors = resident.colors.filter(|c| c.len() == self.points.len());
+    }
+
+    /// Whether the cloud's points live in a file on disk.
+    pub fn is_out_of_core(&self) -> bool {
+        self.source.is_some()
+    }
+
+    /// Points in the whole cloud: the file's total for an out-of-core cloud,
+    /// else the resident count.
+    pub fn full_count(&self) -> u64 {
+        self.source.as_ref().map_or(self.points.len() as u64, |s| s.total)
+    }
+
+    /// Bounds of the whole cloud: the file's bounds for an out-of-core cloud,
+    /// else the resident bounds.
+    pub fn full_bounds(&self) -> Aabb3 {
+        match &self.source {
+            Some(s) => s.full_bounds,
+            None => self.bounds(),
         }
     }
 
@@ -123,12 +225,14 @@ impl PointCloud {
         PointCloud {
             name: self.name.clone(),
             origin: self.origin,
-            points: keep.iter().map(|i| self.points[*i as usize]).collect(),
+            points: Arc::new(keep.iter().map(|i| self.points[*i as usize]).collect()),
             colors: self
                 .colors
                 .as_ref()
-                .map(|c| keep.iter().map(|i| c[*i as usize]).collect()),
+                .map(|c| Arc::new(keep.iter().map(|i| c[*i as usize]).collect())),
             style: self.style,
+            // Thinning materializes points, so the result is a plain inline cloud.
+            source: None,
         }
     }
 
@@ -172,9 +276,40 @@ mod tests {
         let t = c.thinned(0.5);
         // 1 m cube of 10x10x10 points at 0.1 m: 2x2x2 cells of 0.5 m.
         assert_eq!(t.len(), 8);
-        assert_eq!(t.colors.as_ref().map(Vec::len), Some(8));
+        assert_eq!(t.colors.as_ref().map(|c| c.len()), Some(8));
         let (t, spacing) = c.thinned_to(100);
         assert!(t.len() <= 100 && spacing.is_some());
         assert_eq!(c.thinned_to(5000).1, None);
+    }
+
+    #[test]
+    fn out_of_core_cloud_reports_whole_file_and_reloads_resident() {
+        let source = CloudRef {
+            path: "/data/scan.copc.laz".into(),
+            total: 200_000_000,
+            full_bounds: Aabb3::new(
+                DVec3::new(500_000.0, 7_000_000.0, 0.0),
+                DVec3::new(501_000.0, 7_001_000.0, 80.0),
+            ),
+            has_color: true,
+        };
+        // A small resident working set standing in for a coarse preview.
+        let resident = [
+            DVec3::new(500_100.0, 7_000_200.0, 12.0),
+            DVec3::new(500_300.5, 7_000_450.25, 15.5),
+        ];
+        let mut c = PointCloud::from_source("big", source.clone(), &resident, None);
+        assert!(c.is_out_of_core());
+        assert_eq!(c.len(), 2); // resident points
+        assert_eq!(c.full_count(), 200_000_000); // whole file
+        assert_eq!(c.full_bounds(), source.full_bounds);
+        assert!((c.point(1) - resident[1]).length() < 1e-3);
+
+        // Streaming a new working set keeps identity and source.
+        let next = [DVec3::new(500_500.0, 7_000_500.0, 20.0)];
+        c.set_resident(Resident::new(&next, None));
+        assert_eq!(c.len(), 1);
+        assert_eq!(c.source.as_ref(), Some(&source));
+        assert!((c.point(0) - next[0]).length() < 1e-3);
     }
 }

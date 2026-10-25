@@ -265,6 +265,8 @@ impl SurveyApp {
                     Action::Run("cloudin"),
                     &mut action,
                 );
+                #[cfg(not(target_arch = "wasm32"))]
+                item(ui, "Point clouds (COPC)…", None, Action::Run("copc"), &mut action);
                 item(
                     ui,
                     "Import raw data (GSI, JobXML)…",

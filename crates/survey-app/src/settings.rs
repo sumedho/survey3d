@@ -32,6 +32,11 @@ pub struct AppSettings {
     pub working_z: f64,
     pub csv_layout: CsvLayout,
     pub labels: LabelSettings,
+    /// Folder where COPC point clouds are kept and where conversions are
+    /// written (native only; see the COPC window).
+    pub data_dir: Option<std::path::PathBuf>,
+    /// Eye-dome lighting on point clouds: shades depth edges so shapes read.
+    pub cloud_edl: bool,
 }
 
 /// A domain module that adds its own menu.
@@ -136,6 +141,8 @@ impl Default for AppSettings {
             working_z: 0.0,
             csv_layout: CsvLayout::from_letters("PENZC"),
             labels: LabelSettings::default(),
+            data_dir: None,
+            cloud_edl: true,
         }
     }
 }

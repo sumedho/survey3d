@@ -16,6 +16,18 @@ impl SurveyApp {
     // ------------------------------------------------------------------ viewport
 
     pub(super) fn viewport_ui(&mut self, ui: &mut egui::Ui) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let cloud_frame = self.stream_clouds(ui.ctx());
+        #[cfg(target_arch = "wasm32")]
+        let cloud_frame = None;
+        // Out-of-core clouds stay inside the clip planes even where nothing is loaded yet.
+        let cloud_bounds = self
+            .session
+            .project
+            .doc
+            .clouds()
+            .filter(|(_, c)| c.style.visible && c.is_out_of_core())
+            .fold(Aabb3::EMPTY, |b, (_, c)| b.union(&c.full_bounds()));
         let theme = self.theme.clone();
         let doc = &self.session.project.doc;
         let scene = self.scene_cache.get(doc, &theme);
@@ -23,7 +35,7 @@ impl SurveyApp {
             .selection_cache
             .get(doc, &self.session.project.selection, &theme);
         let surfaces = self.surface_cache.get(&self.session.project.doc, &theme);
-        let clouds = self.cloud_cache.get(&self.session.project.doc, &theme);
+        let clouds = self.cloud_cache.get(&self.session.project.doc, &theme, ui.ctx());
         let conv = self.session.project.doc.conventions().clone();
         let grid = self.settings.show_grid.then(|| GridSettings {
             elevation: self.settings.working_z,
@@ -55,6 +67,7 @@ impl SurveyApp {
             .overlay_scene(surfaces)
             .overlay_scene(clouds)
             .overlay_scene(selection)
+            .clouds(cloud_frame, cloud_bounds)
             .grid(grid)
             .anchor(anchor)
             .extra_bounds(extra)

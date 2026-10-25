@@ -122,6 +122,15 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         layer_id INTEGER NOT NULL
     );
     "#,
+    // v6: out-of-core point clouds. A cloud backed by a COPC file on disk
+    // stores its reference here and an empty `points` blob; `source_total` is
+    // NULL for ordinary inline clouds.
+    r#"
+    ALTER TABLE point_clouds ADD COLUMN source_path TEXT;
+    ALTER TABLE point_clouds ADD COLUMN source_total INTEGER;
+    ALTER TABLE point_clouds ADD COLUMN source_bounds_json TEXT;
+    ALTER TABLE point_clouds ADD COLUMN source_color INTEGER;
+    "#,
 ];
 
 pub const SCHEMA_VERSION: i32 = MIGRATIONS.len() as i32;

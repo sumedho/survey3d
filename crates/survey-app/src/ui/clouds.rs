@@ -63,18 +63,9 @@ impl CloudPanel {
                         },
                     ));
                 }
-                let selected = self.active == Some(id);
-                if ui
-                    .selectable_label(selected, RichText::new(&c.name).strong())
-                    .clicked()
-                {
-                    self.active = if selected { None } else { Some(id) };
-                }
-                ui.label(
-                    RichText::new(format!("{} pts", c.len()))
-                        .small()
-                        .color(theme.text_secondary),
-                );
+                // Delete and the count keep their room; a long file name is
+                // cut to what is left (full name on hover) rather than
+                // widening the panel past its edge.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if IconButton::new(icons::TRASH, "Delete point cloud")
                         .size(20.0)
@@ -83,6 +74,38 @@ impl CloudPanel {
                     {
                         action = Some(CloudAction::Delete(id));
                     }
+                    let count = if c.is_out_of_core() {
+                        RichText::new(format!("{} pts ⛁", c.full_count()))
+                            .small()
+                            .color(theme.text_secondary)
+                    } else {
+                        RichText::new(format!("{} pts", c.len()))
+                            .small()
+                            .color(theme.text_secondary)
+                    };
+                    let label = ui.label(count);
+                    if c.is_out_of_core() {
+                        let resident = c.len();
+                        label.on_hover_text(if resident == 0 {
+                            "On disk (COPC). Not loaded — re-link from File → Point clouds (COPC)."
+                                .to_string()
+                        } else {
+                            format!("On disk (COPC). Showing a preview of {resident} points.")
+                        });
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let selected = self.active == Some(id);
+                        if ui
+                            .add(
+                                egui::Button::selectable(selected, RichText::new(&c.name).strong())
+                                    .truncate(),
+                            )
+                            .on_hover_text(&c.name)
+                            .clicked()
+                        {
+                            self.active = if selected { None } else { Some(id) };
+                        }
+                    });
                 });
             });
         }
@@ -99,7 +122,7 @@ impl CloudPanel {
             .corner_radius(theme.radius)
             .inner_margin(6.0)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Colour");
                     segmented(
                         ui,
@@ -155,7 +178,7 @@ impl CloudPanel {
                         .small()
                         .color(theme.text_secondary),
                 );
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Grid");
                     ui.add(
                         egui::DragValue::new(&mut self.cell)
@@ -173,7 +196,7 @@ impl CloudPanel {
                         ],
                     );
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Max edge");
                     ui.add(
                         egui::DragValue::new(&mut self.max_edge)
@@ -197,5 +220,49 @@ impl CloudPanel {
             action = Some(CloudAction::Style(id, style));
         }
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A long file name must not widen the side panel past its edge (it was
+    /// clipped on the left).
+    #[test]
+    fn long_name_fits_a_narrow_panel() {
+        let mut doc = Document::default();
+        let id = doc.alloc_cloud_id();
+        let cloud = survey_model::PointCloud::from_points(
+            "MAPPERPLUS_FORE_SCRX_M300_80mAGL_8ms_SACLCO_SCARBOROUGH.copc",
+            &[glam::DVec3::ZERO, glam::DVec3::ONE],
+            None,
+        );
+        doc.set_cloud(id, Some(cloud));
+        let mut panel = CloudPanel {
+            active: Some(id),
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let mut overflow = 0.0;
+        // A few frames, so layout settles.
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(208.0, 800.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let available = ui.available_width();
+                    let used = ui.scope(|ui| panel.show(ui, &doc)).response.rect.width();
+                    overflow = used - available;
+                });
+            });
+            out.textures_delta.clear();
+        }
+        assert!(overflow <= 0.5, "content overflows the panel by {overflow}px");
     }
 }

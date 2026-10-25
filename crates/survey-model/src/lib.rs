@@ -22,7 +22,7 @@ pub mod spatial;
 pub mod surface;
 
 pub use alignment::AlignmentRecord;
-pub use cloud::{CloudColor, CloudStyle, PointCloud};
+pub use cloud::{CloudColor, CloudRef, CloudStyle, PointCloud, Resident};
 pub use command::{ChangeSet, Command};
 pub use coord_system::CoordinateSystem;
 pub use document::{DirtyState, Document, ProjectMeta};

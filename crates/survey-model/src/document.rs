@@ -417,6 +417,19 @@ impl Document {
         Some(previous)
     }
 
+    /// Replaces an out-of-core cloud's resident working set (reloading from
+    /// disk or streaming a new view). This is not an edit: it leaves the
+    /// project clean and writes no audit entry, but bumps the cloud revision so
+    /// the view rebuilds. `resident` are absolute world coordinates.
+    pub fn set_cloud_resident(&mut self, id: PointCloudId, resident: crate::Resident) {
+        if let Some(c) = self.clouds.get_mut(&id) {
+            c.set_resident(resident);
+            // Only the cloud scene depends on resident points: leave the
+            // document revision alone so the drawing isn't rebuilt per read.
+            self.clouds_revision += 1;
+        }
+    }
+
     /// Adds point clouds read from storage (not dirty).
     pub fn load_clouds(&mut self, clouds: Vec<(PointCloudId, PointCloud)>) {
         for (id, c) in clouds {

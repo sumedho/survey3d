@@ -258,6 +258,19 @@ impl SurveyApp {
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(action) = self.copc_window.show(ctx, self.settings.data_dir.as_deref()) {
+            match action {
+                crate::ui::copc::CopcAction::SetDataDir(dir) => {
+                    self.session
+                        .log
+                        .info(format!("Data directory: {}", dir.display()));
+                    self.settings.data_dir = Some(dir);
+                }
+                crate::ui::copc::CopcAction::Load(path) => self.session.import_copc(&path),
+            }
+        }
+
         if self.about_open {
             egui::Window::new("About survey3d")
                 .open(&mut self.about_open)

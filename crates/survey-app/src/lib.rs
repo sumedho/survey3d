@@ -4,6 +4,8 @@
 //! can also be driven without one (scripts, tests, agents).
 
 mod app;
+#[cfg(not(target_arch = "wasm32"))]
+mod cloud_stream;
 mod cloud_view;
 mod field_to_finish;
 pub mod import_command;

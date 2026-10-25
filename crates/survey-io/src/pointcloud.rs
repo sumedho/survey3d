@@ -57,7 +57,7 @@ pub fn read_xyz(bytes: &[u8]) -> Result<RawCloud, IoError> {
 }
 
 /// 16-bit colours are scaled down when any channel exceeds 255.
-fn scale_colors(c: &[[u16; 3]]) -> Vec<[u8; 3]> {
+pub(crate) fn scale_colors(c: &[[u16; 3]]) -> Vec<[u8; 3]> {
     let wide = c.iter().any(|x| x.iter().any(|v| *v > 255));
     c.iter()
         .map(|x| x.map(|v| if wide { (v >> 8) as u8 } else { v as u8 }))

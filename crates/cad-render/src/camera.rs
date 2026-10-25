@@ -120,6 +120,11 @@ impl Frustum {
     pub fn contains_point(&self, q: DVec3) -> bool {
         self.planes.iter().all(|(p, n)| n.dot(q - *p) >= 0.0)
     }
+
+    /// The bounding planes as `(point_on_plane, inward_normal)`.
+    pub fn planes(&self) -> &[(DVec3, DVec3)] {
+        &self.planes
+    }
 }
 
 impl Camera {

@@ -19,3 +19,6 @@ log.workspace = true
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in", "glsl-out"] }
+# Rendering a real COPC file offscreen in an (ignored) visual check.
+png = "0.18"
+survey-io.workspace = true

@@ -411,6 +411,10 @@ pub struct SurveyApp {
     codes_window: FeatureCodesWindow,
     reports: ReportsWindow,
     points_window: PointsWindow,
+    #[cfg(not(target_arch = "wasm32"))]
+    copc_window: crate::ui::copc::CopcWindow,
+    #[cfg(not(target_arch = "wasm32"))]
+    cloud_streamer: crate::cloud_stream::CloudStreamer,
     about_open: bool,
     confirm_discard: Option<Discard>,
     allowed_to_close: bool,
@@ -545,6 +549,10 @@ impl SurveyApp {
             codes_window: FeatureCodesWindow::default(),
             reports: ReportsWindow::default(),
             points_window: PointsWindow::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            copc_window: crate::ui::copc::CopcWindow::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            cloud_streamer: crate::cloud_stream::CloudStreamer::default(),
             about_open: false,
             confirm_discard: None,
             allowed_to_close: false,
@@ -664,7 +672,7 @@ impl SurveyApp {
         let b = doc
             .clouds()
             .filter(|(_, c)| c.style.visible)
-            .fold(b, |b, (_, c)| b.union(&c.bounds()));
+            .fold(b, |b, (_, c)| b.union(&c.full_bounds()));
         if b.is_empty() {
             self.viewport.camera.target = DVec3::ZERO;
             self.viewport.camera.distance = 100.0;
@@ -842,6 +850,8 @@ impl SurveyApp {
             }
             "parcelxml" => self.export_parcels_landxml(),
             "cloudin" | "importcloud" | "las" => self.platform.pick_file(ctx, FileKind::PointCloud),
+            #[cfg(not(target_arch = "wasm32"))]
+            "copc" | "copcin" => self.copc_window.open(),
             "rawin" | "gsi" | "jobxml" => self.platform.pick_file(ctx, FileKind::RawData),
             "gpkg" | "geopackage" => self.export_geopackage(),
             "landxmlin" | "importxml" => self.platform.pick_file(ctx, FileKind::LandXml),
@@ -914,6 +924,11 @@ impl SurveyApp {
         self.selection_cache.invalidate();
         self.surface_cache.invalidate();
         self.cloud_cache.invalidate();
+        // Cloud ids restart with each project: drop selections keyed by them.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.cloud_streamer = Default::default();
+        }
         self.cloud_panel.active = None;
         self.surface_indexes.invalidate();
         // Revisions restart with each document, so drop caches keyed by them.
@@ -1103,6 +1118,8 @@ impl SurveyApp {
             Ok(p) => {
                 let n = p.doc.entity_count();
                 self.replace_project(p);
+                #[cfg(not(target_arch = "wasm32"))]
+                self.resolve_clouds();
                 self.session.log.info(format!("Opened {name} ({n} objects)"));
                 self.toasts.success(format!("Opened {name}"));
             }
@@ -1111,6 +1128,116 @@ impl SurveyApp {
                 self.toasts.error(format!("Could not open {name}"));
             }
         }
+    }
+
+    /// Re-reads the resident working set of every out-of-core (COPC) cloud
+    /// from disk after a project opens. The project file holds only references,
+    /// so without this the clouds would be empty. A missing file is reported
+    /// and left for the user to re-link; it does not fail the open.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn resolve_clouds(&mut self) {
+        // A light overview so the cloud is visible immediately and zoom-extents
+        // is meaningful; the streamer refines it to the view from the first frame.
+        const INITIAL_PREVIEW: usize = 2_000_000;
+        let jobs: Vec<(survey_model::PointCloudId, std::path::PathBuf, String)> = self
+            .session
+            .project
+            .doc
+            .clouds()
+            .filter_map(|(id, c)| c.source.as_ref().map(|s| (id, s.path.clone(), c.name.clone())))
+            .collect();
+        for (id, path, name) in jobs {
+            let Some(found) = self.resolve_cloud_path(&path) else {
+                self.session.log.warn(format!(
+                    "Point cloud {name}: {} not found. Re-link it from File → Point clouds (COPC).",
+                    path.display()
+                ));
+                continue;
+            };
+            match survey_io::copc::read_copc_coarse(&found, INITIAL_PREVIEW) {
+                Ok((raw, _)) => {
+                    self.session
+                        .project
+                        .doc
+                        .set_cloud_resident(id, survey_model::Resident::new(&raw.points, raw.colors));
+                }
+                Err(e) => self.session.log.warn(format!(
+                    "Point cloud {name}: could not read {}: {e}",
+                    found.display()
+                )),
+            }
+        }
+    }
+
+    /// Drives view-dependent streaming of out-of-core clouds: takes in
+    /// finished selections, requests fresh ones for the current view, and
+    /// returns what the renderer should draw. Called once per frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stream_clouds(&mut self, ctx: &egui::Context) -> Option<std::sync::Arc<cad_render::CloudFrame>> {
+        self.cloud_streamer.drain();
+        let any = self
+            .session
+            .project
+            .doc
+            .clouds()
+            .any(|(_, c)| c.is_out_of_core() && c.style.visible);
+        if !any {
+            return None;
+        }
+        let cam = &self.viewport.camera;
+        let vp = cam.viewport;
+        let resolution = cam.world_per_pixel();
+        // The view's frustum through a screen rectangle 1.5x the viewport, so
+        // a small pan or orbit is already covered. Unlike a box on the target
+        // plane, it reaches an oblique view's horizon.
+        let margin = vp * 0.25;
+        let frustum = cam.rect_frustum(-margin, vp + margin);
+        let eye = (cam.projection == cad_render::Projection::Perspective).then(|| (cam.eye(), cam.distance));
+        let key = crate::cloud_stream::ViewKey {
+            target: cam.target,
+            eye: cam.eye(),
+            span: resolution * vp.length(),
+            resolution,
+        };
+        let mut jobs: Vec<(survey_model::PointCloudId, std::path::PathBuf)> = Vec::new();
+        for (id, c) in self.session.project.doc.clouds() {
+            if !c.style.visible {
+                continue;
+            }
+            let Some(src) = &c.source else { continue };
+            if !frustum.intersects_aabb(&src.full_bounds) {
+                continue; // the view does not see this cloud
+            }
+            if let Some(path) = self.resolve_cloud_path(&src.path) {
+                jobs.push((id, path));
+            }
+        }
+        for (id, path) in jobs {
+            let view = survey_io::copc::ViewQuery {
+                frustum: frustum.planes().to_vec(),
+                world_per_pixel: resolution,
+                eye,
+                spacing_px: crate::cloud_stream::SPACING_PX,
+            };
+            self.cloud_streamer.request(id, path, view, key);
+        }
+        if self.cloud_streamer.is_busy() {
+            ctx.request_repaint();
+        }
+        self.cloud_streamer
+            .frame(&self.session.project.doc, self.settings.cloud_edl)
+    }
+
+    /// Finds a referenced COPC file: at its stored path, or by file name in the
+    /// data directory when it has moved.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn resolve_cloud_path(&self, path: &std::path::Path) -> Option<std::path::PathBuf> {
+        if path.exists() {
+            return Some(path.to_path_buf());
+        }
+        let name = path.file_name()?;
+        let candidate = self.settings.data_dir.as_ref()?.join(name);
+        candidate.exists().then_some(candidate)
     }
 
     fn save(&mut self, ctx: &egui::Context) {

@@ -214,6 +214,7 @@ fn display(ui: &mut egui::Ui, settings: &mut AppSettings) {
         &mut settings.dynamic_input,
         "Dynamic input beside the cursor (F12)",
     );
+    switch_row(ui, &mut settings.cloud_edl, "Eye-dome lighting on point clouds");
 
     ui.add_space(8.0);
     section_header(ui, "Point labels");

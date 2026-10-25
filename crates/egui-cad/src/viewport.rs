@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use cad_render::{Camera, GridSettings, Projection, Scene, ViewportCallback, ViewportFrame};
+use cad_render::{Camera, CloudFrame, GridSettings, Projection, Scene, ViewportCallback, ViewportFrame};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2, pos2, vec2};
 use glam::{DVec2, DVec3};
 use serde::{Deserialize, Serialize};
@@ -172,6 +172,9 @@ pub struct Viewport<'a> {
     scene: Arc<Scene>,
     /// Further scenes drawn with the first (e.g. surfaces, point clouds), each uploaded separately.
     overlays: Vec<Arc<Scene>>,
+    /// Out-of-core point clouds, drawn node by node.
+    clouds: Option<Arc<CloudFrame>>,
+    cloud_bounds: Aabb3,
     grid: Option<GridSettings>,
     nav: NavigationSettings,
     anchor: Option<DVec3>,
@@ -188,6 +191,8 @@ impl<'a> Viewport<'a> {
             state,
             scene,
             overlays: Vec::new(),
+            clouds: None,
+            cloud_bounds: Aabb3::EMPTY,
             grid: Some(GridSettings::default()),
             nav: NavigationSettings::default(),
             anchor: None,
@@ -201,6 +206,13 @@ impl<'a> Viewport<'a> {
     /// Another scene drawn with the main one (its own revision, uploaded only when it changes).
     pub fn overlay_scene(mut self, scene: Option<Arc<Scene>>) -> Self {
         self.overlays.extend(scene);
+        self
+    }
+
+    /// Out-of-core point clouds and their full extent (kept inside the clip planes).
+    pub fn clouds(mut self, clouds: Option<Arc<CloudFrame>>, bounds: Aabb3) -> Self {
+        self.clouds = clouds;
+        self.cloud_bounds = bounds;
         self
     }
 
@@ -304,7 +316,11 @@ impl<'a> Viewport<'a> {
         }
 
         // Fit clip planes to everything that will be drawn.
-        let mut bounds = self.scene.bounds.union(&self.extra_bounds);
+        let mut bounds = self
+            .scene
+            .bounds
+            .union(&self.extra_bounds)
+            .union(&self.cloud_bounds);
         for o in &self.overlays {
             bounds = bounds.union(&o.bounds);
         }
@@ -337,6 +353,7 @@ impl<'a> Viewport<'a> {
                             .collect(),
                         grid,
                         background: CadTheme::rgba_f32(theme.viewport_bg),
+                        clouds: self.clouds.clone(),
                     },
                     request_frame: Some({
                         let ctx = ui.ctx().clone();

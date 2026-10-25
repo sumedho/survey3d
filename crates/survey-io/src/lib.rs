@@ -5,6 +5,8 @@
 //! canonical units; the application turns them into document edits.
 
 pub mod code_sheet;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod copc;
 pub mod csv_points;
 pub mod dxf;
 pub mod landxml;

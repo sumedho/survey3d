@@ -5,6 +5,8 @@ pub mod audit_window;
 pub mod calculator;
 pub mod closure_window;
 pub mod clouds;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod copc;
 pub mod csv_import;
 pub mod feature_codes;
 pub mod legend;

@@ -380,6 +380,44 @@ fn point_clouds_round_trip() {
 }
 
 #[test]
+fn out_of_core_cloud_persists_only_its_reference() {
+    use survey_core::Aabb3;
+    use survey_model::CloudRef;
+
+    let (mut doc, mut history) = sample();
+    let mut store = ProjectStore::create_in_memory().expect("store");
+    // The resident working set (a coarse sample); the "whole file" is larger.
+    let pts = [
+        DVec3::new(512_000.25, 6_912_000.5, 101.0),
+        DVec3::new(512_010.75, 6_912_003.0, 99.5),
+    ];
+    let source = CloudRef {
+        path: "/data/scan.copc.laz".into(),
+        total: 200_000_000,
+        full_bounds: Aabb3::new(
+            DVec3::new(512_000.0, 6_912_000.0, 90.0),
+            DVec3::new(513_000.0, 6_913_000.0, 150.0),
+        ),
+        has_color: false,
+    };
+    let cloud = PointCloud::from_source("big", source.clone(), &pts, None);
+    ChangeSet::new("copc").insert_cloud(cloud).apply(&mut doc);
+    save(&mut store, &mut doc, &mut history);
+
+    let loaded = ProjectStore::from_bytes(&store.to_bytes().expect("bytes"))
+        .expect("open")
+        .load_document()
+        .expect("load");
+    let (_, c) = loaded.clouds().next().expect("cloud");
+    // The reference survives; the points do not (resident set is empty until
+    // the app re-reads it from disk).
+    assert_eq!(c.source.as_ref(), Some(&source));
+    assert_eq!(c.full_count(), 200_000_000);
+    assert!(c.points.is_empty(), "points must not be stored in the project");
+    assert_eq!(c.full_bounds(), source.full_bounds);
+}
+
+#[test]
 fn text_layer_styles_and_plan_only_lines_round_trip() {
     let (mut doc, mut history) = sample();
     let mut layer = doc.layers()[0].clone();

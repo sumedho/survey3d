@@ -144,6 +144,54 @@ impl Session {
         self.success(summary);
     }
 
+    /// Loads a `.copc.laz` from disk as a coarse, budget-bounded sample of its
+    /// octree (native only). The full cloud stays on disk; this reads enough
+    /// whole LOD levels to view it through the in-memory renderer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn import_copc(&mut self, path: &std::path::Path) {
+        // A light overview to show immediately; the view-dependent streamer
+        // refines it (and reads only what the camera needs) from here on.
+        const INITIAL_PREVIEW: usize = 2_000_000;
+        let (raw, summary) = match survey_io::copc::read_copc_coarse(path, INITIAL_PREVIEW) {
+            Ok(v) => v,
+            Err(e) => {
+                self.log.error(format!("Could not read {}: {e}", path.display()));
+                return;
+            }
+        };
+        let name = crate::platform::file_name(path);
+        let stem = stem(&name).trim_end_matches(".copc").to_string();
+        let source = survey_model::CloudRef {
+            path: path.to_path_buf(),
+            total: summary.total,
+            full_bounds: survey_core::Aabb3::new(summary.min, summary.max),
+            has_color: summary.has_color,
+        };
+        let cloud = survey_model::PointCloud::from_source(&stem, source, &raw.points, raw.colors);
+        drop(raw.points);
+        let loaded = cloud.len();
+        let coarse = (loaded as u64) < summary.total;
+        if coarse {
+            self.log.warn(format!(
+                "{stem} has {} points; showing a coarse preview of {loaded} ({} LOD level{})",
+                summary.total,
+                summary.levels_read,
+                if summary.levels_read == 1 { "" } else { "s" },
+            ));
+        }
+        self.execute(Box::new(
+            ChangeSet::new(format!("Load COPC {stem}")).insert_cloud(cloud),
+        ));
+        if let Some((id, _)) = self.project.doc.clouds().last() {
+            self.emit(Event::SelectCloud(id));
+        }
+        self.emit(Event::ZoomExtents);
+        self.success(format!(
+            "Loaded COPC {stem}: {loaded} points{}",
+            if coarse { " (coarse preview)" } else { "" }
+        ));
+    }
+
     pub fn import_landxml(&mut self, name: &str, bytes: &[u8]) {
         let (surfaces, warnings) = match survey_io::landxml::read_surfaces(bytes) {
             Ok(r) => r,
