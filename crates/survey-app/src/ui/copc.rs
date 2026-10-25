@@ -1,8 +1,10 @@
-//! COPC point clouds: set a data directory, convert LAS/LAZ to COPC (by
-//! shelling out to PDAL), and browse and load the `.copc.laz` files found
-//! there. Native only — gated at the `mod` declaration.
+//! COPC point clouds: set a data directory, convert LAS/LAZ to COPC (natively,
+//! see `survey_io::copc_write`), and browse and load the `.copc.laz` files
+//! found there. Native only — gated at the `mod` declaration.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use egui::{Color32, RichText};
@@ -23,19 +25,25 @@ struct Done {
     result: Result<PathBuf, String>,
 }
 
+/// A conversion running on a worker thread.
+struct Job {
+    name: String,
+    /// Fraction done, as `f32` bits.
+    progress: Arc<AtomicU32>,
+    cancel: Arc<AtomicBool>,
+}
+
 pub struct CopcWindow {
     pub open: bool,
     tx: Sender<Done>,
     rx: Receiver<Done>,
-    in_flight: usize,
+    jobs: Vec<Job>,
     /// Recent status lines: `(is_error, text)`.
     messages: Vec<(bool, String)>,
     /// `.copc.laz` files found in the data directory.
     entries: Vec<PathBuf>,
     /// The directory `entries` was scanned from (`None` forces a rescan).
     scanned: Option<PathBuf>,
-    /// Whether `pdal` is on the PATH (checked lazily).
-    pdal: Option<bool>,
 }
 
 impl Default for CopcWindow {
@@ -45,11 +53,10 @@ impl Default for CopcWindow {
             open: false,
             tx,
             rx,
-            in_flight: 0,
+            jobs: Vec::new(),
             messages: Vec::new(),
             entries: Vec::new(),
             scanned: None,
-            pdal: None,
         }
     }
 }
@@ -63,7 +70,7 @@ impl CopcWindow {
     pub fn show(&mut self, ctx: &egui::Context, data_dir: Option<&Path>) -> Option<CopcAction> {
         // Collect finished conversions.
         while let Ok(done) = self.rx.try_recv() {
-            self.in_flight = self.in_flight.saturating_sub(1);
+            self.jobs.retain(|j| j.name != done.name);
             match done.result {
                 Ok(_) => self.messages.push((false, format!("Converted {}", done.name))),
                 Err(e) => self.messages.push((true, format!("{}: {e}", done.name))),
@@ -73,7 +80,7 @@ impl CopcWindow {
         if !self.open {
             return None;
         }
-        if self.in_flight > 0 {
+        if !self.jobs.is_empty() {
             ctx.request_repaint();
         }
         if self.scanned.as_deref() != data_dir {
@@ -119,20 +126,17 @@ impl CopcWindow {
                 self.start_conversion(dir);
             }
         });
-        if self.pdal == Some(false) {
-            ui.label(
-                RichText::new("PDAL was not found on your PATH. Install PDAL to convert, or drop pre-made .copc.laz files in the data directory.")
-                    .color(Color32::from_rgb(200, 140, 60)),
-            );
-        }
-        if self.in_flight > 0 {
+        for job in &self.jobs {
             ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(format!(
-                    "Converting {} file{}…",
-                    self.in_flight,
-                    if self.in_flight == 1 { "" } else { "s" }
-                ));
+                let done = f32::from_bits(job.progress.load(Ordering::Relaxed));
+                ui.add(egui::ProgressBar::new(done).desired_width(220.0).text(format!(
+                    "{} {:.0}%",
+                    job.name,
+                    done * 100.0
+                )));
+                if ui.button("Cancel").clicked() {
+                    job.cancel.store(true, Ordering::Relaxed);
+                }
             });
         }
 
@@ -185,14 +189,8 @@ impl CopcWindow {
         action
     }
 
-    /// Picks a source file and spawns a PDAL conversion into `dir`.
+    /// Picks a source file and converts it into `dir` on a worker thread.
     fn start_conversion(&mut self, dir: &Path) {
-        if self.pdal.is_none() {
-            self.pdal = Some(pdal_available());
-        }
-        if self.pdal != Some(true) {
-            return; // the hint in the UI explains why
-        }
         let Some(src) = rfd::FileDialog::new()
             .add_filter("LAS/LAZ point cloud", &["laz", "las"])
             .pick_file()
@@ -203,12 +201,26 @@ impl CopcWindow {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "cloud".into());
-        let dst = dir.join(format!("{stem}.copc.laz"));
         let name = format!("{stem}.copc.laz");
+        if self.jobs.iter().any(|j| j.name == name) {
+            return; // already converting it
+        }
+        let dst = dir.join(&name);
+        let job = Job {
+            name: name.clone(),
+            progress: Arc::new(AtomicU32::new(0)),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        let (progress, cancel) = (job.progress.clone(), job.cancel.clone());
+        self.jobs.push(job);
         let tx = self.tx.clone();
-        self.in_flight += 1;
         std::thread::spawn(move || {
-            let result = run_pdal(&src, &dst);
+            let result = survey_io::copc_write::convert_to_copc(&src, &dst, Default::default(), &mut |f| {
+                progress.store(f.to_bits(), Ordering::Relaxed);
+                !cancel.load(Ordering::Relaxed)
+            })
+            .map(|_| dst)
+            .map_err(|e| e.to_string());
             let _ = tx.send(Done { name, result });
         });
     }
@@ -228,40 +240,5 @@ impl CopcWindow {
             self.entries.sort();
         }
         self.scanned = data_dir.map(Path::to_path_buf);
-    }
-}
-
-/// Whether `pdal` responds to `--version`.
-fn pdal_available() -> bool {
-    std::process::Command::new("pdal")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Runs `pdal translate <src> <dst> --writer writers.copc`. The writer must be
-/// forced: PDAL picks it from the `.laz` extension and would otherwise write a
-/// plain LAZ (no `copc` VLR, no octree) that this reader rejects. Returns the
-/// output path or PDAL's error text.
-fn run_pdal(src: &Path, dst: &Path) -> Result<PathBuf, String> {
-    let output = std::process::Command::new("pdal")
-        .arg("translate")
-        .arg(src)
-        .arg(dst)
-        .arg("--writer")
-        .arg("writers.copc")
-        .output()
-        .map_err(|e| format!("could not run pdal: {e}"))?;
-    if output.status.success() {
-        Ok(dst.to_path_buf())
-    } else {
-        let err = String::from_utf8_lossy(&output.stderr);
-        let err = err.trim();
-        Err(if err.is_empty() {
-            "PDAL conversion failed".into()
-        } else {
-            err.to_string()
-        })
     }
 }

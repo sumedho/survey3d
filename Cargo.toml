@@ -53,7 +53,7 @@ log = "0.4"
 # the multi-page fix, a feature-gated (off) writer, and las 0.10 + laz 0.12.
 copc-rs = { git = "https://github.com/pka/copc-rs", rev = "7918657", default-features = false }
 # Same las as copc-rs, for reading point-format metadata in diagnostics.
-las = "0.10"
+las = { version = "0.10", features = ["laz-parallel"] }
 # Chunk decompression for the COPC node cache (same version copc-rs uses).
 laz = "0.12"
 rusqlite = { version = "0.40.2", features = ["serialize", "backup"] }

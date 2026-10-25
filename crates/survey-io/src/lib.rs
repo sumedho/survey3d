@@ -7,6 +7,8 @@
 pub mod code_sheet;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod copc;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod copc_write;
 pub mod csv_points;
 pub mod dxf;
 pub mod landxml;

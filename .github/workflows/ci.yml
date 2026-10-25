@@ -1,9 +1,12 @@
 name: CI
 
+# Paused while the point-cloud work changes quickly: run it by hand from the
+# Actions tab. To re-enable, restore:
+#   push:
+#     branches: [main]
+#   pull_request:
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
