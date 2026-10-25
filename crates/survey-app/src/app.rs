@@ -147,6 +147,10 @@ const APP_COMMANDS: &[AppCommand] = &[
     cmd("plan", "Plan view (2D lock)", "View", icons::MAP_TRIFOLD),
     cmd("3d", "Free 3D view", "View", icons::CUBE),
     cmd("iso", "Isometric view", "View", icons::CUBE_FOCUS),
+    with_key(
+        cmd("pivot", "Set the centre of rotation", "View", icons::TARGET),
+        "Shift+C",
+    ),
     cmd("persp", "Toggle perspective", "View", icons::PERSPECTIVE),
     with_key(cmd("grid", "Toggle grid", "View", icons::GRID_FOUR), "F7"),
     with_key(cmd("snap", "Toggle object snap", "Drafting", icons::MAGNET), "F3"),
@@ -380,6 +384,8 @@ pub struct SurveyApp {
     cloud_cache: CloudSceneCache,
     cloud_panel: CloudPanel,
     surface_indexes: SurfaceIndexes,
+    /// The next viewport click sets the centre of rotation.
+    picking_pivot: bool,
     surface_window: SurfaceWindow,
     volumes_window: VolumesWindow,
     sections_window: SectionsWindow,
@@ -520,6 +526,7 @@ impl SurveyApp {
             cloud_cache: CloudSceneCache::default(),
             cloud_panel: CloudPanel::default(),
             surface_indexes: SurfaceIndexes::default(),
+            picking_pivot: false,
             surface_window: SurfaceWindow::default(),
             volumes_window: VolumesWindow::default(),
             sections_window: SectionsWindow::default(),
@@ -664,6 +671,8 @@ impl SurveyApp {
     }
 
     fn zoom_extents(&mut self) {
+        // A new framing starts orbiting about the view again.
+        self.viewport.pivot = None;
         let doc = &self.session.project.doc;
         let b = doc
             .surfaces()
@@ -798,6 +807,7 @@ impl SurveyApp {
                 }
             }
             "persp" | "perspective" => self.toggle_projection(),
+            "pivot" | "orbitcentre" | "orbitcenter" => self.arm_pivot(),
             "snap" | "osnap" => self.toggle_snap(),
             "ortho" => self.toggle_ortho(),
             "gridsnap" | "snapgrid" => self.toggle_grid_snap(),
@@ -919,6 +929,8 @@ impl SurveyApp {
     }
 
     fn replace_project(&mut self, project: Project) {
+        self.viewport.pivot = None;
+        self.picking_pivot = false;
         self.session.replace_project(project);
         self.scene_cache.invalidate();
         self.selection_cache.invalidate();
@@ -1506,6 +1518,47 @@ impl SurveyApp {
         if f12 {
             self.run_app_command(ctx, "hud");
         }
+        // Shift+C picks the centre of rotation, unless it is the start of
+        // typed input or a feature code (codes are often capitals).
+        let typing = !self.session.log.input.trim().is_empty() || self.session.active_tool.takes_codes();
+        if !typing
+            && ctx.input_mut(|i| {
+                // Text typed earlier in the same frame has not reached the
+                // command line yet: Shift+C is then part of that typing.
+                let typed_before = i
+                    .events
+                    .iter()
+                    .take_while(|e| {
+                        !matches!(
+                            e,
+                            egui::Event::Key {
+                                key: Key::C,
+                                pressed: true,
+                                ..
+                            }
+                        )
+                    })
+                    .any(|e| matches!(e, egui::Event::Text(t) if !t.trim().is_empty() && t != "C"));
+                if typed_before {
+                    return false;
+                }
+                // The key event, or (when a text field has focus, some
+                // platforms send only text) a "C" typed with Shift held.
+                let shifted_c = i.modifiers.shift
+                    && i.events
+                        .iter()
+                        .any(|e| matches!(e, egui::Event::Text(t) if t == "C"));
+                let hit = i.consume_key(Modifiers::SHIFT, Key::C) || shifted_c;
+                if hit {
+                    // Its typed "C" must not reach the command line.
+                    i.events
+                        .retain(|e| !matches!(e, egui::Event::Text(t) if t == "C"));
+                }
+                hit
+            })
+        {
+            self.arm_pivot();
+        }
         if self.palette.is_open() {
             return; // the palette owns the keyboard while open
         }
@@ -1581,6 +1634,9 @@ impl SurveyApp {
             if esc && self.settings_window.open {
                 // Escape dismisses the settings panel first.
                 self.settings_window.open = false;
+            } else if esc && self.picking_pivot {
+                self.picking_pivot = false;
+                self.session.log.info("Centre of rotation unchanged");
             } else if esc {
                 self.session.log.input.clear();
                 self.session.snap_override = None;

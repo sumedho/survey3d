@@ -196,6 +196,18 @@ impl CloudStreamer {
         });
     }
 
+    /// Every loaded point of the current selections, in world coordinates
+    /// (the detail on screen, for picking).
+    pub fn for_each_point(&self, mut f: impl FnMut(DVec3)) {
+        for node in self.selections.values().flatten() {
+            if let Some(points) = &node.points {
+                for p in points.iter() {
+                    f(node.center + DVec3::new(f64::from(p[0]), f64::from(p[1]), f64::from(p[2])));
+                }
+            }
+        }
+    }
+
     /// The renderer's view of the visible out-of-core clouds, rebuilt only
     /// when a selection, a cloud or the lighting changes.
     pub fn frame(&mut self, doc: &Document, edl: bool) -> Option<Arc<CloudFrame>> {

@@ -186,6 +186,26 @@ impl SurveyApp {
             }
         }
 
+        // Picking the centre of rotation takes the next click from the tool.
+        if self.picking_pivot {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Cell);
+            if let Some(c) = out.clicked {
+                self.picking_pivot = false;
+                let p = self.pick_pivot(c, grid.as_ref());
+                self.viewport.pivot = Some(p);
+                let conv = self.session.project.doc.conventions();
+                self.session
+                    .log
+                    .result(format!("Centre of rotation {}", conv.format_coord(p, true)));
+            } else if out.secondary_clicked {
+                self.picking_pivot = false;
+                self.viewport.pivot = None;
+                self.session
+                    .log
+                    .info("Centre of rotation reset: orbiting turns about the point under the cursor");
+            }
+            return;
+        }
         if let Some(c) = out.clicked {
             let pick = self.compute_pick(c, grid.as_ref());
             self.session.dispatch(ToolEvent::Point(pick));
@@ -193,6 +213,108 @@ impl SurveyApp {
         if out.secondary_clicked {
             self.session.dispatch(ToolEvent::Finish);
         }
+    }
+
+    /// Waits for a click that sets the centre of rotation.
+    pub(super) fn arm_pivot(&mut self) {
+        if self.viewport.plan_locked {
+            self.session
+                .log
+                .warn("The plan view does not orbit: switch to 3D to set a centre of rotation");
+            return;
+        }
+        self.picking_pivot = true;
+        self.session
+            .log
+            .info("Click the centre of rotation (Esc cancels, right-click resets to automatic)");
+    }
+
+    /// The world point under `cursor` to orbit about: a snapped object, else
+    /// the nearest cloud point or surface the cursor's ray meets, else the
+    /// working plane (the grid), else the view's target plane.
+    fn pick_pivot(&mut self, cursor: glam::DVec2, grid: Option<&GridSettings>) -> glam::DVec3 {
+        use glam::DVec3;
+        let cam = self.viewport.camera.clone();
+        // Objects, with the user's snap modes (but never the grid).
+        let mut snaps = self.settings.snap.clone();
+        snaps.set(SnapMode::Grid, false);
+        let query = SnapQuery {
+            camera: &cam,
+            cursor,
+            base_point: None,
+            working_z: self.settings.working_z,
+            grid_spacing: grid.copied().unwrap_or_default().spacing(&cam).0,
+        };
+        let provider = DocSnapProvider {
+            doc: &self.session.project.doc,
+        };
+        let pick = self.snap_engine.pick(&snaps, &query, &provider);
+        if pick.snap.is_some() {
+            return pick.point;
+        }
+
+        let ray = cam.screen_ray(cursor);
+        let mut best: Option<(f64, DVec3)> = None;
+        let mut consider = |p: DVec3| {
+            let t = (p - ray.origin).dot(ray.dir);
+            if t > 0.0 && best.is_none_or(|(b, _)| t < b) {
+                best = Some((t, p));
+            }
+        };
+        // Cloud points within a few pixels of the cursor: the in-memory
+        // clouds and overviews, and the detail streamed for the view.
+        const APERTURE_PX: f64 = 5.0;
+        let mut near_cursor = |p: DVec3| {
+            if let Some((s, _)) = cam.world_to_screen(p)
+                && s.distance(cursor) <= APERTURE_PX
+            {
+                consider(p);
+            }
+        };
+        for (_, c) in self.session.project.doc.clouds().filter(|(_, c)| c.style.visible) {
+            c.iter().for_each(&mut near_cursor);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.cloud_streamer.for_each_point(&mut near_cursor);
+
+        // Visible surfaces: step along the ray to where it passes below one,
+        // then refine.
+        let doc = &self.session.project.doc;
+        let preferred = self.session.active_surface;
+        let (t0, t1) = (cam.near.max(0.0), cam.far.max(cam.near + 1.0));
+        let steps = 400;
+        let mut above: Option<f64> = None;
+        for i in 0..=steps {
+            let t = t0 + (t1 - t0) * f64::from(i) / f64::from(steps);
+            let p = ray.origin + ray.dir * t;
+            let Some(h) = self.surface_indexes.height_at(doc, preferred, p.truncate()) else {
+                above = None;
+                continue;
+            };
+            if p.z >= h {
+                above = Some(t);
+                continue;
+            }
+            if let Some(mut lo) = above {
+                let mut hi = t;
+                for _ in 0..30 {
+                    let mid = (lo + hi) * 0.5;
+                    let q = ray.origin + ray.dir * mid;
+                    match self.surface_indexes.height_at(doc, preferred, q.truncate()) {
+                        Some(h) if q.z >= h => lo = mid,
+                        _ => hi = mid,
+                    }
+                }
+                let t = (lo + hi) * 0.5;
+                if best.is_none_or(|(b, _)| t < b) {
+                    best = Some((t, ray.origin + ray.dir * t));
+                }
+            }
+            break;
+        }
+        best.map(|(_, p)| p)
+            .or_else(|| ray.intersect_plane(DVec3::new(0.0, 0.0, self.settings.working_z), DVec3::Z))
+            .unwrap_or_else(|| cam.screen_to_target_plane(cursor))
     }
 
     /// Grips of the current selection (cached).
@@ -366,6 +488,7 @@ impl SurveyApp {
             NavAction::ZoomExtents => self.zoom_extents(),
             NavAction::TogglePlan => self.toggle_plan(),
             NavAction::ToggleProjection => self.toggle_projection(),
+            NavAction::PickPivot => self.arm_pivot(),
             NavAction::Preset(p) => {
                 self.viewport.apply_preset(p);
                 self.session.log.info(p.label());

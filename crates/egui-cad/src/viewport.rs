@@ -3,7 +3,9 @@
 //! Navigation (defaults):
 //! * wheel / pinch — zoom about the cursor
 //! * middle-drag, or Shift + right-drag — pan
-//! * right-drag — orbit about the point under the cursor (disabled in plan lock)
+//! * right-drag — orbit about the centre of rotation when one is set, else the
+//!   point under the cursor (disabled in plan lock)
+//! * view cube (bottom-left) — click a face, edge or corner for that view
 //!
 //! Primary clicks and right clicks without dragging are reported to the
 //! application, which owns tools and picking.
@@ -30,6 +32,9 @@ pub struct ViewportState {
     /// When set the view is top-down orthographic and cannot be orbited.
     pub plan_locked: bool,
     orbit_pivot: Option<DVec3>,
+    /// A centre of rotation the user set; orbiting turns about it (instead
+    /// of the point under the cursor) until it is cleared.
+    pub pivot: Option<DVec3>,
 }
 
 impl ViewportState {
@@ -39,6 +44,7 @@ impl ViewportState {
             view_id,
             plan_locked: true,
             orbit_pivot: None,
+            pivot: None,
         }
     }
 
@@ -130,17 +136,54 @@ pub enum ViewPreset {
     WestElevation,
     /// From the south-west, looking north-east and down.
     Isometric,
+    /// From a view-cube face, edge or corner: the camera's side of the model
+    /// as east, north and up components, each -1, 0 or 1 (`[0, 0, -1]` is
+    /// from below).
+    From([i8; 3]),
 }
 
 impl ViewPreset {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            ViewPreset::Plan => "Plan (top)",
-            ViewPreset::NorthElevation => "North elevation",
-            ViewPreset::SouthElevation => "South elevation",
-            ViewPreset::EastElevation => "East elevation",
-            ViewPreset::WestElevation => "West elevation",
-            ViewPreset::Isometric => "Isometric",
+            ViewPreset::Plan => "Plan (top)".into(),
+            ViewPreset::NorthElevation => "North elevation".into(),
+            ViewPreset::SouthElevation => "South elevation".into(),
+            ViewPreset::EastElevation => "East elevation".into(),
+            ViewPreset::WestElevation => "West elevation".into(),
+            ViewPreset::Isometric => "Isometric".into(),
+            ViewPreset::From([e, n, z]) => {
+                let side = match (n, e) {
+                    (1, 0) => "north",
+                    (-1, 0) => "south",
+                    (0, 1) => "east",
+                    (0, -1) => "west",
+                    (1, 1) => "north-east",
+                    (1, -1) => "north-west",
+                    (-1, 1) => "south-east",
+                    (-1, -1) => "south-west",
+                    _ => "",
+                };
+                match (side, z) {
+                    ("", 1) => "View from above".into(),
+                    ("", -1) => "View from below".into(),
+                    (s, 1) => format!("View from the {s}, above"),
+                    (s, -1) => format!("View from the {s}, below"),
+                    (s, _) => format!("View from the {s}"),
+                }
+            }
+        }
+    }
+
+    /// The preset for a view from `dir` (east, north, up components), using
+    /// the named presets where one fits.
+    pub fn from_direction(dir: [i8; 3]) -> ViewPreset {
+        match dir {
+            [0, 0, 1] => ViewPreset::Plan,
+            [0, 1, 0] => ViewPreset::NorthElevation,
+            [0, -1, 0] => ViewPreset::SouthElevation,
+            [1, 0, 0] => ViewPreset::EastElevation,
+            [-1, 0, 0] => ViewPreset::WestElevation,
+            d => ViewPreset::From(d),
         }
     }
 
@@ -154,6 +197,18 @@ impl ViewPreset {
             ViewPreset::EastElevation => (1.5 * PI, 0.0),
             ViewPreset::WestElevation => (FRAC_PI_2, 0.0),
             ViewPreset::Isometric => (FRAC_PI_4, (1.0 / 2f64.sqrt()).atan()),
+            ViewPreset::From([e, n, z]) => {
+                let d = DVec3::new(f64::from(e), f64::from(n), f64::from(z)).normalize_or(DVec3::Z);
+                // The camera looks back along `d`; yaw is the bearing it looks towards.
+                let yaw = if d.truncate().length() < 1e-9 {
+                    0.0
+                } else {
+                    (-d.x).atan2(-d.y)
+                };
+                // Straight below is held just off vertical, as orbiting does.
+                let pitch = d.z.clamp(-1.0, 1.0).asin().max(-89.9f64.to_radians());
+                (yaw, pitch)
+            }
         }
     }
 }
@@ -165,6 +220,9 @@ pub enum NavAction {
     TogglePlan,
     ToggleProjection,
     Preset(ViewPreset),
+    /// Pick a centre of rotation by clicking in the view (the application
+    /// owns picking).
+    PickPivot,
 }
 
 pub struct Viewport<'a> {
@@ -292,8 +350,9 @@ impl<'a> Viewport<'a> {
             || (response.dragged_by(egui::PointerButton::Secondary) && (shift || state.plan_locked));
         let orbiting = response.dragged_by(egui::PointerButton::Secondary) && !shift && !state.plan_locked;
         if response.drag_started_by(egui::PointerButton::Secondary) {
-            state.orbit_pivot = self
-                .anchor
+            state.orbit_pivot = state
+                .pivot
+                .or(self.anchor)
                 .or_else(|| hover.map(|c| cam.screen_to_target_plane(c)));
         }
         if panning && delta != DVec2::ZERO {
@@ -367,7 +426,10 @@ impl<'a> Viewport<'a> {
             draw_scale_bar(&painter, rect, cam, &self.length_unit, &theme);
         }
         let cam_snapshot = cam.clone();
-        let mut nav = axis_gizmo(ui, rect, &cam_snapshot, &self.axis_labels, &theme).map(NavAction::Preset);
+        if let Some(p) = state.pivot {
+            draw_pivot(&painter, rect, &cam_snapshot, p, &theme);
+        }
+        let mut nav = view_cube(ui, rect, &cam_snapshot, &self.axis_labels, &theme).map(NavAction::Preset);
         if self.show_nav {
             nav = nav.or(nav_controls(ui, rect, state, &theme));
         }
@@ -417,111 +479,205 @@ pub fn to_screen(rect: Rect, p: DVec2) -> Pos2 {
     pos2(rect.min.x + p.x as f32, rect.min.y + p.y as f32)
 }
 
-/// Interactive orientation gizmo (bottom-left). Clicking an axis end puts the
-/// camera on that side; Z gives plan, the background gives an isometric view.
-fn axis_gizmo(
+/// A view-cube face: its outward normal and two in-plane axes (east, north,
+/// up components), its label and its tooltip.
+struct CubeFace {
+    normal: [i8; 3],
+    a: [i8; 3],
+    c: [i8; 3],
+    name: &'static str,
+    tip: &'static str,
+}
+
+const fn face(normal: [i8; 3], a: [i8; 3], c: [i8; 3], name: &'static str, tip: &'static str) -> CubeFace {
+    CubeFace {
+        normal,
+        a,
+        c,
+        name,
+        tip,
+    }
+}
+
+const CUBE_FACES: [CubeFace; 6] = [
+    face([0, 0, 1], [1, 0, 0], [0, 1, 0], "TOP", "Top (plan)"),
+    face([0, 0, -1], [1, 0, 0], [0, -1, 0], "BOTTOM", "Bottom (from below)"),
+    face(
+        [0, -1, 0],
+        [1, 0, 0],
+        [0, 0, 1],
+        "FRONT",
+        "Front (from the south)",
+    ),
+    face([0, 1, 0], [-1, 0, 0], [0, 0, 1], "BACK", "Back (from the north)"),
+    face([1, 0, 0], [0, 1, 0], [0, 0, 1], "RIGHT", "Right (from the east)"),
+    face([-1, 0, 0], [0, -1, 0], [0, 0, 1], "LEFT", "Left (from the west)"),
+];
+
+/// Share of a face's half-width taken by its edge and corner strips.
+const CUBE_EDGE: f32 = 0.6;
+
+fn dvec(v: [i8; 3]) -> DVec3 {
+    DVec3::new(f64::from(v[0]), f64::from(v[1]), f64::from(v[2]))
+}
+
+/// Interactive view cube (bottom-left). Its faces are the top, bottom and
+/// four sides (front = south, right = east); clicking a face, an edge strip
+/// or a corner square looks at the model from that side, edge or corner. A
+/// compass ring under it marks the easting and northing axes.
+fn view_cube(
     ui: &mut egui::Ui,
     rect: Rect,
     cam: &Camera,
     labels: &[String; 3],
     theme: &CadTheme,
 ) -> Option<ViewPreset> {
-    let center = pos2(rect.min.x + 46.0, rect.max.y - 46.0);
-    let len = 27.0;
-    let bg_rect = Rect::from_center_size(center, Vec2::splat(2.0 * (len + 12.0)));
-    let bg = ui.interact(bg_rect, ui.scope_id().with("gizmo_bg"), Sense::click());
-    let painter = ui.painter_at(rect);
-    let ring = if bg.hovered() {
-        theme.overlay
-    } else {
-        theme.panel.gamma_multiply(0.7)
-    };
-    painter.circle_filled(center, len + 12.0, ring);
-
+    let center = pos2(rect.min.x + 76.0, rect.max.y - 82.0);
+    let size = 26.0_f32;
     let (r, u, b) = (cam.right(), cam.up(), cam.back());
+    // World direction to screen offset (px) for the cube's half-size.
+    let screen = |v: DVec3| vec2(v.dot(r) as f32, -v.dot(u) as f32) * size;
+    let painter = ui.painter_at(rect);
+    let area = Rect::from_center_size(center, Vec2::splat(size * 2.0 * 1.9));
+    let response = ui.interact(area, ui.scope_id().with("view_cube"), Sense::click());
+
+    // Compass ring around the cube's foot, with the easting and northing axes marked.
+    let ring = 1.75;
+    let ring_pts: Vec<Pos2> = (0..=48)
+        .map(|i| {
+            let a = f64::from(i) / 48.0 * std::f64::consts::TAU;
+            center + screen(DVec3::new(a.cos() * ring, a.sin() * ring, -1.0))
+        })
+        .collect();
+    painter.add(egui::Shape::line(ring_pts, Stroke::new(1.0, theme.border_strong)));
     let short = |s: &str| s.chars().take(2).collect::<String>();
-    // (direction, colour, label, preset when clicked, is positive end)
-    let mut ends: Vec<(DVec3, Color32, String, ViewPreset, bool)> = vec![
-        (
-            DVec3::X,
-            theme.axis_x,
-            short(&labels[0]),
-            ViewPreset::EastElevation,
-            true,
-        ),
-        (
-            DVec3::Y,
-            theme.axis_y,
-            short(&labels[1]),
-            ViewPreset::NorthElevation,
-            true,
-        ),
-        (DVec3::Z, theme.axis_z, short(&labels[2]), ViewPreset::Plan, true),
-        (
-            DVec3::NEG_X,
-            theme.axis_x,
-            String::new(),
-            ViewPreset::WestElevation,
-            false,
-        ),
-        (
-            DVec3::NEG_Y,
-            theme.axis_y,
-            String::new(),
-            ViewPreset::SouthElevation,
-            false,
-        ),
-    ];
-    // Far ends first so near ones draw on top.
-    ends.sort_by(|a, c| a.0.dot(b).total_cmp(&c.0.dot(b)));
-    let mut chosen = None;
-    for (i, (dir, color, label, preset, positive)) in ends.into_iter().enumerate() {
-        let v = vec2(dir.dot(r) as f32, -dir.dot(u) as f32) * len;
-        let end = center + v;
-        let radius = if positive { 8.5 } else { 5.5 };
-        let hit = ui.interact(
-            Rect::from_center_size(end, Vec2::splat(radius * 2.0 + 4.0)),
-            ui.scope_id().with(("gizmo_end", i)),
-            Sense::click(),
-        );
-        let hovered = hit.hovered();
+    for (dir, color, label) in [
+        (DVec3::X, theme.axis_x, short(&labels[0])),
+        (DVec3::Y, theme.axis_y, short(&labels[1])),
+    ] {
+        let at = center + screen(dir * (ring + 0.45) - DVec3::Z);
         let faded = if dir.dot(b) < -0.2 {
             color.gamma_multiply(0.55)
         } else {
             color
         };
-        if positive {
-            painter.line_segment([center, end], Stroke::new(2.0, faded));
-            painter.circle_filled(end, radius, faded);
+        painter.text(at, egui::Align2::CENTER_CENTER, label, fonts::medium(10.0), faded);
+    }
+
+    // Which face region the pointer is over: its view direction and the
+    // region's screen quad (for the highlight).
+    let hover = response.hover_pos();
+    let mut hovered: Option<([i8; 3], [Pos2; 4])> = None;
+    let mut faces: Vec<(f64, usize)> = CUBE_FACES
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (dvec(f.normal).dot(b), i))
+        .filter(|(facing, _)| *facing > 1e-3)
+        .collect();
+    faces.sort_by(|x, y| x.0.total_cmp(&y.0));
+    for &(facing, i) in &faces {
+        let CubeFace {
+            normal, a, c, name, ..
+        } = &CUBE_FACES[i];
+        let (n, av, cv) = (dvec(*normal), screen(dvec(*a)), screen(dvec(*c)));
+        let fc = center + screen(n);
+        let quad = |a0: f32, a1: f32, c0: f32, c1: f32| {
+            [
+                fc + av * a0 + cv * c0,
+                fc + av * a1 + cv * c0,
+                fc + av * a1 + cv * c1,
+                fc + av * a0 + cv * c1,
+            ]
+        };
+        let face = quad(-1.0, 1.0, -1.0, 1.0);
+        let shade = 0.55 + 0.45 * facing as f32;
+        painter.add(egui::Shape::convex_polygon(
+            face.to_vec(),
+            theme.raised.gamma_multiply(shade.clamp(0.0, 1.0)).to_opaque(),
+            Stroke::new(1.0, theme.border_strong),
+        ));
+        if let Some(p) = hover {
+            // Face-local coordinates of the pointer (an affine map in orthographic projection).
+            let det = av.x * cv.y - av.y * cv.x;
+            if det.abs() > 1e-3 {
+                let d = p - fc;
+                let ta = (d.x * cv.y - d.y * cv.x) / det;
+                let tc = (av.x * d.y - av.y * d.x) / det;
+                if ta.abs() <= 1.0 && tc.abs() <= 1.0 {
+                    let band = |t: f32| {
+                        if t < -CUBE_EDGE {
+                            -1
+                        } else if t > CUBE_EDGE {
+                            1
+                        } else {
+                            0
+                        }
+                    };
+                    let (ia, ic) = (band(ta), band(tc));
+                    let dir = [0, 1, 2].map(|k| normal[k] + ia * a[k] + ic * c[k]);
+                    let span = |k: i8| match k {
+                        -1 => (-1.0, -CUBE_EDGE),
+                        1 => (CUBE_EDGE, 1.0),
+                        _ => (-CUBE_EDGE, CUBE_EDGE),
+                    };
+                    let ((a0, a1), (c0, c1)) = (span(ia), span(ic));
+                    hovered = Some((dir, quad(a0, a1, c0, c1)));
+                }
+            }
+        }
+        if facing > 0.35 {
             painter.text(
-                end,
+                fc,
                 egui::Align2::CENTER_CENTER,
-                &label,
-                fonts::medium(10.0),
-                Color32::from_black_alpha(220),
+                name,
+                fonts::medium(8.5),
+                theme
+                    .text_secondary
+                    .gamma_multiply((facing as f32 * 1.4).min(1.0)),
             );
-        } else {
-            painter.circle_filled(end, radius, theme.panel);
-            painter.circle_stroke(end, radius, Stroke::new(1.5, faded));
         }
-        if hovered {
-            painter.circle_stroke(end, radius + 2.0, Stroke::new(1.5, theme.text));
-        }
-        let tooltip = preset.label();
-        if hit.on_hover_text(tooltip).clicked() {
+    }
+    let mut chosen = None;
+    if let Some((dir, quad)) = hovered {
+        painter.add(egui::Shape::convex_polygon(
+            quad.to_vec(),
+            theme.accent.gamma_multiply(0.45),
+            Stroke::new(1.0, theme.accent),
+        ));
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        let preset = ViewPreset::from_direction(dir);
+        let tip = match CUBE_FACES.iter().find(|f| f.normal == dir) {
+            Some(f) => f.tip.to_string(),
+            None => preset.label(),
+        };
+        if response.on_hover_text(tip).clicked() {
             chosen = Some(preset);
         }
     }
-    if chosen.is_none() && bg.on_hover_text("Isometric view").clicked() {
-        chosen = Some(ViewPreset::Isometric);
-    }
     chosen
+}
+
+/// Marks the centre of rotation: a small ring with a dot.
+fn draw_pivot(painter: &egui::Painter, rect: Rect, cam: &Camera, p: DVec3, theme: &CadTheme) {
+    if let Some((s, _)) = cam.world_to_screen(p) {
+        let at = to_screen(rect, s);
+        painter.circle_stroke(at, 7.0, Stroke::new(1.5, theme.accent));
+        painter.circle_filled(at, 2.0, theme.accent);
+        painter.line_segment(
+            [at - vec2(11.0, 0.0), at - vec2(7.0, 0.0)],
+            Stroke::new(1.5, theme.accent),
+        );
+        painter.line_segment(
+            [at + vec2(7.0, 0.0), at + vec2(11.0, 0.0)],
+            Stroke::new(1.5, theme.accent),
+        );
+    }
 }
 
 /// Floating view controls (top-right of the viewport).
 fn nav_controls(ui: &mut egui::Ui, rect: Rect, state: &ViewportState, theme: &CadTheme) -> Option<NavAction> {
     let area = Rect::from_min_max(
-        pos2(rect.right() - 220.0, rect.top() + 10.0),
+        pos2(rect.right() - 260.0, rect.top() + 10.0),
         pos2(rect.right() - 10.0, rect.top() + 48.0),
     );
     ui.scope_builder(
@@ -575,6 +731,16 @@ pub fn view_controls(ui: &mut egui::Ui, state: &ViewportState) -> Option<NavActi
     {
         action = Some(NavAction::TogglePlan);
     }
+    if IconButton::new(icons::TARGET, "Centre of rotation")
+        .description("Click a point to orbit about; right-click resets")
+        .shortcut(Some("Shift+C"))
+        .selected(state.pivot.is_some())
+        .enabled(!state.plan_locked)
+        .show(ui)
+        .clicked()
+    {
+        action = Some(NavAction::PickPivot);
+    }
     let persp = state.camera.projection == Projection::Perspective;
     if IconButton::new(icons::PERSPECTIVE, "Perspective")
         .description("Toggle perspective / orthographic projection")
@@ -588,6 +754,27 @@ pub fn view_controls(ui: &mut egui::Ui, state: &ViewportState) -> Option<NavActi
     action
 }
 
+/// The scale bar's on-screen length.
+const SCALE_BAR_PX: f32 = 120.0;
+
+/// A scale-bar length to 3 significant figures, in km or mm when metres
+/// would be unwieldy.
+fn scale_label(length: f64, suffix: &str) -> String {
+    let sig3 = |v: f64| {
+        let decimals = (2 - v.log10().floor() as i32).clamp(0, 6) as usize;
+        let text = format!("{v:.decimals$}");
+        (text.parse::<f64>().unwrap_or(v), text)
+    };
+    let (value, text) = sig3(length);
+    if suffix == "m" && value >= 1000.0 {
+        format!("{} km", sig3(value / 1000.0).1)
+    } else if suffix == "m" && value < 1.0 {
+        format!("{} mm", sig3(value * 1000.0).1)
+    } else {
+        format!("{text} {suffix}")
+    }
+}
+
 fn draw_scale_bar(painter: &egui::Painter, rect: Rect, cam: &Camera, unit: &(f64, String), theme: &CadTheme) {
     let (metres_per_unit, suffix) = (unit.0.max(1e-12), unit.1.as_str());
     // Work in display units so bar lengths are round numbers of that unit.
@@ -595,15 +782,8 @@ fn draw_scale_bar(painter: &egui::Painter, rect: Rect, cam: &Camera, unit: &(f64
     if !(upp.is_finite() && upp > 0.0) {
         return;
     }
-    // Pick a 1/2/5 × 10^k length close to 120 px.
-    let target = upp * 120.0;
-    let pow = 10f64.powf(target.log10().floor());
-    let length = [1.0, 2.0, 5.0, 10.0]
-        .into_iter()
-        .map(|m| m * pow)
-        .min_by(|a, b| (a - target).abs().total_cmp(&(b - target).abs()))
-        .unwrap_or(pow);
-    let px = (length / upp) as f32;
+    // A fixed-length bar, labelled with the distance it spans.
+    let px = SCALE_BAR_PX;
     let right = rect.max.x - 16.0;
     let y = rect.max.y - 18.0;
     let left = right - px;
@@ -612,18 +792,10 @@ fn draw_scale_bar(painter: &egui::Painter, rect: Rect, cam: &Camera, unit: &(f64
     for x in [left, (left + right) * 0.5, right] {
         painter.line_segment([pos2(x, y - 4.0), pos2(x, y)], stroke);
     }
-    let text = if suffix == "m" && length >= 1000.0 {
-        format!("{} km", length / 1000.0)
-    } else if suffix == "m" && length < 1.0 {
-        format!("{} mm", (length * 1000.0).round())
-    } else {
-        // Trim float noise such as 0.30000000000000004.
-        format!("{} {suffix}", (length * 1e6).round() / 1e6)
-    };
     painter.text(
         pos2((left + right) * 0.5, y - 6.0),
         egui::Align2::CENTER_BOTTOM,
-        text,
+        scale_label(upp * f64::from(px), suffix),
         egui::FontId::proportional(11.0),
         theme.text_secondary,
     );
@@ -666,6 +838,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scale_labels_have_three_figures() {
+        assert_eq!(scale_label(12.3456, "m"), "12.3 m");
+        assert_eq!(scale_label(123.456, "m"), "123 m");
+        assert_eq!(scale_label(4.0, "m"), "4.00 m");
+        assert_eq!(scale_label(999.7, "m"), "1.00 km");
+        assert_eq!(scale_label(1534.0, "m"), "1.53 km");
+        assert_eq!(scale_label(0.4567, "m"), "457 mm");
+        assert_eq!(scale_label(0.0123, "m"), "12.3 mm");
+        assert_eq!(scale_label(58.27, "ft"), "58.3 ft");
+    }
+
+    #[test]
     fn returning_to_plan_is_north_up() {
         let mut state = ViewportState::new(1);
         state.camera.target = DVec3::new(512_000.0, 6_912_000.0, 0.0);
@@ -703,5 +887,28 @@ mod preset_tests {
         );
         state.apply_preset(ViewPreset::Plan);
         assert!(state.plan_locked && state.camera.is_plan());
+    }
+
+    /// Every cube face, edge and corner puts the camera on that side.
+    #[test]
+    fn cube_directions_look_from_their_side() {
+        for e in -1i8..=1 {
+            for n in -1i8..=1 {
+                for z in -1i8..=1 {
+                    if (e, n, z) == (0, 0, 0) {
+                        continue;
+                    }
+                    let mut state = ViewportState::new(1);
+                    state.apply_preset(ViewPreset::from_direction([e, n, z]));
+                    let want = dvec([e, n, z]).normalize();
+                    let back = state.camera.back();
+                    assert!(back.dot(want) > 0.999, "{e} {n} {z}: back {back:?}");
+                }
+            }
+        }
+        assert_eq!(
+            ViewPreset::From([-1, -1, 1]).label(),
+            "View from the south-west, above"
+        );
     }
 }

@@ -152,6 +152,10 @@ impl SurveyApp {
         let ctx = ui.ctx().clone();
         match event {
             Some(CommandLineEvent::Submit(text)) => self.submit(&ctx, text),
+            Some(CommandLineEvent::Cancel) if self.picking_pivot => {
+                self.picking_pivot = false;
+                self.session.log.info("Centre of rotation unchanged");
+            }
             Some(CommandLineEvent::Cancel) => {
                 self.session.snap_override = None;
                 self.session.dispatch(ToolEvent::Cancel);
