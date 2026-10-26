@@ -72,9 +72,13 @@ pub struct FieldData {
     /// Source format, e.g. "Leica GSI" or "Trimble JobXML".
     pub format: String,
     pub setups: Vec<Setup>,
-    /// Coordinates recorded in the file (control and computed points).
+    /// Coordinates recorded in the file for control: keyed in, or of stations.
     #[serde(default)]
     pub points: Vec<(String, DVec3)>,
+    /// Coordinates the instrument or controller computed for its shots. They are
+    /// shown on import; reduction recomputes them from the observations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub computed: Vec<(String, DVec3)>,
     /// Corrections made in the office; the observations above stay as recorded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edits: Vec<RawEdit>,

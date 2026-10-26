@@ -112,15 +112,27 @@ pub fn reduce(data: &FieldData, known: &dyn Fn(&str) -> Option<Known>) -> Reduct
             .find(|(n, _)| n == name)
             .map(|(_, p)| (*p, p.z != 0.0))
     };
+    // Where a point is, if anywhere: shots to it are then checks.
     let lookup = |name: &str, placed: &HashMap<String, (DVec3, bool)>| {
         known(name)
             .map(|k| (k.position, k.height_known))
             .or_else(|| placed.get(name).copied())
             .or_else(|| recorded(name))
     };
+    // Stations and backsights may also fall back on the instrument's own
+    // computation, which the shots to a point never do (it is recomputed).
+    let computed = |name: &str| {
+        data.computed
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, p)| (*p, p.z != 0.0))
+    };
+    let locate =
+        |name: &str, placed: &HashMap<String, (DVec3, bool)>| lookup(name, placed).or_else(|| computed(name));
     for (i, setup) in data.effective_setups().iter().enumerate() {
         let n = i + 1;
-        let Some((station, station_height)) = lookup(&setup.station, &placed) else {
+        let Some((station, station_height)) = locate(&setup.station, &placed) else {
             out.warnings.push(format!(
                 "Setup {n} at {}: the station has no coordinates, so its {} shots were not reduced",
                 setup.station,
@@ -134,7 +146,7 @@ pub fn reduce(data: &FieldData, known: &dyn Fn(&str) -> Option<Known>) -> Reduct
             });
             continue;
         };
-        let (orientation, method) = orient(setup, station, &|t| lookup(t, &placed));
+        let (orientation, method) = orient(setup, station, &|t| locate(t, &placed));
         if method == Orientation::Assumed && setup.observations.iter().any(|o| o.hz.is_some()) {
             out.warnings.push(format!(
                 "Setup {n} at {}: no backsight with coordinates, so the circle readings were taken as bearings",

@@ -121,14 +121,26 @@ pub fn reduce_command(doc: &Document, id: RecordId, mut data: FieldData, label: 
             }
         }
     }
+    // Points this file made that it no longer shoots (the shot excluded or
+    // renamed) go; ones still shot but not placed this time (a check, or no
+    // orientation) stay, still the file's to update.
+    let targets: std::collections::HashSet<String> = data
+        .effective_setups()
+        .into_iter()
+        .flat_map(|s| s.observations.into_iter().map(|o| o.target))
+        .collect();
+    let mut reduced: Vec<String> = reduction.points.iter().map(|p| p.name.clone()).collect();
     for old in &data.reduced {
-        if !reduction.points.iter().any(|p| p.name == *old)
-            && let Some((eid, _)) = doc.find_point_by_name(old)
-        {
-            cmd.delete(eid);
+        if reduced.contains(old) {
+            continue;
+        }
+        match doc.find_point_by_name(old) {
+            Some((eid, _)) if !targets.contains(old) => cmd.delete(eid),
+            Some(_) => reduced.push(old.clone()),
+            None => {}
         }
     }
-    data.reduced = reduction.points.iter().map(|p| p.name.clone()).collect();
+    data.reduced = reduced;
     let (added, updated, removed) = (cmd.len(), cmd.updated(), cmd.deleted());
     cmd.update_field_data(id, data);
     let mut summary = format!(

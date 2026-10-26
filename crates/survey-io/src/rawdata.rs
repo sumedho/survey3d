@@ -198,8 +198,14 @@ pub fn read_gsi(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
             }
         }
         if let (Some(x), Some(y)) = (e, n) {
-            data.points.retain(|(p, _)| *p != point);
-            data.points.push((point, DVec3::new(x, y, h.unwrap_or(0.0))));
+            // Coordinates on a measurement are the instrument's computation.
+            let list = if hz.is_some() || sd.is_some() || hd.is_some() {
+                &mut data.computed
+            } else {
+                &mut data.points
+            };
+            list.retain(|(p, _)| *p != point);
+            list.push((point, DVec3::new(x, y, h.unwrap_or(0.0))));
         }
     }
     if let Some(s) = current
@@ -387,17 +393,23 @@ pub fn read_jobxml(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
             }
         }
     }
-    // Reduced coordinates win over keyed-in ones.
+    // Reduced coordinates win over keyed-in ones; the others are the
+    // controller's computation of the shots.
     if let Some(red) = job.child("Reductions") {
         for p in red.children.iter().filter(|p| p.name == "Point") {
             if let (Some(name), Some(g)) = (p.text_of("Name"), grid(p)) {
-                data.points.retain(|(n, _)| n != name);
-                data.points.push((name.to_string(), g));
+                match data.points.iter_mut().find(|(n, _)| n == name) {
+                    Some(keyed) => keyed.1 = g,
+                    None => {
+                        data.computed.retain(|(n, _)| n != name);
+                        data.computed.push((name.to_string(), g));
+                    }
+                }
             }
         }
     }
     data.setups.retain(|s| !s.observations.is_empty());
-    if data.setups.is_empty() && data.points.is_empty() {
+    if data.setups.is_empty() && data.points.is_empty() && data.computed.is_empty() {
         return Err(IoError::Invalid(
             "JobXML: no stations, observations or points found".into(),
         ));
@@ -513,6 +525,8 @@ pub fn read_rw5(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
     };
     let mut unit = None;
     let mut rod = 0.0;
+    // An instrument height recorded before its occupation.
+    let mut pending_hi = None;
     let mut current: Option<Setup> = None;
     let (mut recognised, mut gnss, mut offsets, mut skipped) = (0, 0, 0, 0);
     let flush = |current: &mut Option<Setup>, data: &mut FieldData| {
@@ -552,14 +566,17 @@ pub fn read_rw5(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
                 point(&mut data, station, &r, k);
                 current = Some(Setup {
                     station: station.to_string(),
+                    instrument_height: pending_hi.take().unwrap_or(0.0),
                     ..Default::default()
                 });
             }
             "LS" => {
-                if let Some(hi) = r.num("HI")
-                    && let Some(s) = current.as_mut()
-                {
-                    s.instrument_height = hi * k;
+                if let Some(hi) = r.num("HI") {
+                    // After a setup's shots, it belongs to the next occupation.
+                    match current.as_mut().filter(|s| s.observations.is_empty()) {
+                        Some(s) => s.instrument_height = hi * k,
+                        None => pending_hi = Some(hi * k),
+                    }
                 }
                 if let Some(hr) = r.num("HR") {
                     rod = hr * k;
@@ -673,6 +690,23 @@ pub fn read_rw5(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
     if recognised == 0 {
         return Err(IoError::Invalid("RW5: no RW5 records found".into()));
     }
+    // Stored coordinates of points the file also measures (other than as
+    // backsights) are the controller's computation, not control.
+    let measured: std::collections::HashSet<&str> = data
+        .setups
+        .iter()
+        .flat_map(|s| {
+            s.observations
+                .iter()
+                .filter(|o| o.distance.is_some() && s.backsight.as_deref() != Some(o.target.as_str()))
+                .map(|o| o.target.as_str())
+        })
+        .collect();
+    let (computed, control): (Vec<_>, Vec<_>) = std::mem::take(&mut data.points)
+        .into_iter()
+        .partition(|(n, _)| measured.contains(n.as_str()));
+    data.points = control;
+    data.computed = computed;
     if unit.is_none() {
         data.warnings
             .push("No mode record (MO): distances were read as metres".into());
@@ -791,6 +825,7 @@ BR,OP1,FP2,AR180.0037,ZE273.5826,SD10.315000,--CP
 LS,HR4.000000
 SS,OP1,FP7,AR90.3015,ZE90.0000,HD25.000000,--TR1 ST, fence
 GPS,PN3,LA40.364883159071,LN-3.420590114521,EL765.6980,--
+LS,HI4.000000
 OC,OP7,N 5000.0,E 5025.0,EL100.0
 TR,OP7,FP8,AZ45.0000,VA0.0000,SD10.0,--KB
 ";
@@ -820,13 +855,18 @@ TR,OP7,FP8,AZ45.0000,VA0.0000,SD10.0,--KB
         // An azimuth shot: the zero reading points north.
         let t = &d.setups[1];
         assert_eq!(t.orientation, Some(Bearing::default()));
+        // An instrument height before its occupation belongs to it.
+        assert!((t.instrument_height - 4.0 * ft).abs() < 1e-12);
+        assert!((s.instrument_height - 5.0 * ft).abs() < 1e-12);
         assert!((t.observations[0].zenith.expect("z").degrees() - 90.0).abs() < 1e-12);
         assert!(
             d.points
                 .iter()
                 .any(|(n, p)| n == "100" && (p.y - 5002.0 * ft).abs() < 1e-9)
         );
-        assert!(d.points.iter().any(|(n, _)| n == "7"));
+        // The station 7 was also shot from 1: its stored coordinates are computed.
+        assert!(d.computed.iter().any(|(n, _)| n == "7"));
+        assert!(!d.points.iter().any(|(n, _)| n == "7"));
         assert!(
             d.warnings.iter().any(|w| w.contains("1 GNSS")),
             "{:?}",
@@ -834,6 +874,24 @@ TR,OP7,FP8,AZ45.0000,VA0.0000,SD10.0,--KB
         );
         assert_eq!(rw5_bearing("N12.3000W").map(|a| a.degrees()), Some(360.0 - 12.5));
         assert!(read_rw5("x", b"hello\n").is_err());
+    }
+
+    #[test]
+    fn gsi_computed_coordinates() {
+        // The second line is a measurement with the instrument's coordinates.
+        let gsi = "\
+110001+000000S1 84..10+00001000 85..10+00002000 88..10+00001500
+110002+000000P1 21.104+09000000 22.104+09000000 31..00+00010000 81..00+00011000 82..00+00002000
+";
+        let d = read_gsi("a", gsi.as_bytes()).expect("gsi");
+        assert_eq!(
+            d.points.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            ["S1"]
+        );
+        assert_eq!(
+            d.computed.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            ["P1"]
+        );
     }
 
     #[test]
@@ -878,9 +936,10 @@ TR,OP7,FP8,AZ45.0000,VA0.0000,SD10.0,--KB
         assert!((t1.hz.expect("hz").degrees() - 45.0).abs() < 1e-9);
         assert!((t1.zenith.expect("v").degrees() - 85.0).abs() < 1e-9);
         assert_eq!(t1.code, "KB1");
-        assert_eq!(d.points.len(), 2);
+        // CP1 is keyed-in control; CP2's coordinates are the controller's.
+        assert_eq!(d.points.len(), 1);
         assert!(
-            d.points
+            d.computed
                 .iter()
                 .any(|(n, p)| n == "CP2" && (p.z - 9.8).abs() < 1e-12)
         );

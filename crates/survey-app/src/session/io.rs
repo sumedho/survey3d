@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use glam::DVec2;
-use survey_core::network::RawEdit;
+use survey_core::network::{FieldData, RawEdit};
 use survey_core::style::LabelSet;
 use survey_io::plot::Plot;
 use survey_io::stakeout::{StakeFormat, StakeLine};
@@ -53,10 +53,13 @@ impl Session {
 
     /// Raw instrument data: kept with the project for reduction and the network
     /// adjustment; coordinates in the file add any points the project does not
-    /// have. A file of the same name replaces the earlier import.
+    /// have (those the instrument computed for its shots belong to the file's
+    /// reduction, which recomputes them). A file of the same name replaces the
+    /// earlier import, keeping its corrections where the setups and shots
+    /// still match.
     pub fn import_raw(&mut self, name: &str, bytes: &[u8]) {
         let stem = stem(name);
-        let data = match survey_io::rawdata::read_raw(stem, bytes) {
+        let mut data = match survey_io::rawdata::read_raw(stem, bytes) {
             Ok(data) => data,
             Err(e) => {
                 self.log.error(format!("Could not read {name}: {e}"));
@@ -66,8 +69,47 @@ impl Session {
         let doc = &self.project.doc;
         let mut cs = ChangeSet::new(format!("Import raw data {stem}"));
         let mut added = 0;
-        for (pname, p) in &data.points {
+        let existing = doc.field_data().iter().find(|f| f.name == data.name);
+        let mut kept_edits = 0;
+        if let Some(old) = existing {
+            data.reduced.clone_from(&old.reduced);
+            data.scale_factor = data.scale_factor.or(old.scale_factor);
+            let station = |f: &FieldData, i: usize| f.setups.get(i).map(|s| s.station.clone());
+            let target = |f: &FieldData, i: usize, k: usize| {
+                f.setups
+                    .get(i)
+                    .and_then(|s| s.observations.get(k))
+                    .map(|o| o.target.clone())
+            };
+            for e in &old.edits {
+                let same = station(old, e.setup).is_some_and(|s| Some(s) == station(&data, e.setup))
+                    && e.observation.is_none_or(|k| {
+                        target(old, e.setup, k).is_some_and(|t| Some(t) == target(&data, e.setup, k))
+                    });
+                if same {
+                    data.edits.push(e.clone());
+                    kept_edits += 1;
+                }
+            }
+            if kept_edits < old.edits.len() {
+                self.log.warn(format!(
+                    "{} of {} corrections to {stem} no longer match its setups and shots and were dropped",
+                    old.edits.len() - kept_edits,
+                    old.edits.len()
+                ));
+            }
+        }
+        let computed: Vec<(String, glam::DVec3)> = data.computed.clone();
+        for (pname, p, own) in data
+            .points
+            .iter()
+            .map(|(n, p)| (n, p, false))
+            .chain(computed.iter().map(|(n, p)| (n, p, true)))
+        {
             if doc.find_point_by_name(pname).is_none() {
+                if own && !data.reduced.contains(pname) {
+                    data.reduced.push(pname.clone());
+                }
                 cs.push_insert_entity(Entity::Point(SurveyPoint {
                     name: pname.clone(),
                     position: *p,
@@ -86,12 +128,7 @@ impl Session {
             data.setups.len()
         );
         let warnings = data.warnings.clone();
-        let existing = doc
-            .field_data()
-            .iter()
-            .find(|f| f.name == data.name)
-            .map(|f| f.id);
-        let cs = match existing {
+        let cs = match existing.map(|f| f.id) {
             Some(id) => cs.update_record(id, data),
             None => cs.insert_record(data),
         };
@@ -121,12 +158,13 @@ impl Session {
             self.log.warn(w.clone());
         }
         let summary = r.summary.clone();
+        let added = r.command.len();
         self.execute(Box::new(r.command));
         self.log.result(summary.clone());
         if let Some((title, text)) = self.raw_report(name) {
             self.report(title, text);
         }
-        if !self.project.doc.field_data().is_empty() {
+        if added > 0 {
             self.emit(Event::ZoomExtents);
         }
         Ok(summary)
@@ -427,7 +465,15 @@ impl Session {
                         })
                     });
                 let name = existing.unwrap_or_else(|| {
-                    let name = format!("{base}-{}", i + 1);
+                    // Not a name already in the file or the project.
+                    let taken =
+                        |n: &str| points.iter().any(|p| p.name == n) || doc.find_point_by_name(n).is_some();
+                    let mut name = format!("{base}-{}", i + 1);
+                    let mut k = 2;
+                    while taken(&name) {
+                        name = format!("{base}-{}-{k}", i + 1);
+                        k += 1;
+                    }
                     points.push(ImportedPoint {
                         name: name.clone(),
                         easting: v.x,

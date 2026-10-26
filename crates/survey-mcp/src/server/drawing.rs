@@ -84,9 +84,7 @@ impl Server {
                     from + (left * offset).extend(0.0)
                 }
                 _ => {
-                    return Err(format!(
-                        "dimensions[{i}]: give offset (metres) or line_at, not both"
-                    ));
+                    return Err(format!("dimensions[{i}]: give one of offset (metres) or line_at"));
                 }
             };
             if dim.measured() < 1e-9 {

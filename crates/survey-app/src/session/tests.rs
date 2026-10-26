@@ -498,3 +498,51 @@ SS,OP1,FP5,AZ90.0000,ZE90.0000,SD10.0,--TR
     assert!((p.position - glam::DVec3::new(110.0, 100.0, 10.0)).length() < 1e-9);
     assert_eq!(p.code, "TR");
 }
+
+#[test]
+fn instrument_coordinates_are_recomputed_and_reimport_keeps_corrections() {
+    let mut s = session();
+    // Station S1 (100, 200), keyed backsight BS1 due north, and a shot P1 due
+    // east carrying the instrument's coordinates, 3 mm out.
+    let gsi = b"110001+000000S1 84..10+00100000 85..10+00200000 88..10+00001500
+110002+00000BS1 81..00+00100000 82..00+00300000
+110003+00000BS1 21.104+00000000 22.104+09000000 31..00+00100000
+110004+000000P1 21.104+09000000 22.104+09000000 31..00+00010000 81..00+00110003 82..00+00200000 71....+000000KB
+";
+    s.import_raw("job.gsi", gsi);
+    let p1 = |s: &Session| s.project.doc.find_point_by_name("P1").expect("P1").1.clone();
+    assert!((p1(&s).position.x - 110.003).abs() < 1e-9, "shown on import");
+    assert_eq!(s.project.doc.field_data()[0].reduced, ["P1"]);
+
+    let summary = s.reduce_raw("job").expect("reduce");
+    assert!(
+        summary.contains("1 updated") && summary.contains("1 check"),
+        "{summary}"
+    );
+    assert!(
+        (p1(&s).position.x - 110.0).abs() < 1e-9,
+        "recomputed from the shot"
+    );
+    assert_eq!(p1(&s).code, "KB");
+
+    s.edit_raw(
+        "job",
+        survey_core::network::RawEdit {
+            setup: 0,
+            observation: Some(1),
+            code: Some("FH".into()),
+            ..Default::default()
+        },
+        false,
+    )
+    .expect("edit");
+    assert_eq!(p1(&s).code, "FH");
+    // The crew sends the file again: the correction and the link to P1 stay.
+    s.import_raw("job.gsi", gsi);
+    let f = &s.project.doc.field_data()[0];
+    assert_eq!(f.edits.len(), 1);
+    assert_eq!(f.reduced, ["P1"]);
+    s.reduce_raw("job").expect("reduce again");
+    assert_eq!(p1(&s).code, "FH");
+    assert!((p1(&s).position.x - 110.0).abs() < 1e-9);
+}

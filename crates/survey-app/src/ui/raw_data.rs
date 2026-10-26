@@ -210,9 +210,9 @@ impl RawDataWindow {
                     theme,
                     &mut self.editing,
                     (i, None, "hi"),
-                    &format!("{v:.3}"),
+                    &conv.format_length(v),
                     se.and_then(|e| e.instrument_height)
-                        .map(|_| format!("{:.3}", s.instrument_height)),
+                        .map(|_| conv.format_length(s.instrument_height)),
                     70.0,
                 ) {
                     match conv.parse_length(&t) {
@@ -336,9 +336,9 @@ impl RawDataWindow {
                             theme,
                             &mut self.editing,
                             (i, Some(k), "ht"),
-                            &format!("{v:.3}"),
+                            &conv.format_length(v),
                             e.and_then(|e| e.target_height)
-                                .map(|_| format!("{:.3}", o.target_height)),
+                                .map(|_| conv.format_length(o.target_height)),
                             60.0,
                         ) {
                             match conv.parse_length(&t) {
