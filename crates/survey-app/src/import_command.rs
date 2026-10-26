@@ -3,8 +3,11 @@
 
 use glam::DVec3;
 use serde_json::Value;
+use survey_core::network::FieldData;
 use survey_io::ImportedPoint;
-use survey_model::{ChangeSet, Color, Command, Document, Entity, EntityId, Layer, LayerId, SurveyPoint};
+use survey_model::{
+    ChangeSet, Color, Command, Document, Entity, EntityId, Layer, LayerId, RecordId, SurveyPoint,
+};
 
 /// Which layer an imported entity goes on.
 #[derive(Clone, Copy, Debug)]
@@ -24,6 +27,8 @@ pub struct ImportEntities {
     label: String,
     new_layers: Vec<(String, Color, bool)>,
     items: Vec<Item>,
+    /// Raw data records changed in the same step (a reduction's bookkeeping).
+    field_data: Vec<(RecordId, FieldData)>,
     /// Built on first apply (when ids are allocated) and replayed on redo.
     inner: Option<ChangeSet>,
 }
@@ -104,6 +109,7 @@ impl ImportEntities {
             label,
             new_layers: Vec::new(),
             items: Vec::new(),
+            field_data: Vec::new(),
             inner: None,
         }
     }
@@ -127,6 +133,27 @@ impl ImportEntities {
         self.items.push(Item::Delete(id));
     }
 
+    /// Replaces a raw data record in the same step.
+    pub fn update_field_data(&mut self, id: RecordId, data: FieldData) {
+        self.field_data.push((id, data));
+    }
+
+    /// Number of entities replaced.
+    pub fn updated(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|i| matches!(i, Item::Update(..)))
+            .count()
+    }
+
+    /// Number of entities removed.
+    pub fn deleted(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|i| matches!(i, Item::Delete(..)))
+            .count()
+    }
+
     /// Number of entities added.
     pub fn len(&self) -> usize {
         self.items
@@ -136,7 +163,7 @@ impl ImportEntities {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
+        self.items.is_empty() && self.field_data.is_empty()
     }
 }
 
@@ -172,6 +199,9 @@ impl Command for ImportEntities {
                     }
                     Item::Delete(id) => cs.push_delete_entity(id),
                 }
+            }
+            for (id, data) in std::mem::take(&mut self.field_data) {
+                cs = cs.update_record(id, data);
             }
             cs
         });

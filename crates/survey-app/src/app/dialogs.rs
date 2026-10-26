@@ -14,6 +14,80 @@ use super::*;
 impl SurveyApp {
     // ------------------------------------------------------------------ dialogs
 
+    /// Raw data, stake-out files and as-built checks.
+    fn field_windows(&mut self, ctx: &egui::Context) {
+        match self.raw_window.show(ctx, &self.session.project.doc) {
+            Some(RawAction::Edit(file, edit, revert)) => {
+                if let Err(e) = self.session.edit_raw(&file, edit, revert) {
+                    self.session.log.error(e);
+                }
+            }
+            Some(RawAction::Reduce(file)) => match self.session.reduce_raw(&file) {
+                Ok(summary) => self.toasts.success(summary),
+                Err(e) => self.session.log.error(e),
+            },
+            Some(RawAction::Report(file)) => {
+                if let Some((title, text)) = self.session.raw_report(&file) {
+                    self.reports.add(title, text);
+                }
+            }
+            Some(RawAction::Network(file)) => {
+                self.network_window.open_with(&self.session.project.doc);
+                self.network_window.select_only(format!("f:{file}"));
+            }
+            None => {}
+        }
+        let selection: Vec<EntityId> = self.session.project.selection.ids().iter().copied().collect();
+        if self.stake_export_window.open {
+            let doc = &self.session.project.doc;
+            let count = |f: fn(&Entity) -> bool| {
+                selection
+                    .iter()
+                    .filter(|id| doc.entity(**id).is_some_and(f))
+                    .count()
+            };
+            let points = count(|e| matches!(e, Entity::Point(_)));
+            let lines = count(|e| matches!(e, Entity::Polyline(_)));
+            if let Some(format) = self.stake_export_window.show(ctx, points, lines) {
+                self.export_stakeout(format, &selection);
+            }
+        }
+        match self
+            .asbuilt_window
+            .show(ctx, &self.session.project.doc, &selection)
+        {
+            Some(AsBuiltAction::Report(title, text)) => self.reports.add(title, text),
+            Some(AsBuiltAction::Label(cmd, summary)) => self.session.apply_with_toast(cmd, summary),
+            None => {}
+        }
+    }
+
+    pub(super) fn export_stakeout(&mut self, format: survey_io::stakeout::StakeFormat, ids: &[EntityId]) {
+        use survey_io::stakeout::StakeFormat;
+        let (text, summary) = match self.session.stakeout_file(format, ids) {
+            Ok(v) => v,
+            Err(e) => {
+                self.session.log.error(e);
+                return;
+            }
+        };
+        let kind = match format {
+            StakeFormat::JobXml => FileKind::StakeJobXml,
+            StakeFormat::Rw5 => FileKind::StakeRw5,
+            StakeFormat::Gsi => FileKind::StakeGsi,
+            StakeFormat::Csv => FileKind::Points,
+        };
+        let stem = format!("{}-stakeout", file_stem(&self.session.project.doc.meta().name));
+        match export(&self.platform, kind, &stem, text.as_bytes()) {
+            Ok(Some(where_)) => self.session.log.result(format!("{summary}: {where_}")),
+            Ok(None) => {}
+            Err(e) => self
+                .session
+                .log
+                .error(format!("Could not save the stake-out file: {e}")),
+        }
+    }
+
     pub(super) fn dialogs(&mut self, ctx: &egui::Context) {
         self.recovery_prompt(ctx);
 
@@ -113,6 +187,7 @@ impl SurveyApp {
         {
             self.reports.add(title, text);
         }
+        self.field_windows(ctx);
         let selected_line = self
             .sections_window
             .open

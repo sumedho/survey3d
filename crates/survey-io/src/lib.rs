@@ -15,6 +15,7 @@ pub mod landxml;
 pub mod plot;
 pub mod pointcloud;
 pub mod rawdata;
+pub mod stakeout;
 
 pub use csv_points::{CsvField, CsvLayout, CsvPointImporter, HeaderMode, export_points_csv};
 

@@ -39,6 +39,7 @@ use crate::surface_view::{SurfaceIndexes, SurfaceSceneCache};
 use crate::tools::grips::Grip;
 use crate::tools::{Preview, SELECT_TOOL_ID, ToolEvent};
 use crate::ui::alignments::AlignmentsWindow;
+use crate::ui::asbuilt_window::{AsBuiltAction, AsBuiltWindow};
 use crate::ui::audit_window::AuditWindow;
 use crate::ui::calculator::{CalcTab, CalculatorWindow};
 use crate::ui::calibration_window::{CalibrationAction, CalibrationWindow};
@@ -52,11 +53,13 @@ use crate::ui::parcels::ParcelsWindow;
 use crate::ui::points_table::{PointsAction, PointsWindow};
 use crate::ui::projection_calc::{ProjectionAction, ProjectionWindow};
 use crate::ui::properties::properties_panel;
+use crate::ui::raw_data::{RawAction, RawDataWindow};
 use crate::ui::reports::{ReportAction, ReportsWindow};
 use crate::ui::resection_window::{ResectionAction, ResectionWindow};
 use crate::ui::sections::SectionsWindow;
 use crate::ui::settings_window::SettingsWindow;
 use crate::ui::sheets::{PlotFormat, SheetsWindow, ViewInfo};
+use crate::ui::stake_export::StakeExportWindow;
 use crate::ui::stakeout::StakeoutWindow;
 use crate::ui::stockpile::StockpileWindow;
 use crate::ui::subdivide_window::{SubdivideAction, SubdivideWindow};
@@ -262,9 +265,33 @@ const APP_COMMANDS: &[AppCommand] = &[
     ),
     cmd(
         "rawin",
-        "Import raw data (Leica GSI, Trimble JobXML)",
+        "Import raw data (Leica GSI, Trimble JobXML, Carlson RW5)",
         "File",
         icons::FILE_TEXT,
+    ),
+    cmd(
+        "reduce",
+        "Reduce raw data to coded points (reduce <file> when there are several)",
+        "Survey",
+        icons::FILE_TEXT,
+    ),
+    cmd(
+        "rawedit",
+        "Raw data editor (correct heights, codes, backsights; reduce)",
+        "Survey",
+        icons::FILE_TEXT,
+    ),
+    cmd(
+        "stakeexport",
+        "Export stake-out file (Trimble JobXML, Carlson RW5, Leica GSI, CSV)",
+        "Construction",
+        icons::EXPORT,
+    ),
+    cmd(
+        "asbuilt",
+        "As-built comparison (shots against design points, lines or a surface)",
+        "Construction",
+        icons::TARGET,
     ),
     cmd(
         "sheets",
@@ -399,6 +426,9 @@ pub struct SurveyApp {
     parcels_window: ParcelsWindow,
     alignments_window: AlignmentsWindow,
     stakeout_window: StakeoutWindow,
+    stake_export_window: StakeExportWindow,
+    asbuilt_window: AsBuiltWindow,
+    raw_window: RawDataWindow,
     stockpile_window: StockpileWindow,
     projection_window: ProjectionWindow,
     network_window: NetworkWindow,
@@ -560,6 +590,9 @@ impl SurveyApp {
             parcels_window: ParcelsWindow::default(),
             alignments_window: AlignmentsWindow::default(),
             stakeout_window: StakeoutWindow::default(),
+            stake_export_window: StakeExportWindow::default(),
+            asbuilt_window: AsBuiltWindow::default(),
+            raw_window: RawDataWindow::default(),
             stockpile_window: StockpileWindow::default(),
             projection_window: ProjectionWindow::default(),
             network_window: NetworkWindow::default(),
@@ -628,10 +661,7 @@ impl SurveyApp {
                 Event::Open(Panel::Parcels) => self.parcels_window.open = true,
                 Event::Open(Panel::Alignments) => self.alignments_window.open = true,
                 Event::Open(Panel::FeatureCodes) => self.codes_window.open(),
-                Event::Open(Panel::Network { source }) => {
-                    self.network_window.open_with(&self.session.project.doc);
-                    self.network_window.select_only(source);
-                }
+                Event::Open(Panel::RawData { name }) => self.raw_window.open_on(&name),
                 Event::SelectCloud(id) => self.cloud_panel.active = Some(id),
             }
         }
@@ -887,6 +917,19 @@ impl SurveyApp {
             "parcels" => self.parcels_window.open = true,
             "alignments" | "align" => self.alignments_window.open = true,
             "stakeout" | "setoutsheet" => self.stakeout_window.open = true,
+            "stakeexport" | "stakefile" => self.stake_export_window.open = true,
+            "asbuilt" | "compare" => self.asbuilt_window.open = true,
+            "rawedit" | "rawdata" => {
+                let name = self
+                    .session
+                    .project
+                    .doc
+                    .field_data()
+                    .first()
+                    .map(|f| f.name.clone())
+                    .unwrap_or_default();
+                self.raw_window.open_on(&name);
+            }
             "stockpile" => {
                 let toe = self
                     .session
@@ -901,7 +944,7 @@ impl SurveyApp {
             "cloudin" | "importcloud" | "las" => self.platform.pick_file(ctx, FileKind::PointCloud),
             #[cfg(not(target_arch = "wasm32"))]
             "copc" | "copcin" => self.copc_window.open(),
-            "rawin" | "gsi" | "jobxml" => self.platform.pick_file(ctx, FileKind::RawData),
+            "rawin" | "gsi" | "jobxml" | "rw5" => self.platform.pick_file(ctx, FileKind::RawData),
             "gpkg" | "geopackage" => self.export_geopackage(),
             "landxmlin" | "importxml" => self.platform.pick_file(ctx, FileKind::LandXml),
             "landxmlout" | "exportxml" => self.export_landxml(),
@@ -1415,7 +1458,13 @@ impl SurveyApp {
                     FileKind::PointCloud => self.session.import_cloud(&name, &bytes),
                     FileKind::RawData => self.session.import_raw(&name, &bytes),
                     // Reports and GeoPackages are only saved, never opened.
-                    FileKind::Report | FileKind::GeoPackage | FileKind::Pdf | FileKind::Svg => {}
+                    FileKind::Report
+                    | FileKind::GeoPackage
+                    | FileKind::Pdf
+                    | FileKind::Svg
+                    | FileKind::StakeJobXml
+                    | FileKind::StakeRw5
+                    | FileKind::StakeGsi => {}
                 },
                 #[cfg(not(target_arch = "wasm32"))]
                 FileEvent::ProjectPath(path) => self.open_path(&path),

@@ -18,8 +18,12 @@ pub enum FileKind {
     LandXml,
     /// Point clouds (LAS, XYZ text).
     PointCloud,
-    /// Raw total-station data (Leica GSI, Trimble JobXML).
+    /// Raw total-station data (Leica GSI, Trimble JobXML, Carlson RW5).
     RawData,
+    /// Stake-out files (export only).
+    StakeJobXml,
+    StakeRw5,
+    StakeGsi,
     /// OGC GeoPackage (export only).
     GeoPackage,
     /// Plan sheets (export only).
@@ -37,7 +41,10 @@ impl FileKind {
             FileKind::Codes => ("Feature code sheet", &["csv"]),
             FileKind::LandXml => ("LandXML", &["xml"]),
             FileKind::PointCloud => ("Point cloud", &["las", "xyz", "txt", "pts", "csv"]),
-            FileKind::RawData => ("Raw survey data", &["gsi", "jxl", "xml", "txt"]),
+            FileKind::RawData => ("Raw survey data", &["gsi", "jxl", "rw5", "xml", "txt"]),
+            FileKind::StakeJobXml => ("Trimble JobXML", &["jxl"]),
+            FileKind::StakeRw5 => ("Carlson RW5", &["rw5"]),
+            FileKind::StakeGsi => ("Leica GSI", &["gsi"]),
             FileKind::GeoPackage => ("GeoPackage", &["gpkg"]),
             FileKind::Pdf => ("PDF document", &["pdf"]),
             FileKind::Svg => ("SVG drawing", &["svg"]),

@@ -4,6 +4,7 @@
 //! can also be driven without one (scripts, tests, agents).
 
 mod app;
+pub mod asbuilt;
 pub mod calibration;
 #[cfg(not(target_arch = "wasm32"))]
 mod cloud_stream;
@@ -18,6 +19,7 @@ mod listing;
 mod plan;
 mod platform;
 pub mod project;
+pub mod raw;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery;
 mod scene_build;

@@ -22,6 +22,7 @@ pub mod network;
 pub mod offset;
 pub mod point_input;
 pub mod projection;
+pub mod reduction;
 pub mod resection;
 pub mod solvers;
 pub mod style;

@@ -1,6 +1,7 @@
 //! Application panels and dialogs.
 
 pub mod alignments;
+pub mod asbuilt_window;
 pub mod audit_window;
 pub mod calculator;
 pub mod calibration_window;
@@ -16,11 +17,13 @@ pub mod parcels;
 pub mod points_table;
 pub mod projection_calc;
 pub mod properties;
+pub mod raw_data;
 pub mod reports;
 pub mod resection_window;
 pub mod sections;
 pub mod settings_window;
 pub mod sheets;
+pub mod stake_export;
 pub mod stakeout;
 pub mod stockpile;
 pub mod subdivide_window;

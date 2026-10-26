@@ -999,3 +999,186 @@ fn cadastral_deliverables_end_to_end() {
     assert_eq!(lines["rows"][0]["closed"], true);
     assert_eq!(lines["rows"][0]["area"], 96.0);
 }
+
+#[test]
+fn field_data_end_to_end() {
+    let dir = temp_dir("field");
+    let mut s = Server::new_for_tests();
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": [
+            { "name": "1", "e": 1000.0, "n": 2000.0, "z": 50.0, "code": "CP" },
+            { "name": "2", "e": 1000.0, "n": 2100.0, "z": 51.0, "code": "CP" }
+        ] }),
+    );
+    ok(
+        &mut s,
+        "set_feature_codes",
+        json!({ "codes": [{ "code": "KB1", "linework": true, "layer": "KERB" }] }),
+    );
+    // A day's RW5: topo from 1 (backsight 2), a traverse leg to 20, and a peg
+    // from 20 (backsight 1). Rod 1.5 m throughout; the kerb end was really 2.0.
+    let rw5 = "\
+JB,NMDAY1,DT10-27-2026,TM08:00:00
+MO,AD0,UN1,SF1.00000000,EC0,EO0.0,AU0
+OC,OP1,N 2000.0000,E 1000.0000,EL50.000,--CP
+LS,HI1.500,HR1.500
+BK,OP1,BP2,BC0.0000
+BD,OP1,FP2,AR0.0000,ZE90.0000,SD100.000,--CP
+SS,OP1,FP10,AR90.0000,ZE90.0000,SD20.000,--KB1 ST
+SS,OP1,FP11,AR90.0000,ZE90.0000,SD30.000,--KB1
+SS,OP1,FP12,AR90.0000,ZE90.0000,SD40.000,--KB1 END
+TR,OP1,FP20,AR180.0000,ZE90.0000,SD50.000,--TRAV
+OC,OP20,--TRAV
+LS,HI1.600,HR1.500
+BK,OP20,BP1,BC0.0000
+BD,OP20,FP1,AR0.0000,ZE90.0000,SD50.000
+SS,OP20,FP30,AR90.0000,ZE90.0000,SD10.000,--PEG
+";
+    let path = dir.join("day1.rw5");
+    std::fs::write(&path, rw5).expect("write rw5");
+    let out = ok(&mut s, "import_file", json!({ "path": path }));
+    assert!(out.contains("Carlson RW5") && out.contains("2 setups"), "{out}");
+
+    let shown = ok_json(&mut s, "raw_data", json!({}));
+    assert_eq!(shown["setups"][1]["backsight"], "1");
+    let shots = ok_json(&mut s, "raw_data", json!({ "setup": 1 }));
+    assert_eq!(shots["setups"][0]["shot_list"][3]["code"], "KB1 END");
+
+    let reduced = ok_json(&mut s, "raw_data", json!({ "action": "reduce" }));
+    assert!(
+        reduced["summary"]
+            .as_str()
+            .expect("summary")
+            .contains("5 new points"),
+        "{reduced}"
+    );
+    let checks = reduced["checks"].as_array().expect("checks");
+    assert_eq!(checks.len(), 2, "both backsights");
+    assert!(
+        checks.iter().all(|c| c["plan"].as_f64() < Some(1e-6)),
+        "{reduced}"
+    );
+    let point = |s: &mut Server, name: &str| {
+        let q = ok_json(
+            s,
+            "query",
+            json!({ "kind": "points", "filter": { "names": [name] } }),
+        );
+        q["rows"][0].clone()
+    };
+    let p30 = point(&mut s, "30");
+    assert!((p30["e"].as_f64().expect("e") - 1010.0).abs() < 1e-6, "{p30}");
+    assert!((p30["n"].as_f64().expect("n") - 1950.0).abs() < 1e-6);
+    assert!((p30["z"].as_f64().expect("z") - 50.1).abs() < 1e-6);
+    assert_eq!(
+        point(&mut s, "10")["layer"],
+        "KERB",
+        "coded points go on their code's layer"
+    );
+
+    // The correction re-reduces in the same step and is audited.
+    let out = ok(
+        &mut s,
+        "raw_data",
+        json!({ "action": "edit", "setup": 1, "shot": 4, "target_height": 2.0 }),
+    );
+    assert!(out.contains("target height 1.500 → 2.000"), "{out}");
+    assert!((point(&mut s, "12")["z"].as_f64().expect("z") - 49.5).abs() < 1e-6);
+    let audit = ok(&mut s, "query", json!({ "kind": "audit", "limit": 1 }));
+    assert!(audit.contains("Raw edit day1 setup 1 shot 4"), "{audit}");
+    assert!(
+        call(
+            &mut s,
+            "raw_data",
+            json!({ "action": "edit", "setup": 1, "shot": 4, "instrument_height": 1.0 })
+        )
+        .1,
+        "setup fields need no shot"
+    );
+    let report = ok(&mut s, "raw_data", json!({ "action": "report" }));
+    assert!(
+        report.contains("OFFICE CORRECTIONS") && report.contains("backsight 2"),
+        "{report}"
+    );
+
+    // Linework from the coded shots.
+    ok(&mut s, "run_commands", json!({ "lines": ["linework"] }));
+    let lines = ok_json(&mut s, "query", json!({ "kind": "polylines" }));
+    assert_eq!(lines["total"], 1, "{lines}");
+    assert_eq!(lines["rows"][0]["vertices"].as_array().map(Vec::len), Some(3));
+
+    // Stake-out files of the kerb (selected) and every point.
+    let kerb = lines["rows"][0]["id"].clone();
+    ok(
+        &mut s,
+        "select",
+        json!({ "kind": "polylines", "filter": { "ids": [kerb] } }),
+    );
+    let jxl = dir.join("kerb.jxl");
+    let out = ok(
+        &mut s,
+        "export_file",
+        json!({ "format": "jobxml", "path": jxl, "selection": true }),
+    );
+    assert!(out.contains("3 points, 2 lines"), "{out}");
+    let text = std::fs::read_to_string(&jxl).expect("jxl");
+    assert!(
+        text.contains("<StartPoint>10</StartPoint>") && text.contains("<Name>12</Name>"),
+        "{text}"
+    );
+    let out = ok(
+        &mut s,
+        "export_file",
+        json!({ "format": "csv", "path": dir.join("kerb.csv"), "selection": true }),
+    );
+    assert!(out.contains("CSV") && out.contains("3 points"), "{out}");
+    for (format, name) in [("rw5", "all.rw5"), ("gsi", "all.gsi")] {
+        let out = ok(
+            &mut s,
+            "export_file",
+            json!({ "format": format, "path": dir.join(name) }),
+        );
+        assert!(out.contains("7 points"), "{format}: {out}");
+    }
+    let back = survey_io::rawdata::read_raw("all", &std::fs::read(dir.join("all.gsi")).expect("gsi"))
+        .expect("gsi reads back");
+    assert_eq!(back.points.len(), 7);
+
+    // As-built: pegs set out and measured as 30S, 3 mm and 25 mm out.
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": [
+            { "name": "30S", "e": 1010.003, "n": 1950.0, "z": 50.1 },
+            { "name": "11S", "e": 1030.0, "n": 2000.025, "z": 50.0 }
+        ] }),
+    );
+    let c = ok_json(
+        &mut s,
+        "compare_asbuilt",
+        json!({ "shots": ["30S", "11S"], "strip": "S", "tolerance_h": 0.02, "label": true }),
+    );
+    assert_eq!(c["compared"], 2, "{c}");
+    assert_eq!(c["over"], 1);
+    assert_eq!(c["rows"][0]["against"], "30");
+    assert!((c["rows"][0]["de"].as_f64().expect("de") - 0.003).abs() < 1e-6);
+    assert!(c["labelled"].as_str().is_some());
+    let c = ok_json(
+        &mut s,
+        "compare_asbuilt",
+        json!({ "shots": ["11S"], "against": "lines", "lines": [kerb], "report": true }),
+    );
+    assert!(
+        (c["rows"][0]["offset"].as_f64().expect("offset") + 0.025).abs() < 1e-6,
+        "{c}"
+    );
+    assert!((c["rows"][0]["chainage"].as_f64().expect("ch") - 10.0).abs() < 1e-6);
+    assert!(
+        c["report"]
+            .as_str()
+            .expect("report")
+            .contains("AS-BUILT COMPARISON")
+    );
+}

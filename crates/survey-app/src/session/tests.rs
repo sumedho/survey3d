@@ -171,9 +171,7 @@ fn raw_data_imports_replace_by_name() {
     assert_eq!(s.project.doc.field_data().len(), 1, "{:?}", last_log(&s));
     let id = s.project.doc.field_data()[0].id;
     let events = s.take_events();
-    assert!(events.contains(&Event::Open(Panel::Network {
-        source: "f:job".into()
-    })));
+    assert!(events.contains(&Event::Open(Panel::RawData { name: "job".into() })));
     s.import_raw("job.gsi", gsi);
     assert_eq!(s.project.doc.field_data().len(), 1);
     assert_eq!(s.project.doc.field_data()[0].id, id, "the same record, replaced");
@@ -477,4 +475,26 @@ fn bearing_distance_joins_and_names_lots() {
     }
     assert_eq!(s.project.doc.parcels().len(), 1);
     assert_eq!(s.active_tool.id(), "polyline", "{}", s.prompt());
+}
+
+#[test]
+fn reduce_command_takes_the_file_name() {
+    let mut s = session();
+    let rw5 = b"MO,AD0,UN1,SF1.0,EC0,EO0.0,AU0
+OC,OP1,N 100.0,E 100.0,EL10.0
+LS,HI1.5,HR1.5
+SS,OP1,FP5,AZ90.0000,ZE90.0000,SD10.0,--TR
+";
+    s.import_raw("a.rw5", rw5);
+    s.import_raw("b.rw5", rw5);
+    s.run("reduce");
+    let (kind, text) = last_log(&s);
+    assert!(
+        kind == LogKind::Error && text.contains("Name the raw data file"),
+        "{text}"
+    );
+    s.run("reduce b");
+    let (_, p) = s.project.doc.find_point_by_name("5").expect("reduced");
+    assert!((p.position - glam::DVec3::new(110.0, 100.0, 10.0)).length() < 1e-9);
+    assert_eq!(p.code, "TR");
 }

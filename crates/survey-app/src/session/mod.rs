@@ -51,9 +51,9 @@ pub enum Panel {
     Parcels,
     Alignments,
     FeatureCodes,
-    /// The network adjustment, with just this source (`f:` + field data name) chosen.
-    Network {
-        source: String,
+    /// The raw data editor, on this file.
+    RawData {
+        name: String,
     },
 }
 
@@ -104,6 +104,10 @@ pub const SESSION_COMMANDS: &[(&str, &str)] = &[
     ("mkparcel", "Parcels from selected closed polylines"),
     ("mkalign", "Alignment from the selected polyline"),
     ("contours", "Contours of the active surface to polylines"),
+    (
+        "reduce",
+        "Reduce raw data to coded points (reduce <file> when there are several)",
+    ),
 ];
 
 pub struct Session {
@@ -387,6 +391,18 @@ impl Session {
     /// Runs a session command ([`SESSION_COMMANDS`] and aliases); `false` if `text` is not one.
     /// A command ends the active tool first (as starting another tool does).
     pub fn run_command(&mut self, text: &str) -> bool {
+        // The one command that takes an argument: the raw data file.
+        if let Some((head, file)) = text.trim().split_once(char::is_whitespace)
+            && head.eq_ignore_ascii_case("reduce")
+        {
+            if self.active_tool.id() != SELECT_TOOL_ID {
+                self.set_tool(SELECT_TOOL_ID);
+            }
+            if let Err(e) = self.reduce_raw(file.trim()) {
+                self.log.error(e);
+            }
+            return true;
+        }
         let lower = text.to_ascii_lowercase();
         let Some(command) = canonical_command(&lower) else {
             return false;
@@ -416,6 +432,11 @@ impl Session {
             "mkparcel" => self.parcels_from_selection(),
             "mkalign" => self.alignment_from_selection(),
             "contours" => self.contours_to_polylines(),
+            "reduce" => {
+                if let Err(e) = self.reduce_raw("") {
+                    self.log.error(e);
+                }
+            }
             _ => return false,
         }
         true

@@ -431,6 +431,51 @@ pub fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "raw_data",
+            "title": "Raw field data",
+            "description": "Works with raw total station data imported with import_file (one record per file; file is its name, optional when there is one). Actions: show — the file's setups (station, instrument height, backsight, shot count, corrections); with setup (from 1), that setup's shots (target, code, target height, circle readings, distance, excluded). reduce — orients each setup on its backsight (else the first shot to a point with coordinates) and radiates its shots into points carrying their codes, setup by setup, so a traverse carries forward; both faces and repeated shots are averaged; shots to points that already have coordinates are checks (returned). Reducing again updates the points it made. edit — corrects a setup (setup with station, instrument_height, backsight; empty backsight orients on the first known point) or a shot (setup and shot with target, code, target_height, excluded); the recorded observations are kept, and a reduced file is re-reduced in the same undoable step, recorded in the audit trail. revert — drops the corrections to that setup or shot. report — the reduction report as text. After reducing, run_commands 'linework' strings the coded points into lines.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["show", "reduce", "edit", "revert", "report"], "default": "show" },
+                    "file": { "type": "string" },
+                    "setup": { "type": "integer", "minimum": 1 },
+                    "shot": { "type": "integer", "minimum": 1 },
+                    "station": { "type": "string" },
+                    "instrument_height": { "type": "number" },
+                    "backsight": { "type": "string" },
+                    "target": { "type": "string" },
+                    "code": { "type": "string" },
+                    "target_height": { "type": "number" },
+                    "excluded": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "compare_asbuilt",
+            "title": "As-built comparison",
+            "description": "Compares surveyed points (shots: point names or ids; default the selected points) with the design and reports each difference against tolerances (metres; default 0.02 plan and height). against: points — the design point of the same name, else after removing strip from the start or end of the shot's name (e.g. 'S' for 101S), else the nearest within radius; gives dE, dN, plan miss, dZ. lines — the nearest of the given polylines (lines: ids or names); gives chainage, offset (positive right of the line's direction) and dZ to the line's height. surface — the surface (id or name); gives dZ (shot minus surface: positive means the shot is above design). report: true adds a text report; label: true writes the differences beside each shot on layer (default AS-BUILT) in one undoable step.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "shots": { "type": "array", "items": { "type": ["string", "integer"] } },
+                    "against": { "type": "string", "enum": ["points", "lines", "surface"], "default": "points" },
+                    "strip": { "type": "string" },
+                    "radius": { "type": "number", "exclusiveMinimum": 0 },
+                    "lines": { "type": "array", "items": { "type": ["string", "integer"] } },
+                    "surface": { "type": ["string", "integer"] },
+                    "tolerance_h": { "type": "number", "minimum": 0, "default": 0.02 },
+                    "tolerance_v": { "type": "number", "minimum": 0, "default": 0.02 },
+                    "report": { "type": "boolean", "default": false },
+                    "label": { "type": "boolean", "default": false },
+                    "layer": { "type": "string" }
+                },
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": false }
+        }),
+        json!({
             "name": "create_surface",
             "title": "Create a surface",
             "description": "Builds a surface (TIN) from the drawing and makes it the active surface, in one undoable step. Points: those with heights on point_layers and/or matching point_codes (patterns with * and ?; both empty: every point with a height). Breaklines: polylines on breakline_layers or matching breakline_codes (plan-only lines are left out). boundary: a closed polyline (id or name) the surface stops at; holes: closed polylines cut out; max_edge: drop longer triangle edges (metres) around an irregular edge. style: visible, shaded, elevation_colors, triangles, color (#rrggbb), isopach, and contours {show, interval (m), major_every, labels} — contours show on the drawing and plan sheets; turn them into polylines with run_commands 'contours'. The result lists points and triangles used, the height range, and warnings for selected points or breaklines without heights.",
@@ -494,7 +539,7 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "name": "import_file",
             "title": "Import a file",
-            "description": "Reads a file into the project (one undoable step). Formats by extension unless given: csv/txt/pts points (column layout as letters, default PENZC: P name, E, N, Z height, C code, D description, - skip), dxf drawing, xml LandXML surfaces, gsi/jxl raw instrument data (Leica GSI, Trimble JobXML; kept for the network adjustment), las (uncompressed) or xyz point cloud.",
+            "description": "Reads a file into the project (one undoable step). Formats by extension unless given: csv/txt/pts points (column layout as letters, default PENZC: P name, E, N, Z height, C code, D description, - skip), dxf drawing, xml LandXML surfaces, gsi/jxl/rw5 raw instrument data (Leica GSI, Trimble JobXML, Carlson RW5; kept with the project for raw_data reduce and the network adjustment), las (uncompressed) or xyz point cloud.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -510,11 +555,12 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "name": "export_file",
             "title": "Export a file",
-            "description": "Writes an export: dxf (drawing, symbols sized for a sheet's scale), landxml (surfaces), parcels (parcels as LandXML), gpkg (GeoPackage), csv (points; layout letters, default PENZCD), pdf or svg (a plan sheet at true scale; sheet_id, else an overview of the whole drawing). Refuses to replace an existing file unless overwrite is true.",
+            "description": "Writes an export: dxf (drawing, symbols sized for a sheet's scale), landxml (surfaces), parcels (parcels as LandXML), gpkg (GeoPackage), csv (points; layout letters, default PENZCD), pdf or svg (a plan sheet at true scale; sheet_id, else an overview of the whole drawing). Stake-out files for controllers: jobxml (Trimble Access: points, and the selected polylines as lines), rw5 (Carlson SurvCE/SurvPC stored points), gsi (Leica GSI-16 coordinates; names and codes up to 16 characters) or csv with selection: true (name, N, E, Z, code). They take the selected points and the vertices of the selected polylines (selection: true), else every point. Refuses to replace an existing file unless overwrite is true.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "format": { "type": "string", "enum": ["dxf", "landxml", "parcels", "gpkg", "csv", "pdf", "svg"] },
+                    "format": { "type": "string", "enum": ["dxf", "landxml", "parcels", "gpkg", "csv", "pdf", "svg", "jobxml", "rw5", "gsi"] },
+                    "selection": { "type": "boolean", "default": false, "description": "Stake-out formats: export the selection (points, and polylines' vertices) instead of every point." },
                     "path": { "type": "string" },
                     "sheet_id": { "type": "integer" },
                     "layout": { "type": "string" },

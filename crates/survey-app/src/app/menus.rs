@@ -123,7 +123,9 @@ const SURVEY_MENU: &[MenuEntry] = &[
     Item("Resection…", "resection"),
     Item("Subdivide area…", "subdivide"),
     Separator,
-    Item("Import raw data (GSI, JobXML)…", "rawin"),
+    Item("Import raw data (GSI, JobXML, RW5)…", "rawin"),
+    Item("Raw data editor…", "rawedit"),
+    Item("Reduce raw data", "reduce"),
     Item("Network adjustment…", "netadj"),
     Item("Projection calculator…", "projcalc"),
     Item("Site calibration…", "sitecal"),
@@ -148,6 +150,8 @@ const CONSTRUCTION_MENU: &[MenuEntry] = &[
     Separator,
     Item("Chainage & offset", "chainage"),
     Item("Stake-out sheet…", "stakeout"),
+    Item("Export stake-out file…", "stakeexport"),
+    Item("As-built comparison…", "asbuilt"),
     Item("Sections…", "sections"),
 ];
 
@@ -273,7 +277,7 @@ impl SurveyApp {
                 item(ui, "Point clouds (COPC)…", None, Action::Run("copc"), &mut action);
                 item(
                     ui,
-                    "Import raw data (GSI, JobXML)…",
+                    "Import raw data (GSI, JobXML, RW5)…",
                     None,
                     Action::Run("rawin"),
                     &mut action,

@@ -17,7 +17,7 @@ use crate::conventions::Conventions;
 use crate::traverse::{Direction, Reference, TraverseRecord};
 
 /// One pointing from a setup.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RawObservation {
     pub target: String,
     /// Horizontal circle reading (clockwise).
@@ -30,6 +30,9 @@ pub struct RawObservation {
     /// Height difference to the target when there is no zenith angle.
     #[serde(default)]
     pub dz: Option<f64>,
+    /// Feature code (and description) recorded with the shot.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub code: String,
 }
 
 impl RawObservation {
@@ -47,13 +50,19 @@ impl RawObservation {
 }
 
 /// An instrument setup: every hz reading shares one orientation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Setup {
     pub station: String,
     pub instrument_height: f64,
     /// Bearing of the zero reading, when the circle was oriented to a known bearing.
     pub orientation: Option<Bearing>,
     pub observations: Vec<RawObservation>,
+    /// The point the circle was oriented on, when the file names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backsight: Option<String>,
+    /// Circle reading on the backsight, when recorded without a pointing to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back_circle: Option<Angle>,
 }
 
 /// Field observations imported from one raw data file.
@@ -66,6 +75,256 @@ pub struct FieldData {
     /// Coordinates recorded in the file (control and computed points).
     #[serde(default)]
     pub points: Vec<(String, DVec3)>,
+    /// Corrections made in the office; the observations above stay as recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<RawEdit>,
+    /// Ground-to-grid factor for reduced distances (1 when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_factor: Option<f64>,
+    /// Points the last reduction of this file created; reducing again updates them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reduced: Vec<String>,
+    /// What the reader could not use (unsupported records and the like).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// An office correction to one setup (`observation` absent) or one shot.
+/// Fields left `None` keep the recorded value.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RawEdit {
+    pub setup: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observation: Option<usize>,
+    // Setup fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub station: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instrument_height: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backsight: Option<String>,
+    // Shot fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_height: Option<f64>,
+    /// Leaves the shot out of reductions and adjustments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excluded: Option<bool>,
+}
+
+impl RawEdit {
+    fn is_empty(&self) -> bool {
+        self.station.is_none()
+            && self.instrument_height.is_none()
+            && self.backsight.is_none()
+            && self.target.is_none()
+            && self.code.is_none()
+            && self.target_height.is_none()
+            && self.excluded.is_none()
+    }
+
+    /// Takes the fields `other` sets.
+    fn merge(&mut self, other: &RawEdit) {
+        macro_rules! take {
+            ($($f:ident),*) => { $(if other.$f.is_some() { self.$f = other.$f.clone(); })* };
+        }
+        take!(
+            station,
+            instrument_height,
+            backsight,
+            target,
+            code,
+            target_height,
+            excluded
+        );
+    }
+
+    /// The fields this edit changes, as `field old → new` phrases.
+    pub fn describe(&self, setup: &Setup, obs: Option<&RawObservation>) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut text = |field: &str, old: String, new: &Option<String>| {
+            if let Some(n) = new {
+                out.push(format!("{field} {old} → {n}"));
+            }
+        };
+        text("station", setup.station.clone(), &self.station);
+        text(
+            "instrument height",
+            format!("{:.3}", setup.instrument_height),
+            &self.instrument_height.map(|v| format!("{v:.3}")),
+        );
+        text(
+            "backsight",
+            setup.backsight.clone().unwrap_or_else(|| "-".into()),
+            &self.backsight,
+        );
+        if let Some(o) = obs {
+            text("target", o.target.clone(), &self.target);
+            text(
+                "code",
+                format!("'{}'", o.code),
+                &self.code.as_ref().map(|c| format!("'{c}'")),
+            );
+            text(
+                "target height",
+                format!("{:.3}", o.target_height),
+                &self.target_height.map(|v| format!("{v:.3}")),
+            );
+            if let Some(x) = self.excluded {
+                out.push(if x { "excluded".into() } else { "included".into() });
+            }
+        }
+        out
+    }
+}
+
+/// Why an edit could not be made.
+#[derive(Clone, Debug, PartialEq, Error)]
+pub enum EditError {
+    #[error("There is no setup {0} (the file has {1})")]
+    NoSetup(usize, usize),
+    #[error("Setup {0} has no shot {1} (it has {2})")]
+    NoShot(usize, usize, usize),
+    #[error("Station, instrument height and backsight are setup fields: leave out the shot")]
+    SetupField,
+    #[error("Target, code, target height and excluded are shot fields: give the shot")]
+    ShotField,
+}
+
+impl FieldData {
+    /// The edit in force for a setup or shot.
+    pub fn edit_for(&self, setup: usize, observation: Option<usize>) -> Option<&RawEdit> {
+        self.edits
+            .iter()
+            .find(|e| e.setup == setup && e.observation == observation)
+    }
+
+    /// Records a correction, merged into any earlier one for the same setup or
+    /// shot. A field set back to its recorded value drops out of the edit;
+    /// `revert` drops the whole edit.
+    pub fn apply_edit(&mut self, edit: RawEdit, revert: bool) -> Result<(), EditError> {
+        let n = self.setups.len();
+        let setup = self
+            .setups
+            .get(edit.setup)
+            .ok_or(EditError::NoSetup(edit.setup + 1, n))?;
+        let obs = match edit.observation {
+            Some(k) => Some(setup.observations.get(k).ok_or(EditError::NoShot(
+                edit.setup + 1,
+                k + 1,
+                setup.observations.len(),
+            ))?),
+            None => None,
+        };
+        let setup_fields =
+            edit.station.is_some() || edit.instrument_height.is_some() || edit.backsight.is_some();
+        let shot_fields = edit.target.is_some()
+            || edit.code.is_some()
+            || edit.target_height.is_some()
+            || edit.excluded.is_some();
+        if obs.is_some() && setup_fields {
+            return Err(EditError::SetupField);
+        }
+        if obs.is_none() && shot_fields {
+            return Err(EditError::ShotField);
+        }
+        let mut merged = self
+            .edit_for(edit.setup, edit.observation)
+            .cloned()
+            .unwrap_or_else(|| RawEdit {
+                setup: edit.setup,
+                observation: edit.observation,
+                ..Default::default()
+            });
+        if !revert {
+            merged.merge(&edit);
+        } else {
+            merged = RawEdit {
+                setup: edit.setup,
+                observation: edit.observation,
+                ..Default::default()
+            };
+        }
+        // Values equal to the recording are not corrections.
+        let same = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        if merged.station.as_deref() == Some(setup.station.as_str()) {
+            merged.station = None;
+        }
+        if merged
+            .instrument_height
+            .is_some_and(|h| same(h, setup.instrument_height))
+        {
+            merged.instrument_height = None;
+        }
+        if merged.backsight.is_some() && merged.backsight == setup.backsight {
+            merged.backsight = None;
+        }
+        if let Some(o) = obs {
+            if merged.target.as_deref() == Some(o.target.as_str()) {
+                merged.target = None;
+            }
+            if merged.code.as_deref() == Some(o.code.as_str()) {
+                merged.code = None;
+            }
+            if merged.target_height.is_some_and(|h| same(h, o.target_height)) {
+                merged.target_height = None;
+            }
+            if merged.excluded == Some(false) {
+                merged.excluded = None;
+            }
+        }
+        self.edits
+            .retain(|e| !(e.setup == edit.setup && e.observation == edit.observation));
+        if !merged.is_empty() {
+            self.edits.push(merged);
+            self.edits.sort_by_key(|e| (e.setup, e.observation));
+        }
+        Ok(())
+    }
+
+    /// The setups with the office corrections applied and excluded shots left out.
+    pub fn effective_setups(&self) -> Vec<Setup> {
+        self.setups
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let mut s = s.clone();
+                if let Some(e) = self.edit_for(i, None) {
+                    if let Some(v) = &e.station {
+                        s.station = v.clone();
+                    }
+                    if let Some(v) = e.instrument_height {
+                        s.instrument_height = v;
+                    }
+                    if let Some(v) = &e.backsight {
+                        s.backsight = (!v.trim().is_empty()).then(|| v.trim().to_string());
+                    }
+                }
+                let mut k = 0;
+                s.observations.retain_mut(|o| {
+                    let e = self.edit_for(i, Some(k));
+                    k += 1;
+                    if let Some(e) = e {
+                        if let Some(v) = &e.target {
+                            o.target = v.clone();
+                        }
+                        if let Some(v) = &e.code {
+                            o.code = v.clone();
+                        }
+                        if let Some(v) = e.target_height {
+                            o.target_height = v;
+                        }
+                    }
+                    !e.and_then(|e| e.excluded).unwrap_or(false)
+                });
+                s
+            })
+            .collect()
+    }
 }
 
 /// A priori precision of the observations.
@@ -144,6 +403,7 @@ pub fn setups_from_traverse(t: &TraverseRecord) -> Vec<Setup> {
                 distance: None,
                 target_height: 0.0,
                 dz: None,
+                code: String::new(),
             }),
         ),
         Reference::Bearing(b) => (Some(*b), None),
@@ -157,6 +417,7 @@ pub fn setups_from_traverse(t: &TraverseRecord) -> Vec<Setup> {
             distance: Some(hd),
             target_height: 0.0,
             dz,
+            code: String::new(),
         };
         let setup = match (leg.direction, &back) {
             (Direction::Bearing(b), _) => Setup {
@@ -164,6 +425,7 @@ pub fn setups_from_traverse(t: &TraverseRecord) -> Vec<Setup> {
                 instrument_height: 0.0,
                 orientation: Some(b),
                 observations: vec![fore(Angle::from_degrees(0.0))],
+                ..Default::default()
             },
             (d, Some(r)) => {
                 let (orientation, bs) = reference_obs(r);
@@ -174,6 +436,7 @@ pub fn setups_from_traverse(t: &TraverseRecord) -> Vec<Setup> {
                     instrument_height: 0.0,
                     orientation,
                     observations,
+                    ..Default::default()
                 }
             }
             // An angle with nothing to turn it from: the distance still counts.
@@ -185,6 +448,7 @@ pub fn setups_from_traverse(t: &TraverseRecord) -> Vec<Setup> {
                     hz: None,
                     ..fore(Angle::default())
                 }],
+                ..Default::default()
             },
         };
         setups.push(setup);
@@ -200,6 +464,7 @@ pub fn setups_from_traverse(t: &TraverseRecord) -> Vec<Setup> {
             distance: None,
             target_height: 0.0,
             dz: None,
+            code: String::new(),
         }];
         let mut orientation = None;
         match r {
@@ -210,6 +475,7 @@ pub fn setups_from_traverse(t: &TraverseRecord) -> Vec<Setup> {
                 distance: None,
                 target_height: 0.0,
                 dz: None,
+                code: String::new(),
             }),
             // Known closing bearing: the zero reading points at bearing − angle.
             Reference::Bearing(b) => orientation = Some(Bearing::new((b.angle() - angle).normalized())),
@@ -219,6 +485,7 @@ pub fn setups_from_traverse(t: &TraverseRecord) -> Vec<Setup> {
             instrument_height: 0.0,
             orientation,
             observations,
+            ..Default::default()
         });
     }
     setups
@@ -605,12 +872,14 @@ mod tests {
             distance: Some(d),
             target_height: 1.5,
             dz: None,
+            code: String::new(),
         };
         let setups = vec![Setup {
             station: "A".into(),
             instrument_height: 1.5,
             orientation: None,
             observations: vec![o("R", 0.0, 200.0, 90.0), o("P", 90.0, 50.0, 80.0)],
+            ..Default::default()
         }];
         let k = |n: &str| match n {
             "A" => known("A"),

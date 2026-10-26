@@ -1,11 +1,12 @@
-//! Raw total-station data: Leica GSI (GSI-8 and GSI-16) and Trimble JobXML,
-//! read into instrument setups for the network adjustment.
+//! Raw total-station data: Leica GSI (GSI-8 and GSI-16), Trimble JobXML and
+//! Carlson RW5, read into instrument setups for reduction and the network
+//! adjustment.
 
 use glam::DVec3;
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use survey_core::Angle;
 use survey_core::network::{FieldData, RawObservation, Setup};
+use survey_core::{Angle, Bearing, Quadrant};
 
 use crate::IoError;
 
@@ -116,8 +117,11 @@ pub fn read_gsi(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
     let mut current: Option<Setup> = None;
     let mut target_height = 0.0;
     let mut recognised = 0;
+    // A code block (41) codes the measurement after it.
+    let mut pending_code: Option<String> = None;
     for line in text.lines() {
         let mut point = None;
+        let mut code = None;
         let (mut hz, mut v, mut sd, mut hd, mut dh) = (None, None, None, None, None);
         let (mut e, mut n, mut h) = (None, None, None);
         let (mut se, mut sn, mut sh, mut ih) = (None, None, None, None);
@@ -143,6 +147,10 @@ pub fn read_gsi(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
                     }
                 }
                 88 => ih = w.length(),
+                41 => {
+                    pending_code = Some(w.name()).filter(|c| c != "0");
+                }
+                71 => code = Some(w.name()).filter(|c| c != "0"),
                 _ => {}
             }
         }
@@ -165,8 +173,7 @@ pub fn read_gsi(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
             current = Some(Setup {
                 station: point,
                 instrument_height: ih.unwrap_or(0.0),
-                orientation: None,
-                observations: Vec::new(),
+                ..Default::default()
             });
             continue;
         }
@@ -186,6 +193,7 @@ pub fn read_gsi(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
                     distance,
                     target_height,
                     dz: if zenith.is_none() { dh } else { None },
+                    code: code.take().or_else(|| pending_code.take()).unwrap_or_default(),
                 });
             }
         }
@@ -335,8 +343,7 @@ pub fn read_jobxml(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
                     data.setups.push(Setup {
                         station: station.to_string(),
                         instrument_height: r.num("TheodoliteHeight").unwrap_or(0.0),
-                        orientation: None,
-                        observations: Vec::new(),
+                        ..Default::default()
                     });
                     if let Some(id) = r.attr("ID") {
                         station_index.push((id.to_string(), data.setups.len() - 1));
@@ -369,6 +376,7 @@ pub fn read_jobxml(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
                             distance,
                             target_height,
                             dz: None,
+                            code: r.text_of("Code").unwrap_or_default().to_string(),
                         });
                     } else if let Some(p) = grid(r) {
                         data.points.retain(|(n, _)| n != point);
@@ -397,11 +405,318 @@ pub fn read_jobxml(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
     Ok(data)
 }
 
-/// Reads GSI or JobXML by content.
+// ---------------------------------------------------------------- RW5
+
+/// Field headers of RW5 records: two letters, except northing and easting
+/// (`N ` and `E `).
+const RW5_FIELDS: [&str; 38] = [
+    "OP", "FP", "BP", "BS", "BC", "AR", "AL", "AZ", "BR", "DR", "DL", "ZE", "VA", "CE", "SD", "HD", "HI",
+    "HR", "PN", "EL", "NM", "DT", "TM", "AD", "UN", "SF", "EC", "EO", "AU", "LA", "LN", "AG", "PA", "AT",
+    "SR", "FE", "BV", "RV",
+];
+
+/// One RW5 line: its record type, fields and note (the text after `--`,
+/// which may itself hold commas).
+struct Rw5<'a> {
+    kind: &'a str,
+    fields: Vec<(&'a str, &'a str)>,
+    note: &'a str,
+}
+
+impl<'a> Rw5<'a> {
+    fn parse(line: &'a str) -> Option<Self> {
+        let line = line.trim();
+        let (body, note) = match line.find(",--") {
+            Some(i) => (&line[..i], line[i + 3..].trim()),
+            None => (line, ""),
+        };
+        let mut parts = body.split(',');
+        let kind = parts.next()?.trim();
+        if kind.is_empty() || kind.len() > 3 || !kind.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return None;
+        }
+        let fields = parts
+            .filter_map(|f| {
+                let f = f.trim_start();
+                if let Some(code) = f.get(..2).filter(|c| RW5_FIELDS.contains(c)) {
+                    return Some((code, f[2..].trim()));
+                }
+                let code = f.get(..1).filter(|c| *c == "N" || *c == "E")?;
+                Some((code, f[1..].trim()))
+            })
+            .collect();
+        Some(Self { kind, fields, note })
+    }
+
+    fn text(&self, code: &str) -> Option<&'a str> {
+        self.fields
+            .iter()
+            .find(|(c, _)| *c == code)
+            .map(|(_, v)| *v)
+            .filter(|v| !v.is_empty())
+    }
+
+    fn num(&self, code: &str) -> Option<f64> {
+        crate::finite(self.text(code)?)
+    }
+
+    fn angle(&self, code: &str) -> Option<Angle> {
+        rw5_angle(self.text(code)?)
+    }
+}
+
+/// An RW5 angle, DDD.MMSSss.
+fn rw5_angle(text: &str) -> Option<Angle> {
+    let (negative, t) = match text.trim().strip_prefix('-') {
+        Some(t) => (true, t),
+        None => (false, text.trim()),
+    };
+    let (d, frac) = t.split_once('.').unwrap_or((t, ""));
+    let digits = format!("{frac:0<4}");
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let degrees: f64 = if d.is_empty() { 0.0 } else { d.parse().ok()? };
+    let minutes: f64 = digits[..2].parse().ok()?;
+    let seconds: f64 = format!("{}.{}", &digits[2..4], &digits[4..]).parse().ok()?;
+    if minutes >= 60.0 || seconds >= 60.0 {
+        return None;
+    }
+    Some(Angle::from_dms(negative, degrees, minutes, seconds))
+}
+
+/// A quadrant bearing as RW5 writes it, `N12.3456W`.
+fn rw5_bearing(text: &str) -> Option<Angle> {
+    let t = text.trim().to_ascii_uppercase();
+    let quadrant = match (t.chars().next()?, t.chars().last()?) {
+        ('N', 'E') => Quadrant::NE,
+        ('S', 'E') => Quadrant::SE,
+        ('S', 'W') => Quadrant::SW,
+        ('N', 'W') => Quadrant::NW,
+        _ => return None,
+    };
+    let a = rw5_angle(&t[1..t.len() - 1])?;
+    Some(Bearing::from_quadrant(quadrant, a).angle())
+}
+
+/// Reads Carlson RW5 (SurvCE and SurvPC): occupations (OC), backsights (BK),
+/// instrument and rod heights (LS), traverse, sideshot and angle-set shots
+/// (TR, SS, BD, BR, FD, FR) and stored points (SP). Angles are DDD.MMSS;
+/// lengths are in the units of the mode record (MO), converted to metres. The
+/// note after a shot is its code. GNSS records are counted, not read.
+pub fn read_rw5(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| IoError::NotText)?;
+    let mut data = FieldData {
+        name: name.to_string(),
+        format: "Carlson RW5".into(),
+        ..Default::default()
+    };
+    let mut unit = None;
+    let mut rod = 0.0;
+    let mut current: Option<Setup> = None;
+    let (mut recognised, mut gnss, mut offsets, mut skipped) = (0, 0, 0, 0);
+    let flush = |current: &mut Option<Setup>, data: &mut FieldData| {
+        if let Some(s) = current.take()
+            && !s.observations.is_empty()
+        {
+            data.setups.push(s);
+        }
+    };
+    let point = |data: &mut FieldData, name: &str, r: &Rw5<'_>, k: f64| {
+        if let (Some(n), Some(e)) = (r.num("N"), r.num("E")) {
+            data.points.retain(|(p, _)| p != name);
+            data.points.push((
+                name.to_string(),
+                DVec3::new(e * k, n * k, r.num("EL").unwrap_or(0.0) * k),
+            ));
+        }
+    };
+    for line in text.lines() {
+        let Some(r) = Rw5::parse(line) else { continue };
+        let k = unit.unwrap_or(1.0);
+        recognised += 1;
+        match r.kind {
+            "MO" => {
+                unit = Some(match r.num("UN").map(|u| u as i64) {
+                    Some(0) => 0.3048,
+                    Some(2) => 1200.0 / 3937.0,
+                    _ => 1.0,
+                });
+                if let Some(sf) = r.num("SF").filter(|f| *f > 0.0 && (f - 1.0).abs() > 1e-12) {
+                    data.scale_factor = Some(sf);
+                }
+            }
+            "OC" => {
+                let Some(station) = r.text("OP") else { continue };
+                flush(&mut current, &mut data);
+                point(&mut data, station, &r, k);
+                current = Some(Setup {
+                    station: station.to_string(),
+                    ..Default::default()
+                });
+            }
+            "LS" => {
+                if let Some(hi) = r.num("HI")
+                    && let Some(s) = current.as_mut()
+                {
+                    s.instrument_height = hi * k;
+                }
+                if let Some(hr) = r.num("HR") {
+                    rod = hr * k;
+                }
+            }
+            "BK" => {
+                let station = r.text("OP");
+                if current
+                    .as_ref()
+                    .is_none_or(|s| station.is_some_and(|op| op != s.station))
+                {
+                    flush(&mut current, &mut data);
+                    let Some(op) = station else { continue };
+                    current = Some(Setup {
+                        station: op.to_string(),
+                        ..Default::default()
+                    });
+                }
+                let s = current.as_mut().expect("setup");
+                let circle = r.angle("BC");
+                s.back_circle = circle;
+                match (r.text("BP"), r.angle("BS")) {
+                    (Some(bp), _) => s.backsight = Some(bp.to_string()),
+                    (None, Some(bs)) => {
+                        s.orientation = Some(Bearing::new((bs - circle.unwrap_or_default()).normalized()));
+                    }
+                    (None, None) => {}
+                }
+            }
+            "TR" | "SS" | "BD" | "BR" | "FD" | "FR" => {
+                let (Some(op), Some(fp)) = (r.text("OP"), r.text("FP")) else {
+                    skipped += 1;
+                    continue;
+                };
+                if current.as_ref().is_none_or(|s| s.station != op) {
+                    flush(&mut current, &mut data);
+                    current = Some(Setup {
+                        station: op.to_string(),
+                        ..Default::default()
+                    });
+                }
+                let s = current.as_mut().expect("setup");
+                let back = s.back_circle.unwrap_or_default();
+                let half = Angle::from_degrees(180.0);
+                let azimuth = r.angle("AZ").or_else(|| r.text("BR").and_then(rw5_bearing));
+                let hz = if let Some(a) = r.angle("AR") {
+                    Some(a)
+                } else if let Some(a) = r.angle("AL") {
+                    Some(-a)
+                } else if let Some(a) = r.angle("DR") {
+                    Some(back + half + a)
+                } else if let Some(a) = r.angle("DL") {
+                    Some(back + half - a)
+                } else if let Some(az) = azimuth {
+                    // A bearing: with the zero reading at its recorded bearing (north
+                    // when none), it is a reading like any other.
+                    if s.orientation.is_none() && s.backsight.is_none() {
+                        s.orientation = Some(Bearing::default());
+                    }
+                    match s.orientation {
+                        Some(o) => Some(az - o.angle()),
+                        None => {
+                            skipped += 1;
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                }
+                .map(Angle::normalized);
+                let zenith = r
+                    .angle("ZE")
+                    .or_else(|| r.angle("VA").map(|v| Angle::from_degrees(90.0) - v));
+                let (hz, zenith) = face_left(hz, zenith);
+                let (zenith, distance) = match (zenith, r.num("SD"), r.num("HD")) {
+                    (z, Some(sd), _) => (z, Some(sd * k)),
+                    // A horizontal distance with a zenith angle: the slope distance.
+                    (Some(z), None, Some(hd)) if z.radians().sin().abs() > 1e-9 => {
+                        (Some(z), Some(hd * k / z.radians().sin()))
+                    }
+                    (_, None, Some(hd)) => (None, Some(hd * k)),
+                    (z, None, None) => (z, None),
+                };
+                s.observations.push(RawObservation {
+                    target: fp.to_string(),
+                    hz,
+                    zenith,
+                    distance,
+                    target_height: rod,
+                    dz: if zenith.is_none() {
+                        r.num("CE").map(|v| v * k)
+                    } else {
+                        None
+                    },
+                    code: r.note.to_string(),
+                });
+            }
+            "SP" => {
+                if let Some(pn) = r.text("PN") {
+                    point(&mut data, pn, &r, k);
+                }
+            }
+            "GPS" | "G0" | "G1" | "G2" | "G3" | "G4" => {
+                gnss += usize::from(r.kind == "GPS" || r.kind == "G1")
+            }
+            "OF" => offsets += 1,
+            _ => recognised -= 1,
+        }
+    }
+    flush(&mut current, &mut data);
+    if recognised == 0 {
+        return Err(IoError::Invalid("RW5: no RW5 records found".into()));
+    }
+    if unit.is_none() {
+        data.warnings
+            .push("No mode record (MO): distances were read as metres".into());
+    }
+    if gnss > 0 {
+        data.warnings.push(format!(
+            "{gnss} GNSS positions or vectors were not read (only total station data is reduced)"
+        ));
+    }
+    if offsets > 0 {
+        data.warnings
+            .push(format!("{offsets} off-centre shots (OF) were not applied"));
+    }
+    if skipped > 0 {
+        data.warnings.push(format!(
+            "{skipped} shots without an occupied or foresight point were skipped"
+        ));
+    }
+    if data.setups.is_empty() && data.points.is_empty() {
+        return Err(IoError::Invalid(
+            "RW5: no occupations, shots or stored points found".into(),
+        ));
+    }
+    Ok(data)
+}
+
+/// Reads GSI, JobXML or RW5 by content.
 pub fn read_raw(name: &str, bytes: &[u8]) -> Result<FieldData, IoError> {
     let head = std::str::from_utf8(&bytes[..bytes.len().min(512)]).unwrap_or("");
-    if head.trim_start().starts_with('<') {
+    let first = head
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with("--"))
+        .unwrap_or("");
+    let record = first.split(',').next().unwrap_or("");
+    if first.starts_with('<') {
         read_jobxml(name, bytes)
+    } else if first.contains(',')
+        && (2..=3).contains(&record.len())
+        && record
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+    {
+        read_rw5(name, bytes)
     } else {
         read_gsi(name, bytes)
     }
@@ -462,6 +777,80 @@ mod tests {
     }
 
     #[test]
+    fn rw5_records() {
+        // Carlson's own samples (feet), plus a coded sideshot.
+        let rw5 = "\
+JB,NMSAMPLE,DT06-27-2003,TM14:21:53
+MO,AD0,UN0,SF1.00000000,EC1,EO0.0,AU0
+SP,PN100,N 5002.0000,E 5000.0000,EL100.0000,--PP
+OC,OP1,N 5000.00000,E 5000.00000,EL100.000,--CP
+LS,HI5.000000,HR6.000000
+BK,OP1,BP2,BS315.0000,BC0.0044
+BD,OP1,FP2,AR0.0055,ZE86.0126,SD10.320000,--CP
+BR,OP1,FP2,AR180.0037,ZE273.5826,SD10.315000,--CP
+LS,HR4.000000
+SS,OP1,FP7,AR90.3015,ZE90.0000,HD25.000000,--TR1 ST, fence
+GPS,PN3,LA40.364883159071,LN-3.420590114521,EL765.6980,--
+OC,OP7,N 5000.0,E 5025.0,EL100.0
+TR,OP7,FP8,AZ45.0000,VA0.0000,SD10.0,--KB
+";
+        let d = read_raw("sample.rw5", rw5.as_bytes()).expect("rw5");
+        assert_eq!(d.format, "Carlson RW5");
+        assert_eq!(d.setups.len(), 2);
+        let s = &d.setups[0];
+        let ft = 0.3048;
+        assert_eq!(s.station, "1");
+        assert!((s.instrument_height - 5.0 * ft).abs() < 1e-12);
+        assert_eq!(s.backsight.as_deref(), Some("2"));
+        assert!((s.back_circle.expect("bc").degrees() - 44.0 / 3600.0).abs() < 1e-12);
+        assert_eq!(s.observations.len(), 3);
+        // Face right reduced to face left.
+        let br = &s.observations[1];
+        assert!((br.hz.expect("hz").degrees() - 37.0 / 3600.0).abs() < 1e-9);
+        assert!(
+            (br.zenith.expect("z").degrees() - (360.0 - (273.0 + 58.0 / 60.0 + 26.0 / 3600.0))).abs() < 1e-9
+        );
+        assert!((br.target_height - 6.0 * ft).abs() < 1e-12);
+        let ss = &s.observations[2];
+        assert_eq!(ss.code, "TR1 ST, fence");
+        assert!((ss.target_height - 4.0 * ft).abs() < 1e-12);
+        assert!((ss.hz.expect("hz").degrees() - (90.0 + 30.0 / 60.0 + 15.0 / 3600.0)).abs() < 1e-9);
+        // A horizontal distance at 90° is the slope distance.
+        assert!((ss.distance.expect("d") - 25.0 * ft).abs() < 1e-12);
+        // An azimuth shot: the zero reading points north.
+        let t = &d.setups[1];
+        assert_eq!(t.orientation, Some(Bearing::default()));
+        assert!((t.observations[0].zenith.expect("z").degrees() - 90.0).abs() < 1e-12);
+        assert!(
+            d.points
+                .iter()
+                .any(|(n, p)| n == "100" && (p.y - 5002.0 * ft).abs() < 1e-9)
+        );
+        assert!(d.points.iter().any(|(n, _)| n == "7"));
+        assert!(
+            d.warnings.iter().any(|w| w.contains("1 GNSS")),
+            "{:?}",
+            d.warnings
+        );
+        assert_eq!(rw5_bearing("N12.3000W").map(|a| a.degrees()), Some(360.0 - 12.5));
+        assert!(read_rw5("x", b"hello\n").is_err());
+    }
+
+    #[test]
+    fn gsi_codes() {
+        let gsi = "\
+110001+000000S1 88..10+00001500
+110002+00000BS1 21.104+09030150 22.104+09000000 31..00+00025000
+410003+00000FNC
+110004+000000P9 21.104+01000000 22.104+09000000 31..00+00010000
+110005+00000P10 21.104+02000000 22.104+09000000 31..00+00010000 71....+000000KB
+";
+        let d = read_gsi("a", gsi.as_bytes()).expect("gsi");
+        let codes: Vec<&str> = d.setups[0].observations.iter().map(|o| o.code.as_str()).collect();
+        assert_eq!(codes, ["", "FNC", "KB"]);
+    }
+
+    #[test]
     fn jobxml_records() {
         let xml = r#"<?xml version="1.0"?>
 <JOBFile jobName="Test" version="5.6">
@@ -473,7 +862,7 @@ mod tests {
       <Circle><HorizontalCircle>0</HorizontalCircle><VerticalCircle>90</VerticalCircle><EDMDistance>120.5</EDMDistance></Circle></PointRecord>
     <PointRecord ID="p3"><Name>X</Name><Deleted>true</Deleted><StationID>s1</StationID>
       <Circle><HorizontalCircle>10</HorizontalCircle><VerticalCircle>90</VerticalCircle></Circle></PointRecord>
-    <PointRecord ID="p4"><Name>T1</Name><StationID>s1</StationID><TargetID>t1</TargetID>
+    <PointRecord ID="p4"><Name>T1</Name><Code>KB1</Code><StationID>s1</StationID><TargetID>t1</TargetID>
       <Circle><HorizontalCircle>225</HorizontalCircle><VerticalCircle>275</VerticalCircle><EDMDistance>40</EDMDistance></Circle></PointRecord>
   </FieldBook>
   <Reductions><Point><Name>CP2</Name><Grid><North>7000120.5</North><East>500000</East><Elevation>9.8</Elevation></Grid></Point></Reductions>
@@ -488,6 +877,7 @@ mod tests {
         let t1 = &s.observations[1];
         assert!((t1.hz.expect("hz").degrees() - 45.0).abs() < 1e-9);
         assert!((t1.zenith.expect("v").degrees() - 85.0).abs() < 1e-9);
+        assert_eq!(t1.code, "KB1");
         assert_eq!(d.points.len(), 2);
         assert!(
             d.points

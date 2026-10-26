@@ -53,7 +53,7 @@ impl Server {
     }
 
     /// The surface named by `surface`: its id or its name.
-    fn surface_id(&self, args: &Value) -> Result<SurfaceId, String> {
+    pub(super) fn surface_id(&self, args: &Value) -> Result<SurfaceId, String> {
         let doc = self.doc();
         match args.get("surface") {
             Some(Value::Number(n)) => n

@@ -1,11 +1,15 @@
 //! Reading files into the project and building exports. File choice and saving
 //! are the caller's: these take and return bytes and text.
 
+use std::fmt::Write as _;
+
 use glam::DVec2;
+use survey_core::network::RawEdit;
 use survey_core::style::LabelSet;
 use survey_io::plot::Plot;
+use survey_io::stakeout::{StakeFormat, StakeLine};
 use survey_io::{CsvLayout, CsvPointImporter, ImportedPoint};
-use survey_model::{ChangeSet, Entity, SheetRecord, Surface, SurfaceStyle, SurveyPoint};
+use survey_model::{ChangeSet, Entity, EntityId, SheetRecord, Surface, SurfaceStyle, SurveyPoint};
 
 use super::{Event, Panel, Session};
 use crate::import_command::ImportEntities;
@@ -47,9 +51,9 @@ impl Session {
         }
     }
 
-    /// Raw instrument data: kept with the project for the network adjustment;
-    /// coordinates in the file add any points the project does not have. A file
-    /// of the same name replaces the earlier import.
+    /// Raw instrument data: kept with the project for reduction and the network
+    /// adjustment; coordinates in the file add any points the project does not
+    /// have. A file of the same name replaces the earlier import.
     pub fn import_raw(&mut self, name: &str, bytes: &[u8]) {
         let stem = stem(name);
         let data = match survey_io::rawdata::read_raw(stem, bytes) {
@@ -81,7 +85,7 @@ impl Session {
             data.format,
             data.setups.len()
         );
-        let source = format!("f:{}", data.name);
+        let warnings = data.warnings.clone();
         let existing = doc
             .field_data()
             .iter()
@@ -92,11 +96,57 @@ impl Session {
             None => cs.insert_record(data),
         };
         self.execute(Box::new(cs));
-        self.emit(Event::Open(Panel::Network { source }));
+        self.emit(Event::Open(Panel::RawData {
+            name: stem.to_string(),
+        }));
         if added > 0 {
             self.emit(Event::ZoomExtents);
         }
         self.success(summary);
+        for w in warnings {
+            self.log.warn(w);
+        }
+        if pointings > 0 {
+            self.log.info(format!(
+                "Type 'reduce {stem}' to turn the shots into coded points, or adjust the control first (netadj)"
+            ));
+        }
+    }
+
+    /// Reduces a raw data file's shots to coded points (the only file when
+    /// `name` is empty), shows the reduction report, and returns the summary.
+    pub fn reduce_raw(&mut self, name: &str) -> Result<String, String> {
+        let r = crate::raw::reduce_file(&self.project.doc, name)?;
+        for w in &r.reduction.warnings {
+            self.log.warn(w.clone());
+        }
+        let summary = r.summary.clone();
+        self.execute(Box::new(r.command));
+        self.log.result(summary.clone());
+        if let Some((title, text)) = self.raw_report(name) {
+            self.report(title, text);
+        }
+        if !self.project.doc.field_data().is_empty() {
+            self.emit(Event::ZoomExtents);
+        }
+        Ok(summary)
+    }
+
+    /// Corrects a setup or shot (re-reducing a reduced file in the same step).
+    pub fn edit_raw(&mut self, name: &str, edit: RawEdit, revert: bool) -> Result<String, String> {
+        let r = crate::raw::edit_file(&self.project.doc, name, edit, revert)?;
+        let summary = r.summary.clone();
+        self.execute(Box::new(r.command));
+        self.log.result(summary.clone());
+        Ok(summary)
+    }
+
+    /// The reduction report for a raw data file, as it reduces now.
+    pub fn raw_report(&self, name: &str) -> Option<(String, String)> {
+        let doc = &self.project.doc;
+        let f = crate::raw::find(doc, name).ok()?;
+        let r = crate::raw::reduce_command(doc, f.id, f.record.clone(), String::new()).reduction;
+        Some((format!("Reduction {}", f.name), crate::raw::report(doc, f, &r)))
     }
 
     pub fn import_cloud(&mut self, name: &str, bytes: &[u8]) {
@@ -313,6 +363,137 @@ impl Session {
             })
             .collect();
         survey_io::export_points_csv(&points, layout, 4)
+    }
+
+    /// A stake-out file for a controller: the points among `ids` (every point
+    /// when `ids` has none) plus the vertices of the polylines among `ids`,
+    /// which JobXML also carries as lines between them. A vertex at an exported
+    /// point uses that point's name; others are named after their line.
+    /// Returns the file text and a summary.
+    pub fn stakeout_file(&self, format: StakeFormat, ids: &[EntityId]) -> Result<(String, String), String> {
+        let doc = &self.project.doc;
+        let as_point = |p: &SurveyPoint| ImportedPoint {
+            name: p.name.clone(),
+            easting: p.position.x,
+            northing: p.position.y,
+            height: p.height_known.then_some(p.position.z),
+            code: p.code.clone(),
+            description: p.description.clone(),
+        };
+        let chosen_points = ids
+            .iter()
+            .any(|id| matches!(doc.entity(*id), Some(Entity::Point(_))));
+        let mut points: Vec<ImportedPoint> = doc
+            .entities()
+            .filter_map(|(id, e)| match e {
+                Entity::Point(p) if !chosen_points || ids.contains(&id) => Some(as_point(p)),
+                _ => None,
+            })
+            .collect();
+        let polylines: Vec<&survey_model::Polyline> = ids
+            .iter()
+            .filter_map(|id| match doc.entity(*id) {
+                Some(Entity::Polyline(l)) => Some(l),
+                _ => None,
+            })
+            .collect();
+        if !chosen_points && !polylines.is_empty() {
+            points.clear();
+        }
+        let mut lines = Vec::new();
+        let mut arcs = 0;
+        for (k, l) in polylines.iter().enumerate() {
+            let base = if !l.name.is_empty() {
+                l.name.clone()
+            } else if !l.code.is_empty() {
+                format!("{}{}", l.code, k + 1)
+            } else {
+                format!("L{}", k + 1)
+            };
+            let mut names = Vec::new();
+            for (i, v) in l.vertices.iter().enumerate() {
+                let near = |p: &DVec2| p.distance(v.truncate()) < 0.0005;
+                let existing = points
+                    .iter()
+                    .find(|p| near(&DVec2::new(p.easting, p.northing)))
+                    .map(|p| p.name.clone())
+                    .or_else(|| {
+                        doc.entities().find_map(|(_, e)| match e {
+                            Entity::Point(p) if near(&p.position.truncate()) => {
+                                points.push(as_point(p));
+                                Some(p.name.clone())
+                            }
+                            _ => None,
+                        })
+                    });
+                let name = existing.unwrap_or_else(|| {
+                    let name = format!("{base}-{}", i + 1);
+                    points.push(ImportedPoint {
+                        name: name.clone(),
+                        easting: v.x,
+                        northing: v.y,
+                        height: l.heights_known.then_some(v.z),
+                        code: l.code.clone(),
+                        description: String::new(),
+                    });
+                    name
+                });
+                names.push(name);
+            }
+            let n = names.len();
+            let segments = if l.closed { n } else { n.saturating_sub(1) };
+            for i in 0..segments {
+                if l.bulges.get(i).is_some_and(|b| b.abs() > 1e-12) {
+                    arcs += 1;
+                }
+                lines.push(StakeLine {
+                    name: format!("{base}.{}", i + 1),
+                    code: l.code.clone(),
+                    from: names[i].clone(),
+                    to: names[(i + 1) % n].clone(),
+                });
+            }
+        }
+        if points.is_empty() {
+            return Err("There are no points or lines to export".into());
+        }
+        let job = if doc.meta().name.is_empty() {
+            "survey3d".to_string()
+        } else {
+            doc.meta().name.clone()
+        };
+        let mut notes = Vec::new();
+        let text = match format {
+            StakeFormat::JobXml => {
+                if arcs > 0 {
+                    notes.push(format!(
+                        "{arcs} arcs written as straight lines between their ends"
+                    ));
+                }
+                survey_io::stakeout::write_jobxml(&job, &points, &lines)
+            }
+            StakeFormat::Rw5 => survey_io::stakeout::write_rw5_points(&job, &points),
+            StakeFormat::Gsi => {
+                let (text, changed) = survey_io::stakeout::write_gsi16(&points);
+                if !changed.is_empty() {
+                    notes.push(format!(
+                        "{} names or codes shortened to 16 characters or cleaned for GSI: {}",
+                        changed.len(),
+                        changed.join(", ")
+                    ));
+                }
+                text
+            }
+            StakeFormat::Csv => survey_io::export_points_csv(&points, &CsvLayout::from_letters("PNEZC"), 4),
+        };
+        let mut summary = format!("Stake-out file ({}): {} points", format.label(), points.len());
+        if format == StakeFormat::JobXml && !lines.is_empty() {
+            let _ = write!(summary, ", {} lines", lines.len());
+        }
+        for n in notes {
+            let _ = write!(summary, "; {n}");
+        }
+        Ok((text, summary))
     }
 
     /// A plan sheet drawn for printing (labels as the application's defaults).

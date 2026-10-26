@@ -73,7 +73,7 @@ impl NetworkWindow {
         }
         for f in doc.field_data() {
             if self.sources.contains(&format!("f:{}", f.name)) {
-                out.extend(f.setups.iter().cloned());
+                out.extend(f.effective_setups());
             }
         }
         out

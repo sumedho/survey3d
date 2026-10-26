@@ -133,6 +133,8 @@ impl Server {
             "set_project" => self.set_project(args),
             "site_calibration" => self.site_calibration(args),
             "solve_curve" => self.solve_curve(args),
+            "raw_data" => self.raw_data(args),
+            "compare_asbuilt" => self.compare_asbuilt(args),
             "add_text" => self.add_text(args),
             "add_dimension" => self.add_dimension(args),
             "edit_entities" => self.edit_entities(args),
@@ -638,7 +640,7 @@ impl Server {
                 "csv" | "txt" | "pts" => "csv",
                 "dxf" => "dxf",
                 "xml" => "landxml",
-                "gsi" | "jxl" => "raw",
+                "gsi" | "jxl" | "rw5" => "raw",
                 "las" | "xyz" => "cloud",
                 _ => return Err(format!("Cannot tell the format of '{name}': pass format")),
             }
@@ -703,9 +705,24 @@ impl Server {
                     .map_err(|e| format!("GeoPackage export failed: {e}"))?
                     .0
             }
-            "csv" => {
+            "csv" if !flag(args, "selection") => {
                 let layout = CsvLayout::from_letters(str_arg(args, "layout").unwrap_or("PENZCD"));
                 self.session.points_csv(&layout).into_bytes()
+            }
+            format @ ("jobxml" | "rw5" | "gsi" | "csv") => {
+                let format = survey_io::stakeout::StakeFormat::parse(format).expect("listed");
+                let ids: Vec<EntityId> = if flag(args, "selection") {
+                    self.session.project.selection.ids().iter().copied().collect()
+                } else {
+                    Vec::new()
+                };
+                if flag(args, "selection") && ids.is_empty() {
+                    return Err("selection: nothing is selected".into());
+                }
+                let (text, summary) = self.session.stakeout_file(format, &ids)?;
+                std::fs::write(&path, &text)
+                    .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+                return Ok(ToolResult::text(format!("{summary}. Wrote {}", path.display())));
             }
             format @ ("pdf" | "svg") => {
                 let sheet = self.sheet(args, true)?.ok_or("No sheet")?;
@@ -1138,6 +1155,7 @@ impl Filter {
 mod calibration;
 mod cogo;
 mod drawing;
+mod field;
 mod settings;
 mod surfaces;
 #[cfg(test)]

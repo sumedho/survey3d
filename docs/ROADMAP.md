@@ -28,7 +28,7 @@ through MCP, one codebase for web and desktop, and COPC conversion about 6 times
 
 ## Where survey3d is today
 
-Of the fifteen areas below, survey3d has six in full, six in part and two missing, and leads in one. The
+Of the fifteen areas below, survey3d has seven in full, five in part and two missing, and leads in one. The
 established packages compared are Carlson Survey, TBC and MicroSurvey CAD; 12d Model is included from
 general knowledge, as no feature list for it was found.
 
@@ -36,7 +36,7 @@ general knowledge, as no feature list for it was found.
 | --- | --- | --- | --- |
 | COGO | Inverse, intersections, sideshots, traverse entry, resection, offsets, curve solvers, lot closure, subdivision | Has | — |
 | Traverse and adjustment | Traverse reduction, least squares network adjustment | Has | — |
-| Field data import | RW5, JobXML, GSI, Topcon, Sokkia SDR; raw data editing | Partial | GSI and JobXML only; no raw editing |
+| Field data import | RW5, JobXML, GSI, Topcon, Sokkia SDR; raw data editing | Partial | GSI, JobXML and RW5 with coded reduction and raw editing; no SDR or Topcon |
 | GNSS processing | Baseline processing, RTK and PPK review (TBC) | Missing | Out of scope for now |
 | Field-to-finish | Codes to symbols, layers and linework, with curve and offset control codes | Has | No best-fit, smoothing or templates (Carlson's BFIT, SMO, XSCT) |
 | Coordinate systems | Projections, geoid models, site calibration, grid and ground | Partial | Projection calculator with combined scale factor, one geoid separation per project, site calibration; no geoid grids or project-wide grid/ground |
@@ -46,7 +46,7 @@ general knowledge, as no feature list for it was found.
 | Plans and drafting | Plan sheets, title blocks, line and curve labels and tables, dimensions, legal descriptions, DWG | Partial | No legal descriptions; DXF only |
 | Parcels | Lots from linework, closure, area, subdivision | Has | — |
 | Design | Vertical profiles, corridors, grading, earthworks | Partial | Horizontal alignments only |
-| Stake-out | Stake-out data to controllers; as-built comparison | Partial | Stake-out sheet only |
+| Stake-out | Stake-out data to controllers; as-built comparison | Has | — |
 | Data exchange | DWG, DXF, LandXML, shapefile, GeoPackage, CSV | Has | No shapefile or DWG |
 | Audit and automation | Rare: edit history, scripting | Ahead | Audit trail, MCP agent control |
 
@@ -101,12 +101,25 @@ line and curve tables.
 survey3d reads Leica GSI and Trimble JobXML raw data only, so crews on Carlson, Sokkia or Topcon controllers
 cannot bring their work in.
 
-- [ ] **Carlson RW5** raw data import (SurvCE and SurvPC controllers).
-- [ ] **Sokkia SDR** and **Topcon** raw data import.
-- [ ] **Raw data editing:** correct a target height, code or backsight and re-reduce, with the change recorded
-  in the audit trail.
-- [ ] **Stake-out export:** points and lines to controller formats (CSV variants, JobXML, RW5 point files).
-- [ ] **As-built comparison:** stake-out or as-built shots against design, reported as differences.
+- [x] **Coded reduction** (found missing while planning this phase): raw shots kept no codes and went only into
+  the network adjustment. Done: codes read from GSI (WI 41/71), JobXML (`Code`) and RW5 (notes); `reduce`
+  orients each setup on its backsight and radiates its shots into coded points, setup by setup (so a traverse
+  carries forward), averaging both faces; shots to known points are reported as checks.
+- [x] **Carlson RW5** raw data import (SurvCE and SurvPC controllers). Done: occupations, backsights, line of
+  sight, traverse, sideshot and angle-set records, stored points, units from the mode record; GNSS and
+  off-centre records are counted and reported, not read.
+- [ ] **Sokkia SDR** and **Topcon** raw data import. Waiting on sample files (the SDR field layout is known for
+  station, target, backsight, coordinate and observation records; Topcon GTS-7 is documented by Maptek).
+- [x] **Raw data editing:** correct a target height, code or backsight and re-reduce, with the change recorded
+  in the audit trail. Done: the Raw data window and the MCP `raw_data` tool; corrections (station, instrument
+  height, backsight, target, code, target height, excluded shot) are stored beside the recorded observations
+  and also feed the network adjustment.
+- [x] **Stake-out export:** points and lines to controller formats (CSV variants, JobXML, RW5 point files).
+  Done: Trimble JobXML (points and two-point lines), Carlson RW5 stored points, Leica GSI-16 and CSV, from the
+  selection or every point; `export_file` in MCP. Not yet tested on a controller.
+- [x] **As-built comparison:** stake-out or as-built shots against design, reported as differences. Done:
+  against design points (by name or nearest), lines (chainage, offset, dZ) or a surface (cut/fill), with
+  tolerances, a report and labels; MCP `compare_asbuilt`.
 
 **Done when:** a day's field data from each of the four main controller families imports, reduces and can be
 sent back out for stake-out.
