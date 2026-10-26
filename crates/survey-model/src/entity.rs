@@ -1,4 +1,4 @@
-use glam::DVec3;
+use glam::{DVec2, DVec3};
 use serde::{Deserialize, Serialize};
 use survey_core::Aabb3;
 use survey_core::arc::{Arc, bulge_segments, reverse_bulges};
@@ -87,6 +87,86 @@ pub struct TextNote {
 
 impl TextNote {
     pub const DEFAULT_HEIGHT: f64 = 2.5;
+}
+
+/// What a dimension measures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DimensionKind {
+    /// The plan distance between the points, along the line joining them.
+    #[default]
+    Aligned,
+    /// The difference in eastings (a linear dimension across the sheet).
+    Horizontal,
+    /// The difference in northings.
+    Vertical,
+}
+
+impl DimensionKind {
+    pub const ALL: [DimensionKind; 3] = [
+        DimensionKind::Aligned,
+        DimensionKind::Horizontal,
+        DimensionKind::Vertical,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            DimensionKind::Aligned => "aligned",
+            DimensionKind::Horizontal => "horizontal",
+            DimensionKind::Vertical => "vertical",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.key().eq_ignore_ascii_case(s))
+    }
+}
+
+/// A drafted dimension: the distance between two points, drawn as a
+/// dimension line with extension lines and its length as text. Its text is
+/// sized on paper, as text notes are.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Dimension {
+    pub kind: DimensionKind,
+    pub from: DVec3,
+    pub to: DVec3,
+    /// A point the dimension line passes through.
+    pub line_at: DVec3,
+    /// Shown instead of the measured length when not empty.
+    #[serde(default)]
+    pub text: String,
+    pub layer: LayerId,
+}
+
+impl Dimension {
+    /// Unit direction the dimension measures along (plan).
+    pub fn direction(&self) -> DVec2 {
+        match self.kind {
+            DimensionKind::Aligned => (self.to - self.from)
+                .truncate()
+                .try_normalize()
+                .unwrap_or(DVec2::X),
+            DimensionKind::Horizontal => DVec2::X,
+            DimensionKind::Vertical => DVec2::Y,
+        }
+    }
+
+    /// The measured length (plan).
+    pub fn measured(&self) -> f64 {
+        (self.to - self.from).truncate().dot(self.direction()).abs()
+    }
+
+    /// The dimension line's ends: where the extension lines from `from` and
+    /// `to` meet it.
+    pub fn line(&self) -> [DVec2; 2] {
+        let normal = self.direction().perp();
+        let at = self.line_at.truncate();
+        let foot = |p: DVec3| {
+            let p = p.truncate();
+            p + normal * (at - p).dot(normal)
+        };
+        [foot(self.from), foot(self.to)]
+    }
 }
 
 impl Polyline {
@@ -231,6 +311,7 @@ pub enum Entity {
     Point(SurveyPoint),
     Polyline(Polyline),
     Text(TextNote),
+    Dimension(Dimension),
 }
 
 impl Entity {
@@ -239,6 +320,7 @@ impl Entity {
             Entity::Point(p) => p.layer,
             Entity::Polyline(l) => l.layer,
             Entity::Text(t) => t.layer,
+            Entity::Dimension(d) => d.layer,
         }
     }
 
@@ -247,6 +329,7 @@ impl Entity {
             Entity::Point(p) => p.layer = layer,
             Entity::Polyline(l) => l.layer = layer,
             Entity::Text(t) => t.layer = layer,
+            Entity::Dimension(d) => d.layer = layer,
         }
     }
 
@@ -257,6 +340,11 @@ impl Entity {
         match self {
             Entity::Point(p) => p.position = f(p.position),
             Entity::Text(t) => t.position = f(t.position),
+            Entity::Dimension(d) => {
+                d.from = f(d.from);
+                d.to = f(d.to);
+                d.line_at = f(d.line_at);
+            }
             Entity::Polyline(l) => {
                 for v in &mut l.vertices {
                     *v = f(*v);
@@ -272,21 +360,22 @@ impl Entity {
         }
     }
 
-    /// The name of a point or polyline; the text of a note.
+    /// The name of a point or polyline; the text of a note or dimension.
     pub fn name(&self) -> &str {
         match self {
             Entity::Point(p) => &p.name,
             Entity::Polyline(l) => &l.name,
             Entity::Text(t) => &t.text,
+            Entity::Dimension(d) => &d.text,
         }
     }
 
-    /// Feature code (text has none).
+    /// Feature code (text and dimensions have none).
     pub fn code(&self) -> &str {
         match self {
             Entity::Point(p) => &p.code,
             Entity::Polyline(l) => &l.code,
-            Entity::Text(_) => "",
+            Entity::Text(_) | Entity::Dimension(_) => "",
         }
     }
 
@@ -295,6 +384,7 @@ impl Entity {
             Entity::Point(_) => "Point",
             Entity::Polyline(_) => "Polyline",
             Entity::Text(_) => "Text",
+            Entity::Dimension(_) => "Dimension",
         }
     }
 
@@ -303,6 +393,13 @@ impl Entity {
             Entity::Point(p) => Aabb3::from_point(p.position),
             // Text is sized on paper, so only its insertion point has a place in the world.
             Entity::Text(t) => Aabb3::from_point(t.position),
+            Entity::Dimension(d) => {
+                let [a, b] = d.line();
+                let mut bounds = Aabb3::from_points([d.from, d.to, d.line_at]);
+                bounds.extend(a.extend(d.line_at.z));
+                bounds.extend(b.extend(d.line_at.z));
+                bounds
+            }
             Entity::Polyline(l) => {
                 let mut b = Aabb3::from_points(l.vertices.iter().copied());
                 for (a, c, bulge) in l.segments() {
@@ -365,6 +462,37 @@ mod tests {
         let exploded = joined[0].explode();
         assert_eq!(exploded.len(), 3);
         assert!(exploded.iter().all(|l| !l.closed && l.vertices.len() == 2));
+    }
+
+    #[test]
+    fn dimensions_measure_and_place_their_line() {
+        let d = Dimension {
+            kind: DimensionKind::Aligned,
+            from: DVec3::new(0.0, 0.0, 0.0),
+            to: DVec3::new(30.0, 40.0, 0.0),
+            line_at: DVec3::new(-4.0, 3.0, 0.0),
+            text: String::new(),
+            layer: LayerId(1),
+        };
+        assert!((d.measured() - 50.0).abs() < 1e-12);
+        // 5 m to the left of the line from (0,0) to (30,40).
+        let [a, b] = d.line();
+        assert!(
+            (a - DVec2::new(-4.0, 3.0)).length() < 1e-12 && (b - DVec2::new(26.0, 43.0)).length() < 1e-12
+        );
+        let h = Dimension {
+            kind: DimensionKind::Horizontal,
+            line_at: DVec3::new(0.0, -5.0, 0.0),
+            ..d.clone()
+        };
+        assert!((h.measured() - 30.0).abs() < 1e-12);
+        assert_eq!(h.line(), [DVec2::new(0.0, -5.0), DVec2::new(30.0, -5.0)]);
+        let v = Dimension {
+            kind: DimensionKind::Vertical,
+            ..d
+        };
+        assert!((v.measured() - 40.0).abs() < 1e-12);
+        assert_eq!(DimensionKind::parse("Vertical"), Some(DimensionKind::Vertical));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use survey_core::style::{CodeStyle, LabelSet, Part, Prim, Symbol, outline, parts
 use survey_io::plot::{
     Align, BLACK, CAP_HEIGHT, Item, Pen, Plot, Rgb, Text, VAlign, WHITE, rect_ring, text_width,
 };
-use survey_model::sheet::{GridMarks, LegendPosition, SheetRecord};
+use survey_model::sheet::{BoundaryTables, GridMarks, LegendPosition, SheetRecord};
 use survey_model::{Document, Entity, EntityId, Polyline, TextAlign};
 
 use crate::scene_build::{LINE_WIDTH, POINT_SIZE};
@@ -505,6 +505,50 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Dimensions with their text at the sheet's text size, kept clear of labels.
+    fn dimensions(&mut self, ids: &[EntityId], out: &mut Vec<Item>) {
+        for id in ids {
+            let Some(Entity::Dimension(d)) = self.doc.entity(*id) else {
+                continue;
+            };
+            if !self.doc.is_layer_visible(d.layer) {
+                continue;
+            }
+            let size = self.sheet.text_size;
+            let t = self.t;
+            let Some(drawing) = crate::dimension::layout(
+                d,
+                self.doc.conventions(),
+                |w| DVec2::from(t.to_paper(w)),
+                1.0,
+                size * CAP_HEIGHT,
+                true,
+            ) else {
+                continue;
+            };
+            let color = self.entity_color(d.layer, "");
+            let pen = Pen::solid(color, 0.18);
+            for [a, b] in &drawing.lines {
+                out.push(Item::line(vec![a.to_array(), b.to_array()], pen.clone()));
+            }
+            for arrow in &drawing.arrows {
+                out.push(Item::Path {
+                    points: arrow.iter().map(|p| p.to_array()).collect(),
+                    closed: true,
+                    pen: None,
+                    fill: Some(color),
+                });
+            }
+            let text = Text::new(drawing.text_at.to_array(), drawing.text, size)
+                .align(Align::Centre, VAlign::Middle)
+                .angle(drawing.angle)
+                .color(color)
+                .halo();
+            self.placer.add(Rect::bounding(&text.corners()));
+            out.push(Item::Text(text));
+        }
+    }
+
     fn symbol(out: &mut Vec<Item>, at: [f64; 2], r: f64, symbol: Symbol, color: Rgb) {
         let pen = Pen::solid(color, (r * 0.17).max(0.1));
         let p = |c: [f32; 2]| [at[0] + f64::from(c[0]) * r, at[1] + f64::from(c[1]) * r];
@@ -682,66 +726,40 @@ impl<'a> Builder<'a> {
         true
     }
 
-    fn parcels(&mut self, out: &mut Vec<Item>) {
+    /// Parcel boundaries (each once, however many lots share it) with their
+    /// bearings and distances, or their table tags, then each lot's name and area.
+    fn parcels(&mut self, tags: &HashMap<SegmentKey, String>, out: &mut Vec<Item>) {
         let doc = self.doc;
         let conv = doc.conventions().clone();
         let size = self.sheet.text_size;
         let color = if self.mono { BLACK } else { [30, 30, 30] };
-        let mut done: HashSet<[(i64, i64); 2]> = HashSet::new();
-        let key = |p: glam::DVec3| ((p.x * 1000.0).round() as i64, (p.y * 1000.0).round() as i64);
+        for seg in boundary_segments(doc, &self.t, &self.frame, size) {
+            let m = self.t.to_paper(seg.mid);
+            let outward = DVec2::new(seg.tangent.y, -seg.tangent.x) * if seg.lot_left { 1.0 } else { -1.0 };
+            let along = self.t.dir(seg.tangent);
+            let outward = self.t.dir(outward);
+            if let Some(tag) = tags.get(&seg.key) {
+                self.table_tag(m, along, outward, tag, size, color, out);
+                continue;
+            }
+            let label = BoundaryLabel {
+                at: m,
+                along,
+                outward,
+                fits: seg.fits,
+                top: seg.top,
+                bottom: seg.bottom,
+                size,
+                color,
+            };
+            self.boundary_label(label, out);
+        }
         for parcel in doc.parcels().iter().filter(|p| p.annotate) {
             let Some(l) = crate::ui::parcels::boundary(doc, parcel) else {
                 continue;
             };
             if !doc.is_layer_visible(l.layer) {
                 continue;
-            }
-            // Anticlockwise boundaries have the lot on their left.
-            let anticlockwise = survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, true).2 > 0.0;
-            for (a, b, bulge) in l.segments() {
-                let (ka, kb) = (key(a), key(b));
-                if !done.insert(if ka < kb { [ka, kb] } else { [kb, ka] }) {
-                    continue;
-                }
-                let (mid, tangent, top, bottom) = match survey_core::arc::Arc::from_bulge(a, b, bulge) {
-                    Some(arc) => (
-                        arc.midpoint().truncate(),
-                        arc.tangent_at(0.5),
-                        format!("R {}", conv.format_length(arc.radius)),
-                        format!("A {}", conv.format_length(arc.length_2d())),
-                    ),
-                    None => {
-                        let d = (b - a).truncate();
-                        let Some(brg) = survey_core::Bearing::from_delta(d.x, d.y) else {
-                            continue;
-                        };
-                        (
-                            ((a + b) * 0.5).truncate(),
-                            d,
-                            conv.format_bearing(brg),
-                            conv.format_length(d.length()),
-                        )
-                    }
-                };
-                let m = self.t.to_paper(mid);
-                if !self.frame.contains(m) {
-                    continue;
-                }
-                let length = (b - a).truncate().length() * self.t.k;
-                let width = text_width(&top, size, false).max(text_width(&bottom, size, false));
-                let tangent = tangent.normalize_or_zero();
-                let outward = DVec2::new(tangent.y, -tangent.x) * if anticlockwise { 1.0 } else { -1.0 };
-                let label = BoundaryLabel {
-                    at: m,
-                    along: self.t.dir(tangent),
-                    outward: self.t.dir(outward),
-                    fits: length >= width + 2.0,
-                    top,
-                    bottom,
-                    size,
-                    color,
-                };
-                self.boundary_label(label, out);
             }
             // Name and area at the area-weighted centre.
             let ring: Vec<DVec2> = l
@@ -771,7 +789,12 @@ impl<'a> Builder<'a> {
                 .halo();
             let area = Text::new(
                 [centre[0], centre[1] - 0.6],
-                conv.format_area((area / 2.0).abs()),
+                // Exact, arcs and all (the ring above only places it).
+                conv.format_area(
+                    survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, true)
+                        .2
+                        .abs(),
+                ),
                 size,
             )
             .align(Align::Centre, VAlign::Top)
@@ -780,6 +803,42 @@ impl<'a> Builder<'a> {
             self.along_text(name, false, out);
             self.along_text(area, false, out);
         }
+    }
+
+    /// A boundary's table tag (`L1`, `C1`) beside it: outside the lot if
+    /// clear, else inside, else outside anyway.
+    #[allow(clippy::too_many_arguments)]
+    fn table_tag(
+        &mut self,
+        at: [f64; 2],
+        along: [f64; 2],
+        outward: [f64; 2],
+        tag: &str,
+        size: f64,
+        color: Rgb,
+        out: &mut Vec<Item>,
+    ) {
+        let (angle, _) = upright(along[1].atan2(along[0]));
+        let gap = size * CAP_HEIGHT * 0.5 + 0.6;
+        let texts = [1.0, -1.0].map(|side| {
+            Text::new(
+                [at[0] + outward[0] * side * gap, at[1] + outward[1] * side * gap],
+                tag,
+                size,
+            )
+            .align(Align::Centre, VAlign::Middle)
+            .angle(angle)
+            .color(color)
+            .halo()
+        });
+        let chosen = texts
+            .iter()
+            .position(|t| self.placer.is_free(&Rect::bounding(&t.corners())))
+            .unwrap_or(0);
+        let [first, second] = texts;
+        let text = if chosen == 0 { first } else { second };
+        self.placer.add(Rect::bounding(&text.corners()));
+        out.push(Item::Text(text));
     }
 
     /// A boundary's bearing over its distance (or radius over arc length). Along
@@ -1127,6 +1186,253 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// A boundary segment's ends rounded to millimetres, so a boundary shared by
+/// two lots is labelled once.
+type SegmentKey = [(i64, i64); 2];
+
+/// A parcel boundary segment to label.
+struct BoundarySegment {
+    key: SegmentKey,
+    /// World midpoint (of the arc, for a curve) and direction of travel there.
+    mid: DVec2,
+    tangent: DVec2,
+    /// The lot lies on the left of the direction of travel.
+    lot_left: bool,
+    /// Bearing over distance, or radius over arc length.
+    top: String,
+    bottom: String,
+    /// Whether the label fits along the line on the paper.
+    fits: bool,
+    /// Table row: bearing and distance, or radius, arc, chord bearing and chord.
+    cells: Vec<String>,
+    curve: bool,
+}
+
+/// The boundaries of annotated parcels whose middles are in the frame, in
+/// parcel then boundary order, each once.
+fn boundary_segments(doc: &Document, t: &SheetTransform, frame: &Rect, size: f64) -> Vec<BoundarySegment> {
+    let conv = doc.conventions();
+    let key = |p: glam::DVec3| ((p.x * 1000.0).round() as i64, (p.y * 1000.0).round() as i64);
+    let mut done: HashSet<SegmentKey> = HashSet::new();
+    let mut out = Vec::new();
+    for parcel in doc.parcels().iter().filter(|p| p.annotate) {
+        let Some(l) = crate::ui::parcels::boundary(doc, parcel) else {
+            continue;
+        };
+        if !doc.is_layer_visible(l.layer) {
+            continue;
+        }
+        // Anticlockwise boundaries have the lot on their left.
+        let lot_left = survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, true).2 > 0.0;
+        for (a, b, bulge) in l.segments() {
+            let (ka, kb) = (key(a), key(b));
+            let k = if ka < kb { [ka, kb] } else { [kb, ka] };
+            if !done.insert(k) {
+                continue;
+            }
+            let d = (b - a).truncate();
+            let Some(chord_bearing) = survey_core::Bearing::from_delta(d.x, d.y) else {
+                continue;
+            };
+            let (mid, tangent, top, bottom, cells, curve) =
+                match survey_core::arc::Arc::from_bulge(a, b, bulge) {
+                    Some(arc) => {
+                        let (r, len) = (
+                            conv.format_length(arc.radius),
+                            conv.format_length(arc.length_2d()),
+                        );
+                        (
+                            arc.midpoint().truncate(),
+                            arc.tangent_at(0.5),
+                            format!("R {r}"),
+                            format!("A {len}"),
+                            vec![
+                                r,
+                                len,
+                                conv.format_bearing(chord_bearing),
+                                conv.format_length(d.length()),
+                            ],
+                            true,
+                        )
+                    }
+                    None => {
+                        let (brg, dist) =
+                            (conv.format_bearing(chord_bearing), conv.format_length(d.length()));
+                        (
+                            ((a + b) * 0.5).truncate(),
+                            d,
+                            brg.clone(),
+                            dist.clone(),
+                            vec![brg, dist],
+                            false,
+                        )
+                    }
+                };
+            if !frame.contains(t.to_paper(mid)) {
+                continue;
+            }
+            let width = text_width(&top, size, false).max(text_width(&bottom, size, false));
+            out.push(BoundarySegment {
+                key: k,
+                mid,
+                tangent: tangent.normalize_or_zero(),
+                lot_left,
+                fits: d.length() * t.k >= width + 2.0,
+                top,
+                bottom,
+                cells,
+                curve,
+            });
+        }
+    }
+    out
+}
+
+/// Line and curve tables, and each tabulated boundary's tag.
+#[derive(Default)]
+struct Tables {
+    lines: Vec<(String, Vec<String>)>,
+    curves: Vec<(String, Vec<String>)>,
+    tags: HashMap<SegmentKey, String>,
+}
+
+impl Tables {
+    fn is_empty(&self) -> bool {
+        self.lines.is_empty() && self.curves.is_empty()
+    }
+}
+
+fn boundary_tables(segments: Vec<BoundarySegment>, mode: BoundaryTables) -> Tables {
+    let mut tables = Tables::default();
+    for seg in segments {
+        let listed = match mode {
+            BoundaryTables::None => false,
+            BoundaryTables::Short => !seg.fits,
+            BoundaryTables::All => true,
+        };
+        if !listed {
+            continue;
+        }
+        let (rows, prefix) = if seg.curve {
+            (&mut tables.curves, "C")
+        } else {
+            (&mut tables.lines, "L")
+        };
+        let tag = format!("{prefix}{}", rows.len() + 1);
+        rows.push((tag.clone(), seg.cells));
+        tables.tags.insert(seg.key, tag);
+    }
+    tables
+}
+
+const TABLE_ROW: f64 = 3.6;
+const TABLE_TITLE: f64 = 5.0;
+const LINE_COLUMNS: [(&str, f64); 3] = [("LINE", 11.0), ("BEARING", 25.0), ("DISTANCE", 18.0)];
+const CURVE_COLUMNS: [(&str, f64); 5] = [
+    ("CURVE", 11.0),
+    ("RADIUS", 17.0),
+    ("ARC", 17.0),
+    ("CHORD BRG", 25.0),
+    ("CHORD", 17.0),
+];
+
+/// How the tables are laid out: side-by-side columns, and the size.
+struct TableFit {
+    columns: usize,
+    width: f64,
+    height: f64,
+}
+
+fn table_block(columns: &[(&str, f64)]) -> f64 {
+    columns.iter().map(|c| c.1).sum::<f64>() + 4.0
+}
+
+/// The smallest number of side-by-side columns (up to 3) in which both tables
+/// fit `room` (millimetres high).
+fn fit_tables(tables: &Tables, room: f64) -> TableFit {
+    let size = |columns: usize| {
+        let per = |n: usize| n.div_ceil(columns);
+        let height = |n: usize| {
+            if n == 0 {
+                0.0
+            } else {
+                TABLE_TITLE + TABLE_ROW * (1 + per(n)) as f64 + 1.5
+            }
+        };
+        let width = |n: usize, cols: &[(&str, f64)]| {
+            if n == 0 {
+                0.0
+            } else {
+                table_block(cols) * columns.min(n) as f64
+            }
+        };
+        TableFit {
+            columns,
+            width: width(tables.lines.len(), &LINE_COLUMNS).max(width(tables.curves.len(), &CURVE_COLUMNS)),
+            height: height(tables.lines.len()) + height(tables.curves.len()),
+        }
+    };
+    (1..=3)
+        .map(size)
+        .find(|f| f.height <= room)
+        .unwrap_or_else(|| size(3))
+}
+
+/// Draws the line table above the curve table in `r`.
+fn draw_tables(plot: &mut Plot, r: Rect, tables: &Tables, fit: &TableFit) {
+    let mut top = r.max[1];
+    let line = Pen::solid(BLACK, 0.13);
+    for (title, rows, columns) in [
+        ("LINE TABLE", &tables.lines, &LINE_COLUMNS[..]),
+        ("CURVE TABLE", &tables.curves, &CURVE_COLUMNS[..]),
+    ] {
+        if rows.is_empty() {
+            continue;
+        }
+        plot.push(Item::Text(
+            Text::new([r.min[0] + 2.0, top - 1.8], title, 2.2)
+                .align(Align::Left, VAlign::Top)
+                .bold(),
+        ));
+        let per = rows.len().div_ceil(fit.columns);
+        let block = table_block(columns);
+        let head = top - TABLE_TITLE;
+        for c in 0..fit.columns.min(rows.len()) {
+            let x0 = r.min[0] + 2.0 + c as f64 * block;
+            let mut x = x0;
+            for (name, w) in columns {
+                plot.push(Item::Text(
+                    Text::new([x + 0.8, head - TABLE_ROW / 2.0], *name, 1.6)
+                        .align(Align::Left, VAlign::Middle)
+                        .color(GREY),
+                ));
+                x += w;
+            }
+            plot.push(Item::line(
+                vec![[x0, head - TABLE_ROW], [x, head - TABLE_ROW]],
+                line.clone(),
+            ));
+            for (i, (tag, cells)) in rows.iter().skip(c * per).take(per).enumerate() {
+                let y = head - TABLE_ROW * (i as f64 + 1.5);
+                let mut x = x0;
+                for (text, (_, w)) in std::iter::once(tag).chain(cells).zip(columns) {
+                    let size = fit_size(text, 1.8, w - 1.2);
+                    plot.push(Item::Text(
+                        Text::new([x + 0.8, y], text.clone(), size).align(Align::Left, VAlign::Middle),
+                    ));
+                    x += w;
+                }
+            }
+        }
+        top = head - TABLE_ROW * (1 + per) as f64 - 1.5;
+    }
+}
+
+/// [`fit`] for table cells.
+fn fit_size(text: &str, size: f64, width: f64) -> f64 {
+    fit(text, size, width, false)
+}
+
 /// Liang–Barsky clipping of a segment to a rectangle.
 fn clip_segment(p: [f64; 2], q: [f64; 2], r: &Rect) -> Option<([f64; 2], [f64; 2])> {
     let d = [q[0] - p[0], q[1] - p[1]];
@@ -1171,7 +1477,7 @@ fn legend_rows(doc: &Document, ids: &[EntityId]) -> Vec<LegendRow> {
         let (code, line) = match e {
             Entity::Point(p) => (p.code.as_str(), false),
             Entity::Polyline(l) => (l.code.as_str(), true),
-            Entity::Text(_) => continue,
+            Entity::Text(_) | Entity::Dimension(_) => continue,
         };
         if code.is_empty() {
             continue;
@@ -1268,6 +1574,27 @@ pub fn build_plot(doc: &Document, sheet: &SheetRecord, labels: LabelSet) -> Plot
     if !lay.strip {
         boxes.push(lay.title);
     }
+    // Line and curve tables in the top left (top right under the north arrow
+    // when the legend is put top left).
+    let tables = if content.parcels {
+        boundary_tables(boundary_segments(doc, &t, &f, sheet.text_size), content.tables)
+    } else {
+        Tables::default()
+    };
+    let table_box = (!tables.is_empty()).then(|| {
+        let left = content.legend_position != LegendPosition::TopLeft;
+        let top = if left || !content.north_arrow {
+            f.max[1]
+        } else {
+            f.max[1] - 24.0
+        };
+        let fit = fit_tables(&tables, f.height() * 0.6);
+        let x = if left { f.min[0] } else { f.max[0] - fit.width };
+        (Rect::new(x, top - fit.height, x + fit.width, top), fit)
+    });
+    if let Some((r, _)) = &table_box {
+        boxes.push(*r);
+    }
     let rows = if content.legend {
         legend_rows(doc, &ids)
     } else {
@@ -1320,6 +1647,7 @@ pub fn build_plot(doc: &Document, sheet: &SheetRecord, labels: LabelSet) -> Plot
             ]
             .into_iter()
             .map(corner)
+            .filter(|(r, _)| table_box.as_ref().is_none_or(|(tb, _)| !tb.intersects(r)))
             .min_by_key(|(r, _)| drawing_under(doc, &ids, &t, r))
             .unwrap_or_else(|| corner(LegendPosition::BottomRight)),
             fixed => corner(fixed),
@@ -1392,12 +1720,15 @@ pub fn build_plot(doc: &Document, sheet: &SheetRecord, labels: LabelSet) -> Plot
         b.grid_marks(content.grid == GridMarks::Crosses, &mut map);
     }
     if content.parcels {
-        b.parcels(&mut map);
+        b.parcels(&tables.tags, &mut map);
     }
     if content.chainages {
         b.chainages(&mut map);
     }
     b.texts(&ids, &mut map);
+    if content.linework {
+        b.dimensions(&ids, &mut map);
+    }
     if content.points && content.point_labels {
         b.point_labels(&ids, labels, &mut map);
     }
@@ -1421,6 +1752,10 @@ pub fn build_plot(doc: &Document, sheet: &SheetRecord, labels: LabelSet) -> Plot
     if let Some((r, size)) = legend {
         plot.push(Item::rect(r.min, r.max, Some(box_pen.clone()), Some(WHITE)));
         legend_box(&mut plot, r, &rows, &size, doc, sheet);
+    }
+    if let Some((r, fit)) = &table_box {
+        plot.push(Item::rect(r.min, r.max, Some(box_pen.clone()), Some(WHITE)));
+        draw_tables(&mut plot, *r, &tables, fit);
     }
     if content.north_arrow {
         north_arrow(&mut plot, north_centre, t.dir(DVec2::Y));
@@ -1865,6 +2200,98 @@ mod tests {
         let at = SheetTransform::new(&sheet, &layout(&sheet).frame).to_world(cut.at) - o;
         assert!(at.x + at.y > 56.0, "outside the cut (x + y = 56): {at:?}");
         assert!(texts.iter().any(|t| t.text == "315°00'00\""), "the cut's bearing");
+    }
+
+    /// A lot with a short corner cut and a curved corner: in "short" mode the
+    /// cut goes in the line table (tagged L1 on the plan) and the long sides keep
+    /// their labels; in "all" mode every side and the curve are tabulated.
+    #[test]
+    fn line_and_curve_tables() {
+        use survey_model::sheet::BoundaryTables;
+        let mut doc = Document::new();
+        let layer = doc.layers()[0].id;
+        let o = DVec2::new(500_000.0, 7_000_000.0);
+        // Anticlockwise: (0,0) → (30,0) → (30,26) → cut to (26,30) → (10,30)
+        // → curve of radius 10 round to (0,20).
+        let corners = [
+            (0.0, 0.0),
+            (30.0, 0.0),
+            (30.0, 26.0),
+            (26.0, 30.0),
+            (10.0, 30.0),
+            (0.0, 20.0),
+        ];
+        let bulge = (std::f64::consts::FRAC_PI_2 / 4.0).tan();
+        let mut lot = ChangeSet::new("lot").insert_entity(Entity::Polyline(Polyline {
+            name: "Lot 1".into(),
+            vertices: corners
+                .iter()
+                .map(|&(x, y)| (o + DVec2::new(x, y)).extend(0.0))
+                .collect(),
+            bulges: vec![0.0, 0.0, 0.0, 0.0, bulge, 0.0],
+            closed: true,
+            code: String::new(),
+            layer,
+            heights_known: false,
+        }));
+        lot.apply(&mut doc);
+        let boundary = lot.inserted_entity_ids()[0];
+        ChangeSet::new("parcel")
+            .insert_record(ParcelRecord {
+                name: "1".into(),
+                boundary,
+                ..Default::default()
+            })
+            .apply(&mut doc);
+        let mut sheet = SheetRecord {
+            centre: (o + DVec2::splat(15.0)).to_array(),
+            scale: 500.0,
+            ..Default::default()
+        };
+        let strings = |sheet: &SheetRecord| -> Vec<String> {
+            texts(&build_plot(&doc, sheet, LabelSet::default()))
+                .iter()
+                .map(|t| t.text.clone())
+                .collect()
+        };
+        let none = strings(&sheet);
+        assert!(!none.iter().any(|t| t.contains("TABLE")), "no tables by default");
+        assert!(none.contains(&"5.657".to_string()) && none.contains(&"R 10.000".to_string()));
+
+        sheet.content.tables = BoundaryTables::Short;
+        let short = strings(&sheet);
+        assert!(
+            short.contains(&"LINE TABLE".to_string()) && short.contains(&"L1".to_string()),
+            "{short:?}"
+        );
+        assert_eq!(
+            short.iter().filter(|t| *t == "L1").count(),
+            2,
+            "the tag on the plan and the table row"
+        );
+        assert_eq!(
+            short.iter().filter(|t| *t == "5.657").count(),
+            1,
+            "the cut's distance only in the table"
+        );
+        assert!(
+            short.contains(&"30.000".to_string()),
+            "long sides keep their labels"
+        );
+        assert!(short.contains(&"315°00'00\"".to_string()));
+
+        sheet.content.tables = BoundaryTables::All;
+        let all = strings(&sheet);
+        for tag in ["L1", "L2", "L3", "L4", "L5", "C1", "CURVE TABLE"] {
+            assert!(all.contains(&tag.to_string()), "{tag} in {all:?}");
+        }
+        assert!(!all.contains(&"L6".to_string()));
+        assert!(!all.contains(&"R 10.000".to_string()), "the curve is tabulated");
+        // The curve's row: radius, arc, chord bearing and chord.
+        let arc = format!("{:.3}", 5.0 * std::f64::consts::PI);
+        for cell in ["10.000", arc.as_str(), "225°00'00\"", "14.142"] {
+            assert!(all.contains(&cell.to_string()), "{cell} in {all:?}");
+        }
     }
 
     #[test]

@@ -55,6 +55,8 @@ copc-rs = { git = "https://github.com/pka/copc-rs", rev = "7918657", default-fea
 las = { version = "0.10", features = ["laz-parallel"] }
 # Per-node LAZ chunk compression and decompression for COPC.
 laz = "0.12"
+# Free disk space, checked before a COPC conversion.
+fs4 = "1.1"
 rusqlite = { version = "0.40.2", features = ["serialize", "backup"] }
 # SVG to PNG for the MCP server's renders (bundled font, no system fonts).
 resvg = { version = "0.48.1", default-features = false, features = ["text"] }

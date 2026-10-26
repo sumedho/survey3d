@@ -94,6 +94,12 @@ impl Gather {
                     self.ghost_points.push(t.position);
                     count += 1;
                 }
+                Some(Entity::Dimension(d)) => {
+                    let [a, b] = d.line();
+                    self.ghost_lines
+                        .push(vec![d.from, a.extend(d.line_at.z), b.extend(d.line_at.z), d.to]);
+                    count += 4;
+                }
                 Some(Entity::Polyline(l)) => {
                     for part in l.tessellate(0.01) {
                         count += part.len();

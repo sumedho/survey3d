@@ -44,6 +44,9 @@ pub struct CopcWindow {
     entries: Vec<PathBuf>,
     /// The directory `entries` was scanned from (`None` forces a rescan).
     scanned: Option<PathBuf>,
+    /// A conversion waiting for the user to agree to replace its output:
+    /// `(source, output)`.
+    replace: Option<(PathBuf, PathBuf)>,
 }
 
 impl Default for CopcWindow {
@@ -57,6 +60,7 @@ impl Default for CopcWindow {
             messages: Vec::new(),
             entries: Vec::new(),
             scanned: None,
+            replace: None,
         }
     }
 }
@@ -126,6 +130,24 @@ impl CopcWindow {
                 self.start_conversion(dir);
             }
         });
+        if let Some((src, dst)) = self.replace.clone() {
+            let name = file_name(&dst);
+            ui.label(format!("{name} already exists. Replace it?"));
+            ui.label(
+                RichText::new("The existing file is kept until the new one is finished.")
+                    .small()
+                    .weak(),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Replace").clicked() {
+                    self.replace = None;
+                    self.convert(src, dst);
+                }
+                if ui.button("Cancel").clicked() {
+                    self.replace = None;
+                }
+            });
+        }
         for job in &self.jobs {
             ui.horizontal(|ui| {
                 let done = f32::from_bits(job.progress.load(Ordering::Relaxed));
@@ -164,11 +186,7 @@ impl CopcWindow {
                         {
                             action = Some(CopcAction::Load(path.clone()));
                         }
-                        let name = path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        ui.label(name);
+                        ui.label(file_name(path));
                     });
                 }
             });
@@ -189,7 +207,8 @@ impl CopcWindow {
         action
     }
 
-    /// Picks a source file and converts it into `dir` on a worker thread.
+    /// Picks a source file and converts it into `dir`, asking first when that
+    /// would replace a file there.
     fn start_conversion(&mut self, dir: &Path) {
         let Some(src) = rfd::FileDialog::new()
             .add_filter("LAS/LAZ point cloud", &["laz", "las"])
@@ -201,11 +220,20 @@ impl CopcWindow {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "cloud".into());
-        let name = format!("{stem}.copc.laz");
+        let dst = dir.join(format!("{stem}.copc.laz"));
+        if dst.exists() {
+            self.replace = Some((src, dst));
+        } else {
+            self.convert(src, dst);
+        }
+    }
+
+    /// Converts `src` to `dst` on a worker thread.
+    fn convert(&mut self, src: PathBuf, dst: PathBuf) {
+        let name = file_name(&dst);
         if self.jobs.iter().any(|j| j.name == name) {
             return; // already converting it
         }
-        let dst = dir.join(&name);
         let job = Job {
             name: name.clone(),
             progress: Arc::new(AtomicU32::new(0)),
@@ -241,4 +269,10 @@ impl CopcWindow {
         }
         self.scanned = data_dir.map(Path::to_path_buf);
     }
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }

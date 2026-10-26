@@ -179,6 +179,9 @@ pub struct Selected {
 /// every core.
 pub struct CopcSource {
     path: std::path::PathBuf,
+    /// The file's size and modification time when opened: a file replaced
+    /// since (converted again over itself) is opened afresh.
+    stamp: Option<(u64, std::time::SystemTime)>,
     laz: laz::LazVlr,
     record_len: usize,
     /// Byte offset of RGB inside a point record, when the format has colour.
@@ -306,6 +309,11 @@ fn children_of(k: NodeKey) -> impl Iterator<Item = NodeKey> {
     })
 }
 
+fn file_stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.len(), m.modified().ok()?))
+}
+
 impl CopcSource {
     /// The process-wide source for `path`, opened on first use, so the initial
     /// preview and later view reads share one hierarchy and node cache.
@@ -315,7 +323,9 @@ impl CopcSource {
             OnceLock::new();
         let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let mut open = lock(OPEN.get_or_init(Default::default));
-        if let Some(s) = open.get(&key) {
+        if let Some(s) = open.get(&key)
+            && s.stamp == file_stamp(path)
+        {
             return Ok(s.clone());
         }
         let s = Arc::new(Self::open(path)?);
@@ -372,6 +382,7 @@ impl CopcSource {
         let (_, base_levels) = whole_levels(&entries, BASE_POINTS);
         let mut source = Self {
             path: path.to_path_buf(),
+            stamp: file_stamp(path),
             laz,
             record_len,
             color_at,

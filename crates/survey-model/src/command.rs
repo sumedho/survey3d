@@ -38,6 +38,7 @@ fn entity_size(e: &Entity) -> usize {
             Entity::Point(p) => p.name.len() + p.code.len() + p.description.len(),
             Entity::Polyline(l) => l.vertices.len() * 24 + l.bulges.len() * 8 + l.name.len() + l.code.len(),
             Entity::Text(t) => t.text.len(),
+            Entity::Dimension(d) => d.text.len(),
         }
 }
 

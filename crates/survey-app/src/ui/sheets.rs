@@ -7,7 +7,7 @@ use egui_cad::{CadTheme, icons};
 use glam::DVec2;
 use survey_core::style::LabelSet;
 use survey_io::plot::{CAP_HEIGHT, Item, Plot, Rgb};
-use survey_model::sheet::{GridMarks, LegendPosition, Paper, STANDARD_SCALES, SheetRecord};
+use survey_model::sheet::{BoundaryTables, GridMarks, LegendPosition, Paper, STANDARD_SCALES, SheetRecord};
 use survey_model::{Document, Keyed, RecordId};
 
 use crate::plan::{build_plot, frame_size_world};
@@ -407,6 +407,17 @@ fn settings(ui: &mut egui::Ui, s: &mut SheetRecord, doc: &Document, view: &ViewI
     switch_row(ui, &mut c.points, "Point symbols");
     switch_row(ui, &mut c.point_labels, "Point labels");
     switch_row(ui, &mut c.parcels, "Parcel bearings, distances and areas");
+    if c.parcels {
+        row(ui, "Line and curve tables", |ui| {
+            egui::ComboBox::from_id_salt("boundary_tables")
+                .selected_text(c.tables.label())
+                .show_ui(ui, |ui| {
+                    for t in BoundaryTables::ALL {
+                        ui.selectable_value(&mut c.tables, t, t.label());
+                    }
+                });
+        });
+    }
     switch_row(ui, &mut c.contours, "Contours");
     switch_row(ui, &mut c.chainages, "Alignment chainages");
     switch_row(ui, &mut c.north_arrow, "North arrow");

@@ -164,7 +164,7 @@ pub fn apply(doc: &Document, cal: &SiteCalibration, target: &Target) -> Result<(
         let heights = match &e {
             Entity::Point(p) => p.height_known,
             Entity::Polyline(l) => l.heights_known,
-            Entity::Text(_) => false,
+            Entity::Text(_) | Entity::Dimension(_) => false,
         };
         if heights {
             e.map_positions(|p| c.apply(p));

@@ -34,17 +34,17 @@ general knowledge, as no feature list for it was found.
 
 | Area | What the established packages offer | survey3d | Gap |
 | --- | --- | --- | --- |
-| COGO | Inverse, intersections, sideshots, traverse entry, resection, offsets, curve solvers, lot closure, subdivision | Has | No curve solver; no curved legs in `bd` |
+| COGO | Inverse, intersections, sideshots, traverse entry, resection, offsets, curve solvers, lot closure, subdivision | Has | — |
 | Traverse and adjustment | Traverse reduction, least squares network adjustment | Has | — |
 | Field data import | RW5, JobXML, GSI, Topcon, Sokkia SDR; raw data editing | Partial | GSI and JobXML only; no raw editing |
 | GNSS processing | Baseline processing, RTK and PPK review (TBC) | Missing | Out of scope for now |
-| Field-to-finish | Codes to symbols, layers and linework, with curve and offset control codes | Has | Control codes to check against Carlson's set |
+| Field-to-finish | Codes to symbols, layers and linework, with curve and offset control codes | Has | No best-fit, smoothing or templates (Carlson's BFIT, SMO, XSCT) |
 | Coordinate systems | Projections, geoid models, site calibration, grid and ground | Partial | Projection calculator with combined scale factor, one geoid separation per project, site calibration; no geoid grids or project-wide grid/ground |
 | Surfaces and volumes | TIN, breaklines, contours, volumes, sections, TIN editing, slope analysis | Has | No interactive TIN editing or slope analysis |
 | Point clouds | Import, classification, feature extraction, cloud to surface, sections | Partial | COPC streaming and conversion; no classification, snapping to the full cloud or sections |
 | Imagery | Orthophotos and basemaps under the drawing | Missing | Phase 13 |
-| Plans and drafting | Plan sheets, title blocks, line and curve labels and tables, dimensions, legal descriptions, DWG | Partial | No tables, dimensions or legal descriptions; DXF only |
-| Parcels | Lots from linework, closure, area, subdivision | Has | Parcel creation is a second step after `bd` |
+| Plans and drafting | Plan sheets, title blocks, line and curve labels and tables, dimensions, legal descriptions, DWG | Partial | No legal descriptions; DXF only |
+| Parcels | Lots from linework, closure, area, subdivision | Has | — |
 | Design | Vertical profiles, corridors, grading, earthworks | Partial | Horizontal alignments only |
 | Stake-out | Stake-out data to controllers; as-built comparison | Partial | Stake-out sheet only |
 | Data exchange | DWG, DXF, LandXML, shapefile, GeoPackage, CSV | Has | No shapefile or DWG |
@@ -55,9 +55,9 @@ general knowledge, as no feature list for it was found.
 The point cloud viewer and the native COPC converter work on the one real file tested (168 million points,
 25 s to convert, 6 times faster than PDAL); this phase makes them safe on arbitrary files and hardware.
 
-- [ ] **Split oversized chunks** in the converter recursively, so a densely scanned spot in a large extent
+- [x] **Split oversized chunks** in the converter recursively, so a densely scanned spot in a large extent
   cannot load tens of millions of points onto one worker.
-- [ ] **Check free disk space** before converting (about the uncompressed size, roughly 6 GB for the test
+- [x] **Check free disk space** before converting (about the uncompressed size, roughly 6 GB for the test
   file) and ask before overwriting an existing `.copc.laz`.
 - [ ] **Build a test corpus:** LAS 1.2 to 1.4, point formats 0 to 10, no colour or no GPS time, GeoTIFF-only
   CRS, extra bytes, bad header bounds, negative coordinates, tiny, flat, single-point, duplicate-only, and a
@@ -68,7 +68,7 @@ The point cloud viewer and the native COPC converter work on the one real file t
   limits; fall back cleanly where the vertex-stage storage buffer is unsupported.
 - [ ] **Re-enable CI** (paused while the point cloud work moved quickly), with a software GPU so the renderer
   tests run.
-- [ ] **Surface streaming errors** in the log instead of silently keeping the old view.
+- [x] **Surface streaming errors** in the log instead of silently keeping the old view.
 
 **Done when:** the corpus converts and reads back exactly, and the viewer runs on all three desktop platforms.
 
@@ -77,15 +77,21 @@ The point cloud viewer and the native COPC converter work on the one real file t
 Plans of subdivision need curves and tables that survey3d does not produce yet; Carlson and MicroSurvey
 market heavily on both.
 
-- [ ] **Curved legs in `bd`:** radius with arc length or chord, and left or right, as written on plans.
-- [ ] **Curve solver:** any two of radius, arc length, chord, delta and tangent give the rest.
-- [ ] **Line and curve tables** on plan sheets, with labels (L1, C1) on the drawing.
-- [ ] **Parcel on close:** offer to create the parcel when `bd` closes a figure, instead of a separate
+- [x] **Curved legs in `bd`:** radius with arc length or chord, and left or right, as written on plans. Done:
+  by chord bearing and distance (`45.3020 15.32 r=20 l`) or tangent to the leg before (`r=20 a=15.71 r`).
+- [x] **Curve solver:** any two of radius, arc length, chord, delta and tangent give the rest. Done: the
+  `curve` command, the calculator and the MCP `solve_curve` tool.
+- [x] **Line and curve tables** on plan sheets, with labels (L1, C1) on the drawing. Done: short boundaries
+  or all of them (sheet setting `tables`).
+- [x] **Parcel on close:** offer to create the parcel when `bd` closes a figure, instead of a separate
   `mkparcel` step.
-- [ ] **Compute the closing leg:** an option in `bd` to solve the last line from the start point rather than
-  check it.
-- [ ] **Dimensions** for plan sheets (aligned and linear).
-- [ ] **Check field-to-finish control codes** (start, end, close, curve and offset) against Carlson's set.
+- [x] **Compute the closing leg:** an option in `bd` to solve the last line from the start point rather than
+  check it. Done: `j`.
+- [x] **Dimensions** for plan sheets (aligned and linear). Done: `dim` and the MCP `add_dimension` tool;
+  aligned, horizontal and vertical.
+- [x] **Check field-to-finish control codes** (start, end, close, curve and offset) against Carlson's set.
+  Done: Carlson's spellings by default (`+7`/`-7`, `CLO`, `PC` without `PT` as a three-point arc) and its
+  `GAP`, `RECT`, `CIR`, `OH`/`OFL`/`OV` and `JPN`; each code configurable with several spellings.
 
 **Done when:** a curved-frontage lot can be keyed from a plan, closed with its misclosure, and plotted with
 line and curve tables.

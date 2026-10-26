@@ -5,7 +5,9 @@ use egui_cad::CadTheme;
 use egui_cad::property_grid::{PropertyGridUi, property_grid};
 use survey_core::Conventions;
 use survey_core::arc::{Arc, polyline_metrics};
-use survey_model::{ChangeSet, Command, Document, Entity, EntityId, LayerId, Selection, TextAlign};
+use survey_model::{
+    ChangeSet, Command, DimensionKind, Document, Entity, EntityId, LayerId, Selection, TextAlign,
+};
 
 /// Shows the panel and returns any edits as commands.
 pub fn properties_panel(
@@ -41,11 +43,13 @@ pub fn properties_panel(
 
 fn project_summary(ui: &mut egui::Ui, doc: &Document) -> Option<Box<dyn Command>> {
     let meta = doc.meta();
-    let (points, lines, texts) = doc.entities().fold((0, 0, 0), |(p, l, t), (_, e)| match e {
-        Entity::Point(_) => (p + 1, l, t),
-        Entity::Polyline(_) => (p, l + 1, t),
-        Entity::Text(_) => (p, l, t + 1),
-    });
+    let (points, lines, texts, dimensions) =
+        doc.entities().fold((0, 0, 0, 0), |(p, l, t, d), (_, e)| match e {
+            Entity::Point(_) => (p + 1, l, t, d),
+            Entity::Polyline(_) => (p, l + 1, t, d),
+            Entity::Text(_) => (p, l, t + 1, d),
+            Entity::Dimension(_) => (p, l, t, d + 1),
+        });
     property_grid(ui, "project_props", |g| {
         g.section("Project");
         let name = g.text("Name", Some(&meta.name));
@@ -57,6 +61,9 @@ fn project_summary(ui: &mut egui::Ui, doc: &Document) -> Option<Box<dyn Command>
         g.readonly_mono("Polylines", &lines.to_string());
         if texts > 0 {
             g.readonly_mono("Text", &texts.to_string());
+        }
+        if dimensions > 0 {
+            g.readonly_mono("Dimensions", &dimensions.to_string());
         }
         g.readonly_mono("Layers", &doc.layers().len().to_string());
         name.filter(|n| !n.trim().is_empty()).map(|n| {
@@ -231,6 +238,24 @@ fn single(ui: &mut egui::Ui, doc: &Document, id: EntityId) -> Option<Box<dyn Com
                 let current = TextAlign::ALL.iter().position(|a| *a == t.align);
                 if let Some(i) = g.combo("Align", current, &names) {
                     t.align = TextAlign::ALL[i];
+                    changed = true;
+                }
+            }
+            Entity::Dimension(d) => {
+                g.section("Dimension");
+                let names: Vec<String> = DimensionKind::ALL.iter().map(|k| k.key().to_string()).collect();
+                let current = DimensionKind::ALL.iter().position(|k| *k == d.kind);
+                if let Some(i) = g.combo("Measures", current, &names) {
+                    d.kind = DimensionKind::ALL[i];
+                    changed = true;
+                }
+                g.readonly_mono("Length", &conv.format_length_with_unit(d.measured()));
+                if let Some(v) = g.text("Text (<> is the length)", Some(&d.text)) {
+                    d.text = v;
+                    changed = true;
+                }
+                if let Some(layer) = layer_row(g, doc, Some(d.layer)) {
+                    d.layer = layer;
                     changed = true;
                 }
             }

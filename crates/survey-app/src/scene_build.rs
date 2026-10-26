@@ -127,8 +127,9 @@ fn build_scene(doc: &Document, highlight: Option<&Selection>, theme: &CadTheme, 
         if !layer.visible {
             continue;
         }
-        // Text is sized on paper and drawn over the scene (see the viewport overlays).
-        if matches!(entity, Entity::Text(_)) {
+        // Text and dimensions are sized on paper and drawn over the scene (see
+        // the viewport overlays).
+        if matches!(entity, Entity::Text(_) | Entity::Dimension(_)) {
             continue;
         }
         let code = entity.code();
@@ -173,7 +174,7 @@ fn build_scene(doc: &Document, highlight: Option<&Selection>, theme: &CadTheme, 
                     }
                 }
             }
-            Entity::Text(_) => {}
+            Entity::Text(_) | Entity::Dimension(_) => {}
         }
     }
     b.build(revision)
@@ -240,6 +241,8 @@ impl SnapProvider for DocSnapProvider<'_> {
                     },
                     tag,
                 }),
+                // Dimensions measure what is drawn; they are not snapped to.
+                Entity::Dimension(_) => {}
                 Entity::Polyline(l) => {
                     for (a, b, bulge) in l.segments() {
                         let (geom, bounds) = match ArcSegment::from_bulge(a, b, bulge) {
@@ -279,6 +282,13 @@ pub fn hit_test(doc: &Document, cam: &Camera, cursor: DVec2, aperture_px: f64) -
                 .flat_map(|part| part.windows(2))
                 .filter_map(|w| distance_to_segment_px(cam, cursor, w[0], w[1]))
                 .reduce(f64::min),
+            Some(Entity::Dimension(d)) => {
+                let [a, b] = d.line().map(|p| p.extend(d.line_at.z));
+                [[d.from, a], [a, b], [b, d.to]]
+                    .iter()
+                    .filter_map(|[p, q]| distance_to_segment_px(cam, cursor, *p, *q))
+                    .reduce(f64::min)
+            }
             // Text is found below, by its whole box.
             Some(Entity::Text(_)) | None => None,
         };
@@ -398,6 +408,10 @@ pub fn select_in_box(doc: &Document, cam: &Camera, sel: &SelectionBox) -> Vec<En
                 Some(Entity::Point(p)) => sel.selects(cam, &[vec![p.position]]),
                 Some(Entity::Polyline(l)) => sel.selects(cam, &l.tessellate(tolerance)),
                 Some(Entity::Text(t)) => sel.selects(cam, &[vec![t.position]]),
+                Some(Entity::Dimension(d)) => {
+                    let [a, b] = d.line().map(|p| p.extend(d.line_at.z));
+                    sel.selects(cam, &[vec![d.from, a, b, d.to]])
+                }
                 None => false,
             }
     });

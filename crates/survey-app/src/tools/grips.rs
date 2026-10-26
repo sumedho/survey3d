@@ -56,6 +56,16 @@ pub fn grips(doc: &Document, selection: &Selection) -> Vec<Grip> {
                 kind: GripKind::Point,
                 position: t.position,
             }),
+            Some(Entity::Dimension(d)) => {
+                // The measured points, then the dimension line's place.
+                for (i, position) in [d.from, d.to, d.line_at].into_iter().enumerate() {
+                    out.push(Grip {
+                        entity: id,
+                        kind: GripKind::Vertex(i),
+                        position,
+                    });
+                }
+            }
             Some(Entity::Polyline(l)) => {
                 for (i, v) in l.vertices.iter().enumerate() {
                     out.push(Grip {
@@ -98,6 +108,15 @@ pub fn apply_grip(entity: &Entity, grip: &Grip, to: &Pick) -> Option<Entity> {
             p.height_known |= to.height_known;
         }
         (Entity::Text(t), GripKind::Point) => t.position = place(to, t.position.z),
+        (Entity::Dimension(d), GripKind::Vertex(i)) => {
+            let v = match i {
+                0 => &mut d.from,
+                1 => &mut d.to,
+                2 => &mut d.line_at,
+                _ => return None,
+            };
+            *v = place(to, v.z);
+        }
         (Entity::Polyline(l), GripKind::Vertex(i)) => {
             let v = l.vertices.get_mut(i)?;
             *v = place(to, v.z);

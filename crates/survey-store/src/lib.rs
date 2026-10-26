@@ -19,8 +19,9 @@ use sha2::{Digest, Sha256};
 use survey_core::style::LineStyle;
 use survey_core::tin::Tin;
 use survey_model::{
-    AuditAction, AuditRecord, Color, Document, Entity, EntityId, Layer, LayerId, PointCloud, PointCloudId,
-    Polyline, ProjectMeta, RecordKind, Records, Surface, SurfaceId, SurveyPoint, TextAlign, TextNote,
+    AuditAction, AuditRecord, Color, Dimension, DimensionKind, Document, Entity, EntityId, Layer, LayerId,
+    PointCloud, PointCloudId, Polyline, ProjectMeta, RecordKind, Records, Surface, SurfaceId, SurveyPoint,
+    TextAlign, TextNote,
 };
 use thiserror::Error;
 
@@ -229,6 +230,7 @@ impl ProjectStore {
         let mut entities = self.load_points()?;
         entities.extend(self.load_polylines()?);
         entities.extend(self.load_texts()?);
+        entities.extend(self.load_dimensions()?);
         let mut doc = Document::from_parts(meta, layers, entities);
         doc.load_records(self.load_records()?);
         doc.load_surfaces(self.load_surfaces()?);
@@ -513,6 +515,27 @@ impl ProjectStore {
                     rotation: r.get(6)?,
                     align: TextAlign::parse(&r.get::<_, String>(7)?).unwrap_or_default(),
                     layer: LayerId(r.get(8)?),
+                }),
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn load_dimensions(&self) -> Result<Vec<(EntityId, Entity)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, e1, n1, z1, e2, n2, z2, line_e, line_n, line_z, text, layer_id
+             FROM dimensions ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                EntityId(r.get(0)?),
+                Entity::Dimension(Dimension {
+                    kind: DimensionKind::parse(&r.get::<_, String>(1)?).unwrap_or_default(),
+                    from: DVec3::new(r.get(2)?, r.get(3)?, r.get(4)?),
+                    to: DVec3::new(r.get(5)?, r.get(6)?, r.get(7)?),
+                    line_at: DVec3::new(r.get(8)?, r.get(9)?, r.get(10)?),
+                    text: r.get(11)?,
+                    layer: LayerId(r.get(12)?),
                 }),
             ))
         })?;
@@ -844,6 +867,8 @@ fn write_entity(tx: &Transaction<'_>, id: EntityId, entity: Option<&Entity>) -> 
         .execute([id.0])?;
     tx.prepare_cached("DELETE FROM texts WHERE id = ?1")?
         .execute([id.0])?;
+    tx.prepare_cached("DELETE FROM dimensions WHERE id = ?1")?
+        .execute([id.0])?;
     match entity {
         None => {}
         Some(Entity::Point(p)) => {
@@ -889,6 +914,27 @@ fn write_entity(tx: &Transaction<'_>, id: EntityId, entity: Option<&Entity>) -> 
                 t.rotation,
                 t.align.key(),
                 t.layer.0
+            ])?;
+        }
+        Some(Entity::Dimension(d)) => {
+            tx.prepare_cached(
+                "INSERT INTO dimensions (id, kind, e1, n1, z1, e2, n2, z2, line_e, line_n, line_z, text, layer_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            )?
+            .execute(params![
+                id.0,
+                d.kind.key(),
+                d.from.x,
+                d.from.y,
+                d.from.z,
+                d.to.x,
+                d.to.y,
+                d.to.z,
+                d.line_at.x,
+                d.line_at.y,
+                d.line_at.z,
+                d.text,
+                d.layer.0
             ])?;
         }
     }

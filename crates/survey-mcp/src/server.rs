@@ -132,7 +132,9 @@ impl Server {
             "set_layer" => self.set_layer(args),
             "set_project" => self.set_project(args),
             "site_calibration" => self.site_calibration(args),
+            "solve_curve" => self.solve_curve(args),
             "add_text" => self.add_text(args),
+            "add_dimension" => self.add_dimension(args),
             "edit_entities" => self.edit_entities(args),
             "create_surface" => self.create_surface(args),
             "set_surface" => self.set_surface(args),
@@ -183,13 +185,14 @@ impl Server {
         let doc = &p.doc;
         let meta = doc.meta();
         let mut counts = std::collections::HashMap::<LayerId, usize>::new();
-        let (mut points, mut polylines, mut texts) = (0, 0, 0);
+        let (mut points, mut polylines, mut texts, mut dimensions) = (0, 0, 0, 0);
         for (_, e) in doc.entities() {
             *counts.entry(e.layer()).or_default() += 1;
             match e {
                 Entity::Point(_) => points += 1,
                 Entity::Polyline(_) => polylines += 1,
                 Entity::Text(_) => texts += 1,
+                Entity::Dimension(_) => dimensions += 1,
             }
         }
         let bounds = doc.bounds();
@@ -207,7 +210,7 @@ impl Server {
             "coordinate_system": meta.coord_system.display_name(),
             "conventions": doc.conventions(),
             "conventions_presets": Conventions::presets().into_iter().map(|c| c.name).collect::<Vec<_>>(),
-            "counts": { "points": points, "polylines": polylines, "texts": texts },
+            "counts": { "points": points, "polylines": polylines, "texts": texts, "dimensions": dimensions },
             "feature_codes": meta.feature_codes.codes.len(),
             "site_calibration": {
                 "pairs": meta.calibration.pairs.iter().filter(|p| !p.measured.trim().is_empty()).count(),
@@ -775,6 +778,11 @@ impl Server {
                 .filter(|(id, e)| matches!(e, Entity::Text(_)) && filter.matches(doc, *id, e))
                 .map(|(id, e)| entity_row(doc, id, e))
                 .collect(),
+            "dimensions" => doc
+                .entities()
+                .filter(|(id, e)| matches!(e, Entity::Dimension(_)) && filter.matches(doc, *id, e))
+                .map(|(id, e)| entity_row(doc, id, e))
+                .collect(),
             "feature_codes" => doc
                 .meta()
                 .feature_codes
@@ -952,6 +960,21 @@ fn entity_row(doc: &Document, id: EntityId, e: &Entity) -> Value {
             "align": t.align.key(),
             "layer": layer_name(doc, t.layer),
         }),
+        Entity::Dimension(d) => {
+            let [a, b] = d.line();
+            json!({
+                "type": "dimension",
+                "id": id.0,
+                "kind": d.kind.key(),
+                "from": [d.from.x, d.from.y],
+                "to": [d.to.x, d.to.y],
+                "line": [[a.x, a.y], [b.x, b.y]],
+                "length": d.measured(),
+                "shows": survey_app::dimension_text(d, doc.conventions()),
+                "text": d.text,
+                "layer": layer_name(doc, d.layer),
+            })
+        }
         Entity::Polyline(l) => {
             let (length, length_3d, area) = polyline_metrics(&l.vertices, &l.bulges, l.closed);
             let mut row = Map::new();
@@ -1018,6 +1041,7 @@ enum Kind {
     Points,
     Polylines,
     Texts,
+    Dimensions,
     All,
 }
 
@@ -1027,6 +1051,7 @@ impl Kind {
             "points" => Ok(Kind::Points),
             "polylines" => Ok(Kind::Polylines),
             "texts" => Ok(Kind::Texts),
+            "dimensions" => Ok(Kind::Dimensions),
             "all" => Ok(Kind::All),
             other => Err(format!("kind: unknown kind '{other}'")),
         }
@@ -1039,6 +1064,7 @@ impl Kind {
                 | (Kind::Points, Entity::Point(_))
                 | (Kind::Polylines, Entity::Polyline(_))
                 | (Kind::Texts, Entity::Text(_))
+                | (Kind::Dimensions, Entity::Dimension(_))
         )
     }
 }
@@ -1110,6 +1136,7 @@ impl Filter {
 }
 
 mod calibration;
+mod cogo;
 mod drawing;
 mod settings;
 mod surfaces;

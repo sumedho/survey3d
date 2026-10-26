@@ -1,14 +1,26 @@
 //! Bearing & distance entry (`bd`): walk a traverse or a lot boundary from a
 //! start point by typing `bearing distance [dZ]` for each leg. Each leg creates
-//! a point and moves on to it; the legs become one polyline. `c` closes the
-//! figure on its start and reports the misclosure, precision and area (the
-//! figure is not adjusted). Sideshots (`s`) take a point without moving on.
+//! a point and moves on to it; the legs become one polyline. Sideshots (`s`)
+//! take a point without moving on.
+//!
+//! A curved leg is given as a plan shows it, with `r=` radius and `l` or `r`
+//! for the way it turns: by its chord (`bearing chord r=20 l`) or as a curve
+//! leaving tangent to the leg before (`r=20 a=15.71 l`, with any two of
+//! `r=` `a=` arc length, `c=` chord, `d=` delta and `t=` tangent length; `tb=`
+//! gives the starting tangent bearing instead).
+//!
+//! `c` closes the figure on its start, the last leg being the one back to it,
+//! and reports the misclosure, precision and area (the figure is not
+//! adjusted); `j` joins back to the start with a computed closing leg instead.
+//! Either way the lot can then be named to make it a parcel.
 
 use egui_cad::snap::Pick;
-use glam::DVec3;
-use survey_core::point_input::ResolvedPoint;
-use survey_core::{Bearing, Conventions};
-use survey_model::{ChangeSet, Entity, Polyline};
+use glam::{DVec2, DVec3};
+use survey_core::arc::{Arc, end_direction, polyline_metrics};
+use survey_core::point_input::{PointInput, ResolvedPoint};
+use survey_core::solvers::{CurveInput, solve_curve};
+use survey_core::{Angle, Bearing, Conventions};
+use survey_model::{ChangeSet, Entity, ParcelRecord, Polyline};
 
 use super::cogo::{fields, new_point};
 use super::{Preview, Tool, ToolCtx, ToolEvent, ToolOutcome, resolved};
@@ -23,7 +35,16 @@ struct Leg {
     height_known: bool,
     /// Taken without moving on (not part of the figure).
     sideshot: bool,
+    /// Length along the leg (the arc for a curve).
     distance: f64,
+    /// The leg's bulge (0 when straight; see `survey_core::arc`).
+    bulge: f64,
+}
+
+/// A closed figure waiting to be named as a parcel.
+struct Closed {
+    vertices: Vec<DVec3>,
+    lot: String,
 }
 
 #[derive(Default)]
@@ -32,6 +53,155 @@ pub struct BdTool {
     legs: Vec<Leg>,
     sideshot: bool,
     code: String,
+    closed: Option<Closed>,
+}
+
+/// Which way a curve turns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Turn {
+    Left,
+    Right,
+}
+
+/// A curved leg, solved: where it ends and its shape.
+#[derive(Debug, PartialEq)]
+struct CurveLeg {
+    end: DVec2,
+    bulge: f64,
+    radius: f64,
+    length: f64,
+    chord: f64,
+    chord_bearing: Bearing,
+    delta: f64,
+    /// Fields after the curve's own (dZ and code).
+    rest: Vec<String>,
+}
+
+/// Curve keys (`key=value`).
+const CURVE_KEYS: [&str; 6] = ["r", "a", "c", "d", "t", "tb"];
+
+fn curve_field(part: &str) -> Option<(&str, &str)> {
+    let (k, v) = part.split_once('=')?;
+    let k = k.trim();
+    CURVE_KEYS
+        .iter()
+        .find(|c| c.eq_ignore_ascii_case(k))
+        .map(|c| (*c, v.trim()))
+}
+
+fn is_curve(text: &str) -> bool {
+    fields(text).iter().any(|p| curve_field(p).is_some())
+}
+
+/// Solves a curved leg leaving `from` (heading `incoming`, the direction the
+/// figure arrives in, for tangent curves).
+fn solve_curve_leg(
+    conv: &Conventions,
+    text: &str,
+    from: DVec2,
+    incoming: Option<DVec2>,
+) -> Result<CurveLeg, String> {
+    let parts = fields(text);
+    let mut i = 0;
+    // A leading bearing and distance is the chord.
+    let mut chord_given = None;
+    if parts.len() >= 2
+        && curve_field(parts[0]).is_none()
+        && curve_field(parts[1]).is_none()
+        && let (Ok(b), Ok(d)) = (conv.parse_bearing(parts[0]), conv.parse_length(parts[1]))
+    {
+        chord_given = Some((b, d));
+        i = 2;
+    }
+    let mut input = CurveInput::default();
+    let mut turn = None;
+    let mut major = false;
+    let mut start_tangent = None;
+    let mut rest = Vec::new();
+    for part in &parts[i..] {
+        if let Some((key, value)) = curve_field(part) {
+            let length = || conv.parse_length(value).map_err(|e| format!("{key}=: {e}"));
+            match key {
+                "r" => input.radius = Some(length()?),
+                "a" => input.length = Some(length()?),
+                "c" => input.chord = Some(length()?),
+                "t" => input.tangent = Some(length()?),
+                "d" => {
+                    let a = conv.parse_angle(value).map_err(|e| format!("d=: {e}"))?;
+                    input.delta = Some(a.radians().abs());
+                }
+                _ => {
+                    start_tangent = Some(conv.parse_bearing(value).map_err(|e| format!("tb=: {e}"))?);
+                }
+            }
+            continue;
+        }
+        match part.to_ascii_lowercase().as_str() {
+            "l" | "left" | "ccw" => turn = Some(Turn::Left),
+            "r" | "right" | "cw" => turn = Some(Turn::Right),
+            "major" => major = true,
+            _ => rest.push((*part).to_string()),
+        }
+    }
+    let turn = turn.ok_or("Say which way the curve turns: l (left) or r (right)")?;
+    if let Some((_, chord)) = chord_given {
+        if input.chord.is_some() {
+            return Err("Give the chord once: as the bearing and distance, or as c=".into());
+        }
+        input.chord = Some(chord);
+    }
+    let known = [
+        input.radius,
+        input.delta,
+        input.length,
+        input.chord,
+        input.tangent,
+    ]
+    .iter()
+    .flatten()
+    .count();
+    if known != 2 {
+        return Err(if chord_given.is_some() {
+            "With a chord bearing and distance, give one more of r= a= d= t=".into()
+        } else {
+            "Give two of r= (radius) a= (arc) c= (chord) d= (delta) t= (tangent)".into()
+        });
+    }
+    let mut solutions = solve_curve(input).map_err(|e| e.to_string())?;
+    solutions.sort_by(|a, b| a.delta.total_cmp(&b.delta));
+    let curve = if major {
+        solutions.last()
+    } else {
+        solutions.first()
+    }
+    .copied()
+    .ok_or("No curve has these values")?;
+    let sign = if turn == Turn::Left { 1.0 } else { -1.0 };
+    let chord_dir = match chord_given {
+        Some((b, _)) => b.unit_vector(),
+        None => {
+            let tangent = match start_tangent {
+                Some(b) => b.unit_vector(),
+                None => incoming
+                    .and_then(|d| d.try_normalize())
+                    .ok_or("A tangent curve follows a leg (or give tb= for its starting tangent bearing)")?,
+            };
+            // The chord turns half the delta from the starting tangent.
+            DVec2::from_angle(sign * curve.delta / 2.0).rotate(tangent)
+        }
+    };
+    let end = from + chord_dir * curve.chord;
+    let chord_bearing = Bearing::from_delta(chord_dir.x, chord_dir.y).ok_or("The chord has no length")?;
+    Ok(CurveLeg {
+        end,
+        bulge: sign * (curve.delta / 4.0).tan(),
+        radius: curve.radius,
+        length: curve.length,
+        chord: curve.chord,
+        chord_bearing,
+        delta: curve.delta,
+        rest,
+    })
 }
 
 impl BdTool {
@@ -48,15 +218,32 @@ impl BdTool {
             .or(self.start)
     }
 
+    fn traverse(&self) -> impl Iterator<Item = &Leg> {
+        self.legs.iter().filter(|l| !l.sideshot)
+    }
+
     /// The figure's vertices: the start, then each traverse leg's end.
     fn figure(&self) -> Vec<DVec3> {
         let mut v: Vec<DVec3> = self.start.iter().map(|s| s.position).collect();
-        v.extend(self.legs.iter().filter(|l| !l.sideshot).map(|l| l.position));
+        v.extend(self.traverse().map(|l| l.position));
         v
     }
 
+    /// The bulge of each figure segment.
+    fn bulges(&self) -> Vec<f64> {
+        self.traverse().map(|l| l.bulge).collect()
+    }
+
     fn traverse_length(&self) -> f64 {
-        self.legs.iter().filter(|l| !l.sideshot).map(|l| l.distance).sum()
+        self.traverse().map(|l| l.distance).sum()
+    }
+
+    /// The direction the figure arrives at the current point in.
+    fn incoming(&self) -> Option<DVec2> {
+        let v = self.figure();
+        let b = self.bulges();
+        let n = v.len();
+        (n >= 2).then(|| end_direction(v[n - 2], v[n - 1], b[n - 2]))
     }
 
     /// Sets the start point, creating a point there unless one exists.
@@ -75,48 +262,99 @@ impl BdTool {
         self.start = Some(start);
     }
 
-    /// One `bearing distance [dZ] [code]` observation from the current point.
-    fn leg(&mut self, ctx: &mut ToolCtx<'_>, text: &str) {
-        let Some(from) = self.current() else { return };
-        let conv = ctx.conventions();
-        let parts = fields(text);
-        if !(2..=4).contains(&parts.len()) {
-            ctx.log
-                .error("Enter: bearing distance[ dZ][ code] — e.g. 45.3020 25.31 or N45.3020E,25.31");
-            return;
-        }
-        let parsed = (|| {
-            let bearing = conv.parse_bearing(parts[0])?;
-            let dist = conv.parse_length(parts[1])?;
-            Ok::<_, survey_core::ParseError>((bearing, dist))
-        })();
-        let (bearing, dist) = match parsed {
-            Ok(v) => v,
-            Err(e) => {
-                ctx.log.error(e.to_string());
-                return;
-            }
-        };
-        // A third field is dZ when numeric, else a code (as is a fourth).
+    /// Fields after a leg's own: a number is dZ, anything else the code.
+    fn take_rest(&mut self, conv: &Conventions, rest: &[&str]) -> Option<f64> {
         let mut dz = None;
-        for part in &parts[2..] {
+        for part in rest {
             match conv.parse_length(part) {
                 Ok(v) if dz.is_none() => dz = Some(v),
-                _ => self.code = part.to_string(),
+                _ => self.code = (*part).to_string(),
             }
         }
-        let plan = from.position.truncate() + bearing.unit_vector() * dist;
+        dz
+    }
+
+    /// One `bearing distance [dZ] [code]` observation (or a curve) from the
+    /// current point.
+    fn leg(&mut self, ctx: &mut ToolCtx<'_>, text: &str) {
+        let Some(from) = self.current() else { return };
+        let conv = ctx.conventions().clone();
+        let (plan, distance, bulge, dz, report) = if is_curve(text) {
+            if self.sideshot {
+                ctx.log
+                    .error("A sideshot is a straight line: turn sideshots off (s) for a curve");
+                return;
+            }
+            let curve = match solve_curve_leg(&conv, text, from.position.truncate(), self.incoming()) {
+                Ok(c) => c,
+                Err(e) => {
+                    ctx.log.error(e);
+                    return;
+                }
+            };
+            let rest: Vec<&str> = curve.rest.iter().map(String::as_str).collect();
+            if rest.len() > 2 {
+                ctx.log.error("After the curve, only dZ and a code may follow");
+                return;
+            }
+            let dz = self.take_rest(&conv, &rest);
+            let report = format!(
+                "R {}  arc {}  chord {} {}  Δ {} {}",
+                conv.format_length(curve.radius),
+                conv.format_length(curve.length),
+                conv.format_bearing(curve.chord_bearing),
+                conv.format_length(curve.chord),
+                conv.format_angle(Angle::from_radians(curve.delta)),
+                if curve.bulge > 0.0 { "left" } else { "right" },
+            );
+            (curve.end, curve.length, curve.bulge, dz, report)
+        } else {
+            let parts = fields(text);
+            if !(2..=4).contains(&parts.len()) {
+                ctx.log
+                    .error("Enter: bearing distance[ dZ][ code] — e.g. 45.3020 25.31 or N45.3020E,25.31");
+                return;
+            }
+            let parsed = (|| {
+                let bearing = conv.parse_bearing(parts[0])?;
+                let dist = conv.parse_length(parts[1])?;
+                Ok::<_, survey_core::ParseError>((bearing, dist))
+            })();
+            let (bearing, dist) = match parsed {
+                Ok(v) => v,
+                Err(e) => {
+                    ctx.log.error(e.to_string());
+                    return;
+                }
+            };
+            let dz = self.take_rest(&conv, &parts[2..]);
+            let report = format!(
+                "brg {}  dist {}",
+                conv.format_bearing(bearing),
+                conv.format_length(dist)
+            );
+            (
+                from.position.truncate() + bearing.unit_vector() * dist,
+                dist,
+                0.0,
+                dz,
+                report,
+            )
+        };
         let height_known = from.height_known && dz.is_some();
         let position = plan.extend(from.position.z + dz.unwrap_or(0.0));
         let name = ctx.doc.next_point_name();
         let point = new_point(ctx, name.clone(), position, height_known, &self.code);
         ctx.execute(ChangeSet::new(format!("Bearing & distance point {name}")).insert_entity(point));
-        let conv = ctx.conventions();
         ctx.log.result(format!(
-            "{} {name}: brg {}  dist {}  → {}",
-            if self.sideshot { "Sideshot" } else { "Point" },
-            conv.format_bearing(bearing),
-            conv.format_length(dist),
+            "{} {name}: {report}  → {}",
+            if self.sideshot {
+                "Sideshot"
+            } else if bulge != 0.0 {
+                "Curve to"
+            } else {
+                "Point"
+            },
             conv.format_coord(position, height_known)
         ));
         self.legs.push(Leg {
@@ -124,7 +362,8 @@ impl BdTool {
             position,
             height_known,
             sideshot: self.sideshot,
-            distance: dist,
+            distance,
+            bulge,
         });
     }
 
@@ -143,9 +382,9 @@ impl BdTool {
     /// The last leg returned to the start: report the misclosure, replace its
     /// end point by the start, and draw the closed figure.
     fn close(&mut self, ctx: &mut ToolCtx<'_>) {
-        let traverse = self.legs.iter().filter(|l| !l.sideshot).count();
+        let traverse = self.traverse().count();
         let Some(start) = self.start else { return };
-        if traverse < 3 {
+        if traverse < 2 || (traverse < 3 && self.bulges().iter().all(|b| *b == 0.0)) {
             ctx.log
                 .warn("Close needs at least three legs (the last one back to the start)");
             return;
@@ -159,7 +398,8 @@ impl BdTool {
         // The figure without the closing leg's end (it is the start corner).
         let mut vertices = self.figure();
         vertices.pop();
-        let area = polygon_area(&vertices);
+        let bulges = self.bulges();
+        let area = polyline_metrics(&vertices, &bulges, true).2.abs();
         let conv = ctx.conventions().clone();
         let misclose = mis.length();
         let precision = if misclose > 1e-9 {
@@ -176,24 +416,107 @@ impl BdTool {
             conv.format_area(area),
         ));
         let name = self.legs[last].name.clone();
-        let mut cs = ChangeSet::new(format!("Close bearing & distance figure ({} legs)", traverse));
+        let mut cs = ChangeSet::new(format!("Close bearing & distance figure ({traverse} legs)"));
         if let Some((id, _)) = ctx.doc.find_point_by_name(&name) {
             cs = cs.delete_entity(id);
         }
-        cs = cs.insert_entity(self.polyline(ctx, vertices, true));
-        ctx.execute(cs);
-        ctx.log
-            .info("Closed boundary drawn — select it and run mkparcel to make it a parcel");
-        self.reset();
+        self.finish_closed(ctx, cs, vertices, bulges);
     }
 
-    fn polyline(&self, ctx: &ToolCtx<'_>, vertices: Vec<DVec3>, closed: bool) -> Entity {
-        let heights_known = self.start.is_some_and(|s| s.height_known)
-            && self.legs.iter().filter(|l| !l.sideshot).all(|l| l.height_known);
+    /// Joins back to the start with a computed closing leg, reported.
+    fn join(&mut self, ctx: &mut ToolCtx<'_>) {
+        let (Some(start), Some(cur)) = (self.start, self.current()) else {
+            return;
+        };
+        let traverse = self.traverse().count();
+        if traverse < 2 {
+            ctx.log.warn("Join needs at least two legs to close with a third");
+            return;
+        }
+        let back = (start.position - cur.position).truncate();
+        let Some(bearing) = Bearing::from_delta(back.x, back.y) else {
+            ctx.log.warn("Already at the start: close it with c");
+            return;
+        };
+        let vertices = self.figure();
+        let mut bulges = self.bulges();
+        bulges.push(0.0);
+        let (perimeter, _, area) = polyline_metrics(&vertices, &bulges, true);
+        let conv = ctx.conventions().clone();
+        ctx.log.result(format!(
+            "Closing leg: brg {}  dist {}  ({} legs, perimeter {}  area {})",
+            conv.format_bearing(bearing),
+            conv.format_length(back.length()),
+            traverse + 1,
+            conv.format_length(perimeter),
+            conv.format_area(area.abs()),
+        ));
+        let cs = ChangeSet::new(format!("Join bearing & distance figure ({} legs)", traverse + 1));
+        self.finish_closed(ctx, cs, vertices, bulges);
+    }
+
+    /// Draws the closed figure (with `cs`) and asks for a lot name.
+    fn finish_closed(
+        &mut self,
+        ctx: &mut ToolCtx<'_>,
+        cs: ChangeSet,
+        vertices: Vec<DVec3>,
+        bulges: Vec<f64>,
+    ) {
+        let line = self.polyline(ctx, vertices.clone(), bulges, true);
+        ctx.execute(cs.insert_entity(line));
+        let lot = format!("Lot {}", crate::ui::parcels::next_lot_number(ctx.doc));
+        self.reset();
+        self.closed = Some(Closed { vertices, lot });
+    }
+
+    /// Makes the closed figure a parcel named `name`.
+    fn make_parcel(&mut self, ctx: &mut ToolCtx<'_>, name: &str) {
+        let Some(closed) = self.closed.take() else {
+            return;
+        };
+        let name = if name.eq_ignore_ascii_case("y") {
+            closed.lot
+        } else {
+            name.to_string()
+        };
+        // The newest closed polyline on these vertices is the one just drawn.
+        let boundary = ctx
+            .doc
+            .entities()
+            .filter_map(|(id, e)| match e {
+                Entity::Polyline(l) if l.closed && l.vertices == closed.vertices => Some(id),
+                _ => None,
+            })
+            .max();
+        let Some(boundary) = boundary else {
+            ctx.log.error("The closed figure is gone: draw it again");
+            return;
+        };
+        ctx.execute(
+            ChangeSet::new(format!("Create parcel {name}")).insert_record(ParcelRecord {
+                name: name.clone(),
+                boundary,
+                ..Default::default()
+            }),
+        );
+        ctx.log.result(format!("Parcel {name} created"));
+    }
+
+    fn polyline(&self, ctx: &ToolCtx<'_>, vertices: Vec<DVec3>, bulges: Vec<f64>, closed: bool) -> Entity {
+        let heights_known =
+            self.start.is_some_and(|s| s.height_known) && self.traverse().all(|l| l.height_known);
+        let bulges = if bulges.iter().any(|b| *b != 0.0) {
+            let mut b = bulges;
+            b.resize(vertices.len(), 0.0);
+            b
+        } else {
+            Vec::new()
+        };
         Entity::Polyline(Polyline {
             name: String::new(),
             vertices,
-            bulges: Vec::new(),
+            bulges,
             closed,
             code: self.code.clone(),
             layer: ctx.doc.current_layer(),
@@ -205,7 +528,7 @@ impl BdTool {
     fn finish_run(&mut self, ctx: &mut ToolCtx<'_>) {
         let vertices = self.figure();
         if vertices.len() >= 2 {
-            let line = self.polyline(ctx, vertices, false);
+            let line = self.polyline(ctx, vertices, self.bulges(), false);
             ctx.execute(ChangeSet::new("Bearing & distance linework").insert_entity(line));
         }
         self.reset();
@@ -215,25 +538,13 @@ impl BdTool {
         self.start = None;
         self.legs.clear();
         self.sideshot = false;
+        self.closed = None;
     }
-}
-
-/// Plan area of a polygon (shoelace).
-fn polygon_area(v: &[DVec3]) -> f64 {
-    let n = v.len();
-    (0..n)
-        .map(|i| {
-            let (a, b) = (v[i].truncate(), v[(i + 1) % n].truncate());
-            a.perp_dot(b)
-        })
-        .sum::<f64>()
-        .abs()
-        * 0.5
 }
 
 /// Option keywords (exact, so codes in capitals are not taken for them).
 fn is_option(text: &str) -> bool {
-    matches!(text.trim(), "s" | "u" | "c")
+    matches!(text.trim(), "s" | "u" | "c" | "j")
 }
 
 impl Tool for BdTool {
@@ -242,6 +553,12 @@ impl Tool for BdTool {
     }
 
     fn prompt(&self, conv: &Conventions) -> String {
+        if let Some(closed) = &self.closed {
+            return format!(
+                "Closed — lot name to make it a parcel (y for {}, Enter to skip):",
+                closed.lot
+            );
+        }
         let code = if self.code.is_empty() {
             String::new()
         } else {
@@ -251,7 +568,7 @@ impl Tool for BdTool {
             return format!("Bearing & distance{code} — start point:");
         };
         let mode = if self.sideshot { " sideshots" } else { "" };
-        let legs = self.legs.iter().filter(|l| !l.sideshot).count();
+        let legs = self.traverse().count();
         let status = match self.current() {
             Some(cur) if legs > 0 => {
                 let back = (cur.position - start.position).truncate().length();
@@ -263,22 +580,29 @@ impl Tool for BdTool {
             }
             _ => String::new(),
         };
-        format!("Bearing & distance{code}{mode}{status} — bearing distance[ dZ][ code] / s / u / c:")
+        format!(
+            "Bearing & distance{code}{mode}{status} — bearing distance[ dZ][ code], a curve (r=… l/r) / s / u / c close / j join:"
+        )
     }
 
     fn base_point(&self) -> Option<ResolvedPoint> {
         self.current()
     }
 
+    fn wants_point(&self) -> bool {
+        // While a lot name is asked for, typed text is the name.
+        self.closed.is_none()
+    }
+
     fn takes_codes(&self) -> bool {
-        true
+        self.closed.is_none()
     }
 
     fn claims_text(&self, conv: &Conventions, text: &str) -> bool {
-        if self.start.is_none() {
+        if self.start.is_none() || self.closed.is_some() {
             return false;
         }
-        if is_option(text) {
+        if is_option(text) || is_curve(text) {
             return true;
         }
         let parts = fields(text);
@@ -286,6 +610,42 @@ impl Tool for BdTool {
     }
 
     fn on_event(&mut self, ctx: &mut ToolCtx<'_>, event: ToolEvent<'_>) -> ToolOutcome {
+        if self.closed.is_some() {
+            match event {
+                ToolEvent::Text(text) => {
+                    // Coordinates start the next run instead.
+                    let conv = ctx.conventions().clone();
+                    if text.contains([',', '@'])
+                        && let Ok(Some(input)) = PointInput::parse(text, &conv)
+                        && let Ok(r) = input.resolve(None)
+                    {
+                        self.closed = None;
+                        self.begin(
+                            ctx,
+                            &Pick {
+                                point: r.position,
+                                height_known: r.height_known,
+                                snap: None,
+                            },
+                        );
+                    } else {
+                        self.make_parcel(ctx, text.trim());
+                    }
+                    return ToolOutcome::Continue;
+                }
+                ToolEvent::Finish => {
+                    self.closed = None;
+                    ctx.log
+                        .info("No parcel made (select the boundary and run mkparcel to make one later)");
+                    return ToolOutcome::Continue;
+                }
+                ToolEvent::Point(_) | ToolEvent::Region(_) => self.closed = None,
+                ToolEvent::Cancel => {
+                    self.closed = None;
+                    return ToolOutcome::Done;
+                }
+            }
+        }
         match event {
             ToolEvent::Point(pick) => {
                 // A point after legs starts a new run from it.
@@ -307,7 +667,8 @@ impl Tool for BdTool {
                     }
                     "u" if self.start.is_some() => self.undo(ctx),
                     "c" if self.start.is_some() => self.close(ctx),
-                    t if self.start.is_some() && fields(t).len() >= 2 => self.leg(ctx, t),
+                    "j" if self.start.is_some() => self.join(ctx),
+                    t if self.start.is_some() && (is_curve(t) || fields(t).len() >= 2) => self.leg(ctx, t),
                     t => {
                         self.code = if t == "-" { String::new() } else { t.to_string() };
                         ctx.log.info(if self.code.is_empty() {
@@ -338,7 +699,14 @@ impl Tool for BdTool {
     fn preview(&self, _conv: &Conventions, _cursor: Option<&Pick>, out: &mut Preview) {
         let figure = self.figure();
         if figure.len() >= 2 {
-            out.polylines.push(figure.clone());
+            let mut line = figure[..1].to_vec();
+            for (w, b) in figure.windows(2).zip(self.bulges()) {
+                match Arc::from_bulge(w[0], w[1], b) {
+                    Some(arc) => line.extend(arc.tessellate(arc.radius * 1e-3).into_iter().skip(1)),
+                    None => line.push(w[1]),
+                }
+            }
+            out.polylines.push(line);
         }
         if let Some(cur) = self.current() {
             out.points.push(cur.position);
@@ -360,5 +728,96 @@ impl Tool for BdTool {
                 out.rubber.push([cur.position, start.position]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn conv() -> Conventions {
+        Conventions {
+            angle_format: survey_core::conventions::AngleFormat::DecimalDegrees,
+            ..Default::default()
+        }
+    }
+
+    fn close(a: DVec2, b: DVec2) -> bool {
+        a.distance(b) < 1e-9
+    }
+
+    /// Heading north from the origin, a left-turning quarter circle of radius
+    /// 10 ends at (-10, 10), whichever two elements give it.
+    #[test]
+    fn tangent_curves_from_any_two_elements() {
+        let c = conv();
+        let quarter = std::f64::consts::FRAC_PI_2 * 10.0;
+        let chord = 200f64.sqrt();
+        for text in [
+            format!("r=10 a={quarter} l"),
+            "r=10 d=90 l".to_string(),
+            format!("r=10 c={chord} l"),
+            "r=10 t=10 l".to_string(),
+            format!("a={quarter} c={chord} left"),
+        ] {
+            let leg = solve_curve_leg(&c, &text, DVec2::ZERO, Some(DVec2::Y)).expect(&text);
+            assert!(close(leg.end, DVec2::new(-10.0, 10.0)), "{text}: {:?}", leg.end);
+            assert!(
+                (leg.bulge - (std::f64::consts::FRAC_PI_8).tan()).abs() < 1e-9,
+                "anticlockwise"
+            );
+            assert!((leg.length - quarter).abs() < 1e-9);
+        }
+        // Turning right ends at (10, 10), with a clockwise bulge.
+        let leg = solve_curve_leg(&c, "r=10 d=90 r", DVec2::ZERO, Some(DVec2::Y)).expect("right");
+        assert!(close(leg.end, DVec2::new(10.0, 10.0)) && leg.bulge < 0.0);
+        // A starting tangent bearing replaces the leg before.
+        let leg = solve_curve_leg(&c, "r=10 d=90 r tb=90", DVec2::ZERO, None).expect("tb");
+        assert!(close(leg.end, DVec2::new(10.0, -10.0)), "{:?}", leg.end);
+    }
+
+    #[test]
+    fn chord_curves_and_errors() {
+        let c = conv();
+        // Chord bearing 45 and chord √200 with radius 10: the quarter circle
+        // through (10, 10), bulging left of the chord when turning right.
+        let leg = solve_curve_leg(
+            &c,
+            &format!("45 {} r=10 r 1.5 KB", 200f64.sqrt()),
+            DVec2::ZERO,
+            None,
+        )
+        .expect("chord");
+        assert!(close(leg.end, DVec2::new(10.0, 10.0)));
+        assert!(
+            (leg.delta - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
+            "the minor arc"
+        );
+        assert_eq!(leg.rest, vec!["1.5", "KB"]);
+        let major = solve_curve_leg(
+            &c,
+            &format!("45 {} r=10 r major", 200f64.sqrt()),
+            DVec2::ZERO,
+            None,
+        )
+        .expect("major");
+        assert!((major.delta - 1.5 * std::f64::consts::PI).abs() < 1e-9);
+        assert!(
+            solve_curve_leg(&c, "r=10 a=5", DVec2::ZERO, Some(DVec2::Y)).is_err(),
+            "no turn"
+        );
+        assert!(
+            solve_curve_leg(&c, "r=10 l", DVec2::ZERO, Some(DVec2::Y)).is_err(),
+            "one element"
+        );
+        assert!(
+            solve_curve_leg(&c, "r=10 a=5 l", DVec2::ZERO, None).is_err(),
+            "no tangent"
+        );
+        assert!(
+            solve_curve_leg(&c, "r=5 c=20 l", DVec2::ZERO, Some(DVec2::Y)).is_err(),
+            "chord too long"
+        );
+        assert!(is_curve("r=10 a=5 l") && !is_curve("45 10"));
     }
 }

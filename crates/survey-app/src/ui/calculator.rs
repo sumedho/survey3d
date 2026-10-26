@@ -6,7 +6,9 @@ use std::fmt::Write as _;
 use egui::RichText;
 use egui_cad::chrome::segmented;
 use egui_cad::{CadTheme, fonts};
-use survey_core::solvers::{Curve, CurveInput, Triangle, TriangleInput, solve_curve, solve_triangle};
+use survey_core::solvers::{CurveInput, Triangle, TriangleInput, solve_curve, solve_triangle};
+
+use crate::curves::curve_text;
 use survey_core::{Angle, Conventions};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -224,27 +226,6 @@ impl CalculatorWindow {
         }
         None
     }
-}
-
-fn curve_text(conv: &Conventions, c: &Curve) -> String {
-    let len = |v: f64| conv.format_length_with_unit(v);
-    let mut s = String::new();
-    let _ = writeln!(s, "Radius        {}", len(c.radius));
-    let _ = writeln!(
-        s,
-        "Delta         {}",
-        conv.format_angle(Angle::from_radians(c.delta))
-    );
-    let _ = writeln!(s, "Arc length    {}", len(c.length));
-    let _ = writeln!(s, "Chord         {}", len(c.chord));
-    if c.delta < std::f64::consts::PI {
-        let _ = writeln!(s, "Tangent       {}", len(c.tangent));
-        let _ = writeln!(s, "External      {}", len(c.external));
-    }
-    let _ = writeln!(s, "Mid-ordinate  {}", len(c.mid_ordinate));
-    let segment = 0.5 * c.radius * c.radius * (c.delta - c.delta.sin());
-    let _ = write!(s, "Segment area  {}", conv.format_area(segment));
-    s
 }
 
 fn triangle_text(conv: &Conventions, t: &Triangle) -> String {

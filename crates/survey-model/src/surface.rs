@@ -238,7 +238,7 @@ impl SurfaceDefinition {
                         input.points.push(p.position);
                     }
                 }
-                Entity::Text(_) => {}
+                Entity::Text(_) | Entity::Dimension(_) => {}
                 Entity::Polyline(l) => {
                     // A plan-only line has no heights to model the ground with.
                     if l.heights_known && self.selects_breakline(doc, id, l) {

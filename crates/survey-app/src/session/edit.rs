@@ -212,6 +212,15 @@ impl Session {
                         conv.format_coord(t.position, false)
                     ));
                 }
+                Some(Entity::Dimension(d)) => {
+                    text.push_str(&format!(
+                        "DIMENSION {} {}  from {}  to {}\n",
+                        d.kind.key(),
+                        crate::dimension::dimension_text(d, conv),
+                        conv.format_coord(d.from, false),
+                        conv.format_coord(d.to, false)
+                    ));
+                }
                 None => {}
             }
         }
@@ -395,17 +404,7 @@ impl Session {
             return;
         }
         // Continue the "Lot n" numbering.
-        let mut next = doc
-            .parcels()
-            .iter()
-            .filter_map(|p| {
-                p.name
-                    .strip_prefix("Lot ")
-                    .and_then(|n| n.trim().parse::<u32>().ok())
-            })
-            .max()
-            .unwrap_or(0)
-            + 1;
+        let mut next = crate::ui::parcels::next_lot_number(doc);
         let n = lines.len();
         let mut cs = ChangeSet::new(format!("Create {n} parcels"));
         for id in lines {

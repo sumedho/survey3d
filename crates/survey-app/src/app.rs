@@ -1212,10 +1212,7 @@ impl SurveyApp {
             .collect();
         for (id, path, name) in jobs {
             let Some(found) = self.resolve_cloud_path(&path) else {
-                self.session.log.warn(format!(
-                    "Point cloud {name}: {} not found. Re-link it from File → Point clouds (COPC).",
-                    path.display()
-                ));
+                self.cloud_streamer.fail(id, cloud_not_found(&path));
                 continue;
             };
             match survey_io::copc::read_copc_coarse(&found, INITIAL_PREVIEW) {
@@ -1239,6 +1236,7 @@ impl SurveyApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn stream_clouds(&mut self, ctx: &egui::Context) -> Option<std::sync::Arc<cad_render::CloudFrame>> {
         self.cloud_streamer.drain();
+        self.log_stream_errors();
         let any = self
             .session
             .project
@@ -1264,6 +1262,7 @@ impl SurveyApp {
             resolution,
         };
         let mut jobs: Vec<(survey_model::PointCloudId, std::path::PathBuf)> = Vec::new();
+        let mut missing = Vec::new();
         for (id, c) in self.session.project.doc.clouds() {
             if !c.style.visible {
                 continue;
@@ -1272,10 +1271,15 @@ impl SurveyApp {
             if !frustum.intersects_aabb(&src.full_bounds) {
                 continue; // the view does not see this cloud
             }
-            if let Some(path) = self.resolve_cloud_path(&src.path) {
-                jobs.push((id, path));
+            match self.resolve_cloud_path(&src.path) {
+                Some(path) => jobs.push((id, path)),
+                None => missing.push((id, src.path.clone())),
             }
         }
+        for (id, path) in missing {
+            self.cloud_streamer.fail(id, cloud_not_found(&path));
+        }
+        self.log_stream_errors();
         for (id, path) in jobs {
             let view = survey_io::copc::ViewQuery {
                 frustum: frustum.planes().to_vec(),
@@ -1290,6 +1294,21 @@ impl SurveyApp {
         }
         self.cloud_streamer
             .frame(&self.session.project.doc, self.settings.cloud_edl)
+    }
+
+    /// Reports clouds that could not be streamed (once per error, until they
+    /// stream again); the view keeps what was already loaded.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn log_stream_errors(&mut self) {
+        for (id, e) in self.cloud_streamer.take_errors() {
+            let name = self
+                .session
+                .project
+                .doc
+                .cloud(id)
+                .map_or_else(|| "?".to_string(), |c| c.name.clone());
+            self.session.log.warn(format!("Point cloud {name}: {e}"));
+        }
     }
 
     /// Finds a referenced COPC file: at its stored path, or by file name in the
@@ -1482,6 +1501,14 @@ impl SurveyApp {
             Err(e) => log::warn!("autosave snapshot failed: {e}"),
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cloud_not_found(path: &std::path::Path) -> String {
+    format!(
+        "{} not found. Re-link it from File → Point clouds (COPC).",
+        path.display()
+    )
 }
 
 fn file_stem(name: &str) -> String {

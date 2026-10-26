@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Cursor, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -87,7 +87,10 @@ fn cancelled() -> IoError {
 
 /// Converts `input` (LAS or LAZ, any version and point format) to a COPC file
 /// at `output`. `progress` is told the fraction done (0–1) from time to time
-/// and cancels by returning false. Temporary files go next to `output`.
+/// and cancels by returning false. Temporary files go next to `output`, and
+/// the file is written beside it and renamed into place, so an existing
+/// `output` stays whole until the conversion succeeds. Fails at once when the
+/// disk lacks the room (see [`space_needed`]).
 pub fn convert_to_copc(
     input: &Path,
     output: &Path,
@@ -95,14 +98,56 @@ pub fn convert_to_copc(
     progress: &mut dyn FnMut(f32) -> bool,
 ) -> Result<CopcWritten, IoError> {
     let temp = output.with_extension("copc-tmp");
+    let mut partial = output.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
+    let converter = Converter::new(input, &partial, &temp, options)?;
+    let dir = output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if let Ok(free) = fs4::available_space(dir) {
+        check_space(converter.space_needed(), free, dir)?;
+    }
     let _ = fs::remove_dir_all(&temp);
     fs::create_dir_all(&temp).map_err(invalid)?;
-    let result = Converter::new(input, output, &temp, options).and_then(|c| c.run(progress));
+    let result = converter
+        .run(progress)
+        .and_then(|w| fs::rename(&partial, output).map(|()| w).map_err(invalid));
     let _ = fs::remove_dir_all(&temp);
     if result.is_err() {
-        let _ = fs::remove_file(output);
+        let _ = fs::remove_file(&partial);
     }
     result
+}
+
+/// About the disk space converting `input` takes at its peak: every point
+/// uncompressed in the temporary chunk files, plus the output growing as they
+/// are used up.
+pub fn space_needed(input: &Path) -> Result<u64, IoError> {
+    let reader = Reader::from_path(input).map_err(invalid)?;
+    let h = reader.header();
+    Ok(estimate_space(h.number_of_points(), h.point_format()))
+}
+
+fn estimate_space(points: u64, source: &Format) -> u64 {
+    // Records are rewritten as formats 6–8: 30 bytes, 36 with colour, 38 with NIR.
+    let rec_len = 30 + if source.has_color { 6 } else { 0 } + if source.has_nir { 2 } else { 0 };
+    let raw = points * rec_len;
+    raw + raw / 4 + (64 << 20)
+}
+
+fn check_space(needed: u64, free: u64, dir: &Path) -> Result<(), IoError> {
+    if free >= needed {
+        return Ok(());
+    }
+    let gb = |b: u64| b as f64 / 1e9;
+    Err(IoError::Invalid(format!(
+        "not enough disk space: converting needs about {:.1} GB free in {}, and {:.1} GB is free",
+        gb(needed),
+        dir.display(),
+        gb(free)
+    )))
 }
 
 /// The octree's cube and the output records' layout.
@@ -159,6 +204,12 @@ fn child(k: Key, octant: usize) -> Key {
 
 fn parent(k: Key) -> Key {
     (k.0 - 1, k.1 >> 1, k.2 >> 1, k.3 >> 1)
+}
+
+/// The child (as [`child`] numbers them) of a node centred at `centre` that
+/// holds `p`.
+fn octant(p: DVec3, centre: DVec3) -> usize {
+    usize::from(p.x >= centre.x) | usize::from(p.y >= centre.y) << 1 | usize::from(p.z >= centre.z) << 2
 }
 
 /// A written node, for the hierarchy.
@@ -224,6 +275,10 @@ impl<'a> Converter<'a> {
         Reader::from_path(self.input).map_err(invalid)
     }
 
+    fn space_needed(&self) -> u64 {
+        estimate_space(self.header.number_of_points(), self.header.point_format())
+    }
+
     fn run(self, progress: &mut dyn FnMut(f32) -> bool) -> Result<CopcWritten, IoError> {
         let total = self.header.number_of_points().max(1);
         let transforms = *self.header.transforms();
@@ -265,8 +320,9 @@ impl<'a> Converter<'a> {
             }
         }
 
-        // 2. Distribute.
+        // 2. Distribute, then split chunks that came out too big.
         let stats = self.distribute(&space, &chunks, &chunk_of, total, progress)?;
+        let chunks = self.split_oversized(&space, chunks, progress)?;
 
         // The file up to its points: header, VLRs and the chunk-table offset.
         let vlrs = self.vlrs(&space, &stats);
@@ -471,7 +527,7 @@ impl<'a> Converter<'a> {
                     let buf = &mut buffers[chunk as usize];
                     buf.extend_from_slice(&out[at..at + space.rec_len]);
                     if buf.len() >= FLUSH_BYTES {
-                        append(&self.chunk_path(chunk as usize), buf)?;
+                        append(&self.chunk_path(chunks[chunk as usize]), buf)?;
                         buf.clear();
                     }
                 }
@@ -481,12 +537,69 @@ impl<'a> Converter<'a> {
                 return Err(cancelled());
             }
         }
-        for (i, buf) in buffers.iter().enumerate() {
+        for (key, buf) in chunks.iter().zip(&buffers) {
             if !buf.is_empty() {
-                append(&self.chunk_path(i), buf)?;
+                append(&self.chunk_path(*key), buf)?;
             }
         }
         Ok(stats)
+    }
+
+    /// Splits chunks holding more than `chunk_points` (a densely scanned spot
+    /// inside one counting cell) into their octants, streaming the file, until
+    /// each fits, so a worker never holds more than about one chunk. A pile of
+    /// duplicate points stops splitting at `MAX_LEVEL`.
+    fn split_oversized(
+        &self,
+        space: &Space,
+        chunks: Vec<Key>,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Vec<Key>, IoError> {
+        let len = space.rec_len;
+        let mut fitted = Vec::with_capacity(chunks.len());
+        let mut todo = chunks;
+        let mut rec = vec![0u8; len];
+        while let Some(key) = todo.pop() {
+            let path = self.chunk_path(key);
+            let points = fs::metadata(&path).map_or(0, |m| m.len() as usize / len);
+            if points <= self.options.chunk_points || key.0 >= MAX_LEVEL {
+                fitted.push(key);
+                continue;
+            }
+            if !progress(0.55) {
+                return Err(cancelled());
+            }
+            let (min, side) = space.node_min(key);
+            let centre = min + DVec3::splat(side * 0.5);
+            let mut reader = BufReader::with_capacity(FLUSH_BYTES, File::open(&path).map_err(invalid)?);
+            let mut parts: Vec<Vec<u8>> = vec![Vec::new(); 8];
+            loop {
+                match reader.read_exact(&mut rec) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                    Err(e) => return Err(invalid(e)),
+                }
+                let o = octant(space.position(&rec), centre);
+                parts[o].extend_from_slice(&rec);
+                if parts[o].len() >= FLUSH_BYTES {
+                    append(&self.chunk_path(child(key, o)), &parts[o])?;
+                    parts[o].clear();
+                }
+            }
+            drop(reader);
+            fs::remove_file(&path).map_err(invalid)?;
+            for (o, part) in parts.iter().enumerate() {
+                if !part.is_empty() {
+                    append(&self.chunk_path(child(key, o)), part)?;
+                }
+            }
+            todo.extend(
+                (0..8)
+                    .map(|o| child(key, o))
+                    .filter(|k| self.chunk_path(*k).exists()),
+            );
+        }
+        Ok(fitted)
     }
 
     /// Writes `point` as an output record, keeping statistics.
@@ -524,8 +637,8 @@ impl<'a> Converter<'a> {
         Ok(())
     }
 
-    fn chunk_path(&self, i: usize) -> PathBuf {
-        self.temp.join(format!("{i}.bin"))
+    fn chunk_path(&self, k: Key) -> PathBuf {
+        self.temp.join(format!("{}-{}-{}-{}.bin", k.0, k.1, k.2, k.3))
     }
 
     /// Builds every chunk's subtree (writing its nodes) on several threads;
@@ -551,7 +664,7 @@ impl<'a> Converter<'a> {
                     while !stop.load(Ordering::Relaxed) {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&key) = chunks.get(i) else { break };
-                        let path = self.chunk_path(i);
+                        let path = self.chunk_path(key);
                         let result = fs::read(&path)
                             .map_err(invalid)
                             .and_then(|recs| {
@@ -850,11 +963,7 @@ impl Builder<'_> {
         let centre = min + DVec3::splat(side * 0.5);
         let mut parts: Vec<Vec<u8>> = vec![Vec::new(); 8];
         for rec in recs.chunks_exact(len) {
-            let p = self.space.position(rec);
-            let o = usize::from(p.x >= centre.x)
-                | usize::from(p.y >= centre.y) << 1
-                | usize::from(p.z >= centre.z) << 2;
-            parts[o].extend_from_slice(rec);
+            parts[octant(self.space.position(rec), centre)].extend_from_slice(rec);
         }
         drop(recs);
         let mut kids = Vec::new();
@@ -1149,13 +1258,115 @@ mod tests {
             .count();
         assert_eq!(n, 500);
 
+        // Cancelling a conversion over an existing file leaves that file whole.
+        let before = fs::read(&copc_path).expect("existing");
+        let err = convert_to_copc(&las_path, &copc_path, ConvertOptions::default(), &mut |f| f < 0.1);
+        assert!(err.is_err(), "cancelled");
+        assert_eq!(
+            fs::read(&copc_path).expect("still there"),
+            before,
+            "the old file is untouched"
+        );
         let _ = fs::remove_file(&copc_path);
         let err = convert_to_copc(&las_path, &copc_path, ConvertOptions::default(), &mut |f| f < 0.1);
         assert!(err.is_err(), "cancelled");
-        assert!(
-            !copc_path.exists() && !copc_path.with_extension("copc-tmp").exists(),
-            "cleaned up"
-        );
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .expect("dir")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .filter(|n| n != "in.las")
+            .collect();
+        assert!(leftovers.is_empty(), "cleaned up: {leftovers:?}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A dense spot inside one counting cell (here 20 000 points within 2 cm,
+    /// in a 300 m extent) is split into chunks that fit, and every point still
+    /// comes back.
+    #[test]
+    fn a_dense_spot_is_split_to_fit() {
+        let dir = std::env::temp_dir().join(format!("survey3d-copc-dense-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let (las_path, copc_path) = (dir.join("in.las"), dir.join("out.copc.laz"));
+        let mut builder = las::Builder::from((1, 2));
+        builder.point_format = Format::new(1).expect("format");
+        builder.transforms = Vector {
+            x: Transform {
+                scale: 0.0001,
+                offset: 0.0,
+            },
+            y: Transform {
+                scale: 0.0001,
+                offset: 0.0,
+            },
+            z: Transform {
+                scale: 0.0001,
+                offset: 0.0,
+            },
+        };
+        let mut w =
+            las::Writer::from_path(&las_path, builder.into_header().expect("header")).expect("writer");
+        let mut n = 0;
+        let mut put = |x: f64, y: f64, z: f64, w: &mut las::Writer<_>| {
+            w.write_point(las::Point {
+                x,
+                y,
+                z,
+                return_number: 1,
+                number_of_returns: 1,
+                gps_time: Some(f64::from(n)),
+                ..Default::default()
+            })
+            .expect("point");
+            n += 1;
+        };
+        for i in 0..2_000 {
+            let f = f64::from(i);
+            put((f * 7.31) % 300.0, (f * 3.17) % 300.0, (f * 0.11) % 10.0, &mut w);
+        }
+        for i in 0..20_000 {
+            let f = f64::from(i);
+            put(
+                150.0 + (f * 0.37).sin() * 0.01,
+                150.0 + (f * 0.53).cos() * 0.01,
+                5.0 + (f * 0.71).sin() * 0.01,
+                &mut w,
+            );
+        }
+        w.close().expect("close");
+
+        let options = ConvertOptions {
+            chunk_points: 2_000,
+            // Leaves big enough that only chunk splitting goes below the
+            // counting grid's level.
+            leaf_points: 100_000,
+            grid: 32,
+        };
+        let written = convert_to_copc(&las_path, &copc_path, options, &mut |_| true).expect("convert");
+        assert_eq!(written.points, 22_000);
+        assert!(
+            written.depth > COUNT_LEVEL,
+            "chunks split below the counting grid: {written:?}"
+        );
+        let mut reader = copc_rs::CopcReader::from_path(&copc_path).expect("open");
+        let count = reader
+            .points(copc_rs::LodSelection::All, copc_rs::BoundsSelection::All)
+            .expect("points")
+            .count();
+        assert_eq!(count, 22_000);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_space_is_checked_first() {
+        // A billion coloured points: about 36 GB uncompressed, plus the output.
+        let needed = estimate_space(1_000_000_000, &Format::new(3).expect("format"));
+        assert!((44e9..46e9).contains(&(needed as f64)), "{needed}");
+        let err = check_space(needed, 10_000_000_000, Path::new("/data")).expect_err("too little");
+        assert_eq!(
+            err.to_string(),
+            "not enough disk space: converting needs about 45.1 GB free in /data, and 10.0 GB is free"
+        );
+        assert!(check_space(needed, needed, Path::new("/data")).is_ok());
     }
 }

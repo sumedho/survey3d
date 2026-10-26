@@ -87,7 +87,7 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "name": "run_commands",
             "title": "Type on the command line",
-            "description": "Types each line into the command line, as a user would, and returns the command-line output, the active tool's prompt afterwards, and any reports produced. A line is a tool or command name ('help' lists them all), a point (E,N[,Z]; @dE,dN[,dZ] relative; @distance<bearing polar; or a point name), a value or option the prompt asks for (e.g. 'c' to close a polyline), or '' for Enter (finish). Examples: [\"pl\", \"1000,2000\", \"1010,2000\", \"@10<90\", \"c\"]; a lot by bearing & distance, closed with its misclosure reported: [\"bd\", \"1000,2000\", \"0 25.00\", \"90 40.00\", \"180 25.00\", \"270 40.00\", \"c\"]; [\"inverse\", \"101\", \"102\"]; [\"undo\"]. Commands such as delete, join, explode, list, average, mkparcel and linework act on the selection (see select).",
+            "description": "Types each line into the command line, as a user would, and returns the command-line output, the active tool's prompt afterwards, and any reports produced. A line is a tool or command name ('help' lists them all), a point (E,N[,Z]; @dE,dN[,dZ] relative; @distance<bearing polar; or a point name), a value or option the prompt asks for (e.g. 'c' to close a polyline), or '' for Enter (finish). Examples: [\"pl\", \"1000,2000\", \"1010,2000\", \"@10<90\", \"c\"]; a lot by bearing & distance, closed with its misclosure reported and made a parcel: [\"bd\", \"1000,2000\", \"0 25.00\", \"90 40.00\", \"180 25.00\", \"270 40.00\", \"c\", \"Lot 1\"]; a curved leg tangent to the last, radius 10 turning right through 90°: \"r=10 d=90 r\"; 'j' closes with a computed closing leg; [\"inverse\", \"101\", \"102\"]; [\"undo\"]. Commands such as delete, join, explode, list, average, mkparcel and linework act on the selection (see select).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -100,13 +100,13 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "name": "query",
             "title": "Query the project",
-            "description": "Lists objects as JSON. points: id, name, e, n, z (null when the height is unknown), code, description, layer. polylines: id, name, code, layer, closed, vertices ([e,n,z], or [e,n] for a plan-only line without heights), bulges (arcs, if any), plan length, area (closed). texts: id, text, e, n, height_mm, rotation, align, layer. feature_codes: the code library (filter.names picks codes). layers, surfaces, clouds: summaries. sheet/parcel/alignment/traverse/field_data: the full records with their ids (edit them with set_record). selection: the selected objects. audit: the most recent audit trail entries, newest first. Paged with offset/limit.",
+            "description": "Lists objects as JSON. points: id, name, e, n, z (null when the height is unknown), code, description, layer. polylines: id, name, code, layer, closed, vertices ([e,n,z], or [e,n] for a plan-only line without heights), bulges (arcs, if any), plan length, area (closed). texts: id, text, e, n, height_mm, rotation, align, layer. dimensions: id, kind, from, to, line (the dimension line's ends), length, shows (the text drawn), text (its own text), layer. feature_codes: the code library (filter.names picks codes). layers, surfaces, clouds: summaries. sheet/parcel/alignment/traverse/field_data: the full records with their ids (edit them with set_record). selection: the selected objects. audit: the most recent audit trail entries, newest first. Paged with offset/limit.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["points", "polylines", "texts", "layers", "feature_codes", "surfaces", "clouds", "sheet", "parcel", "alignment", "traverse", "field_data", "selection", "audit"]
+                        "enum": ["points", "polylines", "texts", "dimensions", "layers", "feature_codes", "surfaces", "clouds", "sheet", "parcel", "alignment", "traverse", "field_data", "selection", "audit"]
                     },
                     "filter": filter_schema(),
                     "offset": { "type": "integer", "minimum": 0, "default": 0 },
@@ -125,7 +125,7 @@ pub fn definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "mode": { "type": "string", "enum": ["set", "add", "remove", "clear"], "default": "set" },
-                    "kind": { "type": "string", "enum": ["points", "polylines", "texts", "all"], "default": "all" },
+                    "kind": { "type": "string", "enum": ["points", "polylines", "texts", "dimensions", "all"], "default": "all" },
                     "filter": filter_schema()
                 },
                 "additionalProperties": false
@@ -208,12 +208,12 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "name": "edit_entities",
             "title": "Edit objects",
-            "description": "Changes fields of the points, polylines and texts the filter matches, in one undoable step (a filter is required). Fields: name, code (points, polylines); description (points); closed (polylines); layer (any; created if missing); text, height_mm, rotation, align (texts); e, n (one point or text) and z (one point; null makes its height unknown). To move or rotate several objects use run_commands (move, rotate).",
+            "description": "Changes fields of the points, polylines, texts and dimensions the filter matches, in one undoable step (a filter is required). Fields: name, code (points, polylines); description (points); closed (polylines); layer (any; created if missing); text, height_mm, rotation, align (texts); text (dimensions: shown instead of the length, with <> standing for it; empty shows the length), kind (dimensions); e, n (one point or text) and z (one point; null makes its height unknown). To move or rotate several objects use run_commands (move, rotate).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "filter": filter_schema(),
-                    "kind": { "type": "string", "enum": ["points", "polylines", "texts", "all"], "default": "all" },
+                    "kind": { "type": "string", "enum": ["points", "polylines", "texts", "dimensions", "all"], "default": "all" },
                     "set": { "type": "object", "minProperties": 1 }
                 },
                 "required": ["filter", "set"],
@@ -252,10 +252,48 @@ pub fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "add_dimension",
+            "title": "Add dimensions",
+            "description": "Adds dimensions for plan sheets in one undoable step: the length between two points drawn as a dimension line with arrows and extension lines, its text at the sheet's text size. from, to: [e, n] or point names. kind: aligned (the plan distance, default), horizontal (difference in eastings) or vertical (difference in northings). Place the line with offset (metres; positive to the left of from → to for aligned, away from 'to' for horizontal and vertical) or line_at (a point it passes through). text replaces the length shown, with <> standing for it (e.g. '<> (fence)'). The same is the 'dim' command.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "dimensions": {
+                        "type": "array", "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "from": { "oneOf": [
+                                    { "type": "string" },
+                                    { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 }
+                                ] },
+                                "to": { "oneOf": [
+                                    { "type": "string" },
+                                    { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 }
+                                ] },
+                                "kind": { "type": "string", "enum": ["aligned", "horizontal", "vertical"], "default": "aligned" },
+                                "offset": { "type": "number" },
+                                "line_at": { "oneOf": [
+                                    { "type": "string" },
+                                    { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 }
+                                ] },
+                                "text": { "type": "string" }
+                            },
+                            "required": ["from", "to"],
+                            "additionalProperties": false
+                        }
+                    },
+                    "layer": { "type": "string", "description": "Layer name; created if missing. Default: the current layer." }
+                },
+                "required": ["dimensions"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
             "name": "set_feature_codes",
             "title": "Edit the feature codes",
             "description": format!(
-                "Edits the feature-code library (one undoable step): what a point's code means, which layer its points and lines belong to, how they are drawn, and whether points with the code are strung into lines by the 'linework' command. A point's code is matched by its first word; a code may be a pattern with * and ?. codes: entries to add or change, matched by code (an existing code keeps the fields not given; a new one defaults to its own layer, no linework). remove: codes to delete. replace: start from an empty library; preset: 'example' starts from a small generic set. Style fields: symbol ({}), symbol_size (screen points, 7 normal), line_style ({}), line_weight (screen points, 1.5 normal), by_layer (draw in the layer's colour once that layer exists), labels ({{name, code, height, description}} booleans, or null for the global setting). color is #rrggbb. Read the current library with query kind feature_codes. Linework control words (start, end, close, arc_start, arc_end; defaults ST, END, CL, PC, PT) follow the code on a point, e.g. 'KB1 ST'.",
+                "Edits the feature-code library (one undoable step): what a point's code means, which layer its points and lines belong to, how they are drawn, and whether points with the code are strung into lines by the 'linework' command. A point's code is matched by its first word; a code may be a pattern with * and ?. codes: entries to add or change, matched by code (an existing code keeps the fields not given; a new one defaults to its own layer, no linework). remove: codes to delete. replace: start from an empty library; preset: 'example' starts from a small generic set. Style fields: symbol ({}), symbol_size (screen points, 7 normal), line_style ({}), line_weight (screen points, 1.5 normal), by_layer (draw in the layer's colour once that layer exists), labels ({{name, code, height, description}} booleans, or null for the global setting). color is #rrggbb. Read the current library with query kind feature_codes. Linework control codes follow the code on a point, as Carlson's special codes do; set their spellings with controls (each field one or more words, space separated; empty turns it off): start (ST +7), end (END -7), close (CLO CL), arc_start (PC) and arc_end (PT; a PC without one makes a three-point arc), gap (GAP: no line on to the next point), rectangle (RECT closes square from three points; RECT10 builds a 10 m deep rectangle right of the last two points, RECT-10 left), circle (CIR2: radius 2 about the point, any code; CIR alone takes the radius from the next point with the code), offset (OH0.5: a copy 0.5 right), offset_left (OFL1.2), offset_vertical (OV-0.15: the copy that much higher), join (JPN101: join to point 101). E.g. 'KB1 ST', 'BLD RECT', 'KB OH0.5 OV-0.15'.",
                 symbol_keys().join(", "),
                 line_style_keys().join(", ")
             ),
@@ -370,6 +408,24 @@ pub fn definitions() -> Vec<Value> {
                     "tolerance_v": { "type": "number", "exclusiveMinimum": 0, "default": 0.03 },
                     "apply": { "type": "string", "enum": ["none", "all_except_control", "selection"], "default": "none" },
                     "save": { "type": "boolean", "default": false }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "solve_curve",
+            "title": "Solve a circular curve",
+            "description": "Completes a circular curve from any two of its elements: radius, delta (central angle: degrees as a number, or text in the project's angle format), arc (length), chord, tangent, external, mid_ordinate. Lengths are in the project's units (numbers, or text with a unit suffix). Some pairs (radius and chord, for example) have two solutions, the minor and major arc; both are returned. Nothing is drawn. To draw a curved boundary leg, use bd with a curve line (see run_commands). The same is the 'curve' command (r=20 a=15.71).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "radius": { "type": ["number", "string"] },
+                    "delta": { "type": ["number", "string"] },
+                    "arc": { "type": ["number", "string"] },
+                    "chord": { "type": ["number", "string"] },
+                    "tangent": { "type": ["number", "string"] },
+                    "external": { "type": ["number", "string"] },
+                    "mid_ordinate": { "type": ["number", "string"] }
                 },
                 "additionalProperties": false
             }

@@ -3,7 +3,7 @@
 use glam::DVec3;
 use serde_json::{Value, json};
 use survey_app::import_command::ImportEntities;
-use survey_model::{Entity, EntityId, TextAlign, TextNote};
+use survey_model::{Dimension, DimensionKind, Document, Entity, EntityId, TextAlign, TextNote};
 
 use super::{Filter, Kind, Outcome, Server, ToolResult, next_entity_id, str_arg};
 
@@ -14,7 +14,11 @@ const EDITABLE: &[(&str, &str)] = &[
     ("description", "points"),
     ("closed", "polylines"),
     ("layer", "all"),
-    ("text", "text"),
+    (
+        "text",
+        "text, dimensions (<> is the length; empty shows the length)",
+    ),
+    ("kind", "dimensions: aligned, horizontal or vertical"),
     ("height_mm", "text"),
     ("rotation", "text"),
     ("align", "text"),
@@ -23,7 +27,88 @@ const EDITABLE: &[(&str, &str)] = &[
     ("z", "one point (null: height unknown)"),
 ];
 
+/// A position argument: a point name, or `[e, n]` / `[e, n, z]`.
+fn position(doc: &Document, value: Option<&Value>, what: &str) -> Result<DVec3, String> {
+    match value {
+        Some(Value::String(name)) => Ok(doc
+            .find_point_by_name(name)
+            .ok_or_else(|| format!("{what}: no point named '{name}'"))?
+            .1
+            .position),
+        Some(Value::Array(c)) => match c.iter().filter_map(Value::as_f64).collect::<Vec<_>>()[..] {
+            [e, n] => Ok(DVec3::new(e, n, 0.0)),
+            [e, n, z] => Ok(DVec3::new(e, n, z)),
+            _ => Err(format!("{what}: [e, n] or a point name")),
+        },
+        _ => Err(format!("{what}: [e, n] or a point name")),
+    }
+}
+
 impl Server {
+    pub(super) fn add_dimension(&mut self, args: &Value) -> Outcome {
+        let items = args
+            .get("dimensions")
+            .and_then(Value::as_array)
+            .filter(|d| !d.is_empty())
+            .ok_or("dimensions: give one or more dimensions")?;
+        let doc = self.doc();
+        let mut dims = Vec::new();
+        for (i, d) in items.iter().enumerate() {
+            let at = |key: &str| position(doc, d.get(key), &format!("dimensions[{i}].{key}"));
+            let (from, to) = (at("from")?, at("to")?);
+            let kind = match d.get("kind").and_then(Value::as_str) {
+                Some(k) => DimensionKind::parse(k)
+                    .ok_or_else(|| format!("dimensions[{i}].kind: aligned, horizontal or vertical"))?,
+                None => DimensionKind::Aligned,
+            };
+            let mut dim = Dimension {
+                kind,
+                from,
+                to,
+                line_at: from,
+                text: d
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                layer: doc.current_layer(),
+            };
+            dim.line_at = match (d.get("line_at"), d.get("offset").and_then(Value::as_f64)) {
+                (Some(_), None) => at("line_at")?,
+                (None, Some(offset)) => {
+                    // Left of from → to (aligned); away from `to` otherwise.
+                    let mut left = dim.direction().perp();
+                    if kind != DimensionKind::Aligned && (to - from).truncate().dot(left) > 0.0 {
+                        left = -left;
+                    }
+                    from + (left * offset).extend(0.0)
+                }
+                _ => {
+                    return Err(format!(
+                        "dimensions[{i}]: give offset (metres) or line_at, not both"
+                    ));
+                }
+            };
+            if dim.measured() < 1e-9 {
+                return Err(format!("dimensions[{i}]: nothing to measure in that direction"));
+            }
+            dims.push(dim);
+        }
+        let mut cmd = ImportEntities::new(match dims.len() {
+            1 => "Add dimension".to_string(),
+            n => format!("Add {n} dimensions"),
+        });
+        let layer = cmd.layer_named(doc, str_arg(args, "layer"));
+        for d in dims {
+            cmd.add(layer, Entity::Dimension(d));
+        }
+        let first_new = next_entity_id(doc);
+        self.session.execute(Box::new(cmd));
+        Ok(ToolResult::json(
+            &json!({ "added": self.new_entities(first_new) }),
+        ))
+    }
+
     pub(super) fn add_text(&mut self, args: &Value) -> Outcome {
         let items = args
             .get("texts")
@@ -223,6 +308,15 @@ impl Server {
                     t.align = align.unwrap_or(t.align);
                     t.position.x = e.unwrap_or(t.position.x);
                     t.position.y = n.unwrap_or(t.position.y);
+                }
+                Entity::Dimension(d) => {
+                    if let Some(v) = text("text") {
+                        d.text = v;
+                    }
+                    if let Some(k) = text("kind") {
+                        d.kind =
+                            DimensionKind::parse(&k).ok_or("set.kind: aligned, horizontal or vertical")?;
+                    }
                 }
             }
             let layer = match &layer_name {

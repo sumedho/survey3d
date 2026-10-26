@@ -25,8 +25,12 @@ Most work goes through run_commands, which types lines into the application's co
 '' (empty) is Enter, which finishes; tools have options such as 'c' to close. Coordinates, bearings and distances follow the project's conventions (see project_info). \
 Commands such as delete, join, list, mkparcel act on the selection: set it with select. \
 Lots and traverses from a plan: 'bd', a start point, then one 'bearing distance[ dZ][ code]' line per leg; each leg creates a point and moves on to it. \
-'c' takes the last leg as returning to the start: it reports the misclosure (bearing, distance, 1:N precision), perimeter and area, unadjusted, and draws the closed boundary (select it and run mkparcel to make a parcel); \
+A curved leg is typed as the plan gives it, with r= (radius) and l or r for the way it turns: by its chord ('45.3020 15.32 r=20 l', chord bearing and chord distance) or tangent to the leg before ('r=20 a=15.71 r', any two of r= a= arc c= chord d= delta t= tangent; tb= gives the starting tangent bearing); 'major' picks the major arc. \
+'c' takes the last leg as returning to the start: it reports the misclosure (bearing, distance, 1:N precision), perimeter and area, unadjusted, and draws the closed boundary; 'j' instead joins back to the start with a computed closing leg (reported). \
+After either, the next line names the lot to make it a parcel ('Lot 12', or 'y' for the next Lot number); '' skips. \
 's' toggles sideshots (a point without moving on), 'u' undoes the last leg, '' ends an open run. \
+Curve elements from any two: solve_curve (or the 'curve' command). Dimensions for plans: add_dimension (or 'dim'). \
+Plan sheets (set_record kind sheet) list short or all parcel boundaries in line and curve tables, tagged L1, C1 on the drawing, with content.tables: short or all. \
 Field side shots: 'rad', the station, a backsight point or bearing, then 'angle distance[ dZ]' (clockwise from the backsight); 't' toggles traverse mode, occupying each new point with the last as backsight. \
 GNSS data onto local control: site_calibration with pairs (measured GNSS point, control point or E,N[,Z]); it previews residuals and warnings first; drop doubtful pairs and refit, then apply (all_except_control or selection). \
 Set up the job first: set_project (name, coordinate system), set_feature_codes (what point codes mean, their symbols, layers and linework) and set_layer (colours, line styles). \

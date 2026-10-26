@@ -64,6 +64,7 @@ const DRAW_MENU: &[MenuEntry] = &[
     Item("Arc (three points)", "arc"),
     Item("Circle", "circle"),
     Item("Text", "text"),
+    Item("Dimension", "dim"),
     Separator,
     Item("Point along line", "along"),
     Item("Divide polyline", "divide"),
@@ -101,6 +102,7 @@ const COGO_MENU: &[MenuEntry] = &[
     Item("Chainage & offset", "chainage"),
     Item("Average points", "average"),
     Separator,
+    Item("Curve solver", "curve"),
     Item("COGO calculator…", "calc"),
 ];
 

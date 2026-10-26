@@ -140,6 +140,32 @@ impl LegendPosition {
     }
 }
 
+/// Which parcel boundaries go in line and curve tables (labelled L1, C1… on
+/// the drawing) instead of carrying their bearing and distance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundaryTables {
+    /// Every boundary is labelled along its line.
+    #[default]
+    None,
+    /// Boundaries too short for their label.
+    Short,
+    /// Every boundary.
+    All,
+}
+
+impl BoundaryTables {
+    pub const ALL: [BoundaryTables; 3] = [BoundaryTables::None, BoundaryTables::Short, BoundaryTables::All];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BoundaryTables::None => "None (label every line)",
+            BoundaryTables::Short => "Short lines and curves",
+            BoundaryTables::All => "All lines and curves",
+        }
+    }
+}
+
 /// What a sheet shows.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -149,6 +175,8 @@ pub struct SheetContent {
     pub point_labels: bool,
     /// Bearings, distances and areas of parcels marked for annotation.
     pub parcels: bool,
+    /// Parcel boundaries listed in line and curve tables.
+    pub tables: BoundaryTables,
     pub contours: bool,
     pub chainages: bool,
     pub grid: GridMarks,
@@ -167,6 +195,7 @@ impl Default for SheetContent {
             points: true,
             point_labels: true,
             parcels: true,
+            tables: BoundaryTables::None,
             contours: true,
             chainages: true,
             grid: GridMarks::default(),

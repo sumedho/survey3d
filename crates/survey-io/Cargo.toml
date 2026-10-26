@@ -22,6 +22,7 @@ miniz_oxide.workspace = true
 # COPC reading and writing are native only (no filesystem/decoder path on wasm).
 las.workspace = true
 laz.workspace = true
+fs4.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # An independent COPC reader, to check what the writer produces.

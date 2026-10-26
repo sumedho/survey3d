@@ -438,7 +438,7 @@ fn out_of_core_cloud_persists_only_its_reference() {
 }
 
 #[test]
-fn text_layer_styles_and_plan_only_lines_round_trip() {
+fn text_layer_styles_dimensions_and_plan_only_lines_round_trip() {
     let (mut doc, mut history) = sample();
     let mut layer = doc.layers()[0].clone();
     layer.line_style = survey_core::style::LineStyle::DashDot;
@@ -465,7 +465,15 @@ fn text_layer_styles_and_plan_only_lines_round_trip() {
             ChangeSet::new("more")
                 .update_layer(layer)
                 .insert_entity(note)
-                .insert_entity(flat),
+                .insert_entity(flat)
+                .insert_entity(Entity::Dimension(Dimension {
+                    kind: DimensionKind::Vertical,
+                    from: DVec3::new(1.0, 2.0, 3.0),
+                    to: DVec3::new(4.0, 8.0, 3.0),
+                    line_at: DVec3::new(-2.0, 5.0, 3.0),
+                    text: "<> (wall)".into(),
+                    layer: LayerId(1),
+                })),
         ),
         &mut doc,
     );
@@ -482,7 +490,12 @@ fn text_layer_styles_and_plan_only_lines_round_trip() {
     assert!(
         loaded
             .entities()
-            .any(|(_, e)| matches!(e, Entity::Polyline(l) if !l.heights_known))
+            .any(|(_, e)| matches!(e, Entity::Polyline(l) if !l.heights_known)),
+    );
+    assert!(
+        loaded
+            .entities()
+            .any(|(_, e)| matches!(e, Entity::Dimension(d) if d.kind == DimensionKind::Vertical && d.text == "<> (wall)"))
     );
 
     // Deleting text removes it from the file.

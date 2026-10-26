@@ -26,7 +26,9 @@ pub use cloud::{CloudColor, CloudRef, CloudStyle, PointCloud, Resident};
 pub use command::{ChangeSet, Command};
 pub use coord_system::CoordinateSystem;
 pub use document::{DirtyState, Document, ProjectMeta};
-pub use entity::{Entity, Polyline, SurveyPoint, TextAlign, TextNote, join_polylines};
+pub use entity::{
+    Dimension, DimensionKind, Entity, Polyline, SurveyPoint, TextAlign, TextNote, join_polylines,
+};
 pub use history::{AuditAction, AuditRecord, History, UNDO_MEMORY_LIMIT};
 pub use ids::{EntityId, LayerId, PointCloudId, SurfaceId};
 pub use layer::{Color, DEFAULT_LINE_WEIGHT, Layer};

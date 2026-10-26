@@ -11,6 +11,8 @@ mod bd;
 mod circle;
 mod cogo;
 mod construct;
+mod curve;
+mod dim;
 pub mod grips;
 mod inverse;
 mod modify;
@@ -341,8 +343,28 @@ impl DomainModule for CoreModule {
             icon: icons::PATH,
             palette: true,
             group: ToolGroup::Cogo,
-            description: "Traverse or lot entry: bearing distance per leg, moving on to each new point; c closes and reports the misclosure",
+            description: "Traverse or lot entry: bearing distance per leg (or a curve: r= with a= c= d= t= and l/r), moving on to each new point; c closes and reports the misclosure, j computes the closing leg; then name the lot to make a parcel",
             create: || Box::<bd::BdTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: dim::ID,
+            name: "Dimension",
+            commands: &["dim", "dimension"],
+            icon: icons::RULER,
+            palette: true,
+            group: ToolGroup::Draw,
+            description: "Dimension between two points: aligned (a), horizontal (h) or vertical (v); then the line's place or an offset distance",
+            create: || Box::<dim::DimTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: curve::ID,
+            name: "Curve solver",
+            commands: &["curve", "curvesolve"],
+            icon: icons::CIRCLE_HALF,
+            palette: false,
+            group: ToolGroup::Cogo,
+            description: "Solve a circular curve from any two of radius, delta, arc, chord, tangent, external, mid-ordinate (r=20 a=15.71)",
+            create: || Box::<curve::CurveTool>::default(),
         });
         tools.register(ToolDescriptor {
             id: cogo::RADIATE_ID,

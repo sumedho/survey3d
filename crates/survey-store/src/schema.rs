@@ -131,6 +131,24 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     ALTER TABLE point_clouds ADD COLUMN source_bounds_json TEXT;
     ALTER TABLE point_clouds ADD COLUMN source_color INTEGER;
     "#,
+    // v7: dimensions.
+    r#"
+    CREATE TABLE dimensions (
+        id       INTEGER PRIMARY KEY,
+        kind     TEXT NOT NULL,
+        e1       REAL NOT NULL,
+        n1       REAL NOT NULL,
+        z1       REAL NOT NULL,
+        e2       REAL NOT NULL,
+        n2       REAL NOT NULL,
+        z2       REAL NOT NULL,
+        line_e   REAL NOT NULL,
+        line_n   REAL NOT NULL,
+        line_z   REAL NOT NULL,
+        text     TEXT NOT NULL,
+        layer_id INTEGER NOT NULL
+    );
+    "#,
 ];
 
 pub const SCHEMA_VERSION: i32 = MIGRATIONS.len() as i32;

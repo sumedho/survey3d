@@ -243,6 +243,8 @@ pub fn export_geopackage(doc: &Document) -> Result<(Vec<u8>, GpkgSummary)> {
                     ])?;
                     summary.texts += 1;
                 }
+                // Drafting, not geography.
+                Entity::Dimension(_) => {}
             }
         }
     }

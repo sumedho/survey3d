@@ -401,3 +401,80 @@ fn command_names_are_unique() {
         }
     }
 }
+
+fn log_text(s: &Session) -> Vec<String> {
+    s.log.lines().map(|l| l.text.clone()).collect()
+}
+
+/// A lot with a curved corner, keyed as a plan shows it: a tangent curve of
+/// radius 10 turning right, closed on its start and named as a parcel.
+#[test]
+fn bearing_distance_curved_lot_becomes_a_parcel() {
+    let mut s = session();
+    for line in [
+        "bd",
+        "0,0",
+        "0 20",
+        "90 10",
+        "r=10 d=90 r",
+        "180 10",
+        "270 20",
+        "c",
+        "Lot 7",
+    ] {
+        s.run(line);
+    }
+    let log = log_text(&s);
+    assert!(
+        has_point_at(&s, 20.0, 10.0),
+        "the curve ends at (20, 10): {log:?}"
+    );
+    let lines = polylines(&s);
+    assert_eq!(lines.len(), 1);
+    let lot = &lines[0];
+    assert!(lot.closed && lot.vertices.len() == 5);
+    assert!(lot.bulge(2) < 0.0, "the curve turns right: {:?}", lot.bulges);
+    let (_, _, area) = survey_core::arc::polyline_metrics(&lot.vertices, &lot.bulges, true);
+    let expected = 300.0 + 25.0 * std::f64::consts::PI;
+    assert!((area.abs() - expected).abs() < 1e-6, "{area}");
+    let report = log.iter().find(|t| t.contains("misclose")).expect("closure");
+    assert!(report.contains("exact") && report.contains("378.54"), "{report}");
+    let parcels = s.project.doc.parcels();
+    assert_eq!(parcels.len(), 1);
+    assert_eq!(parcels[0].name, "Lot 7");
+    assert_eq!(
+        s.project.doc.entity(parcels[0].boundary),
+        Some(&Entity::Polyline(lot.clone()))
+    );
+}
+
+/// `j` computes the closing leg; the lot prompt then takes `y` for the next
+/// lot number, Enter to skip, or a command to move on.
+#[test]
+fn bearing_distance_joins_and_names_lots() {
+    let mut s = session();
+    for line in ["bd", "0,0", "0 10", "90 10", "j"] {
+        s.run(line);
+    }
+    let log = log_text(&s);
+    let closing = log
+        .iter()
+        .find(|t| t.contains("Closing leg"))
+        .expect("closing leg");
+    assert!(closing.contains("225") && closing.contains("14.142"), "{closing}");
+    assert!(s.prompt().contains("y for Lot 1"), "{}", s.prompt());
+    s.run("y");
+    assert_eq!(s.project.doc.parcels()[0].name, "Lot 1");
+    // The next run starts from typed coordinates; Enter skips the parcel.
+    for line in ["100,0", "0 10", "90 10", "180 10", "j", ""] {
+        s.run(line);
+    }
+    assert_eq!(s.project.doc.parcels().len(), 1, "skipped");
+    assert_eq!(polylines(&s).iter().filter(|l| l.closed).count(), 2);
+    // A command after closing switches tools instead of naming a lot.
+    for line in ["200,0", "0 10", "90 10", "j", "pl"] {
+        s.run(line);
+    }
+    assert_eq!(s.project.doc.parcels().len(), 1);
+    assert_eq!(s.active_tool.id(), "polyline", "{}", s.prompt());
+}

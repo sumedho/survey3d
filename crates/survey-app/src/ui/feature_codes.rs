@@ -115,26 +115,25 @@ impl FeatureCodesWindow {
                         .font(fonts::medium(11.0))
                         .color(theme.text_secondary),
                 );
-                ui.horizontal_wrapped(|ui| {
-                    let c = &mut lib.controls;
-                    for (label, value) in [
-                        ("Start", &mut c.start),
-                        ("End", &mut c.end),
-                        ("Close", &mut c.close),
-                        ("Arc start", &mut c.arc_start),
-                        ("Arc end", &mut c.arc_end),
-                    ] {
-                        ui.label(label);
-                        ui.add_sized(
-                            [54.0, 22.0],
-                            egui::TextEdit::singleline(value).font(fonts::mono(12.0)),
-                        );
-                        ui.add_space(6.0);
-                    }
-                });
+                egui::Grid::new("control_codes")
+                    .num_columns(4)
+                    .spacing([8.0, 4.0])
+                    .show(ui, |ui| {
+                        for (i, (label, value)) in lib.controls.fields_mut().into_iter().enumerate() {
+                            ui.label(label);
+                            ui.add_sized(
+                                [80.0, 22.0],
+                                egui::TextEdit::singleline(value).font(fonts::mono(12.0)),
+                            );
+                            if i % 2 == 1 {
+                                ui.end_row();
+                            }
+                        }
+                    });
                 ui.label(
                     RichText::new(
-                        "Point codes: CODE[string no.] [controls…], e.g. KB1, KB1 ST, BLD CL, EP PC … EP PT. \
+                        "Point codes: CODE[string no.] [controls…], e.g. KB1, KB1 ST, BLD CLO, EP PC … EP PT, \
+                         BLD RECT10, TR CIR2, KB OH0.5. Several spellings go in one box (ST +7). \
                          Codes may use * and ? wildcards (MH*), matched when no plain code fits.",
                     )
                     .small()

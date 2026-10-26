@@ -17,6 +17,20 @@ pub fn boundary<'a>(doc: &'a Document, p: &ParcelRecord) -> Option<&'a Polyline>
     }
 }
 
+/// The number after the highest "Lot n" so far, continuing the numbering.
+pub fn next_lot_number(doc: &Document) -> u32 {
+    doc.parcels()
+        .iter()
+        .filter_map(|p| {
+            p.name
+                .strip_prefix("Lot ")
+                .and_then(|n| n.trim().parse::<u32>().ok())
+        })
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
 /// The boundary's courses with bearings, distances and radii rounded to the
 /// display precision (as a plan shows them), and the figure they make: its
 /// misclosure is the plan closure.

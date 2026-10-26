@@ -33,7 +33,7 @@ impl LegendWindow {
                 let (code, line) = match e {
                     Entity::Point(p) => (p.code.as_str(), false),
                     Entity::Polyline(l) => (l.code.as_str(), true),
-                    Entity::Text(_) => continue,
+                    Entity::Text(_) | Entity::Dimension(_) => continue,
                 };
                 let Some(f) = library.feature_for(code) else {
                     continue;

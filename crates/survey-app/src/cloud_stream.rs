@@ -68,8 +68,8 @@ fn ratio(a: f64, b: f64) -> f64 {
 /// A selection from a background thread.
 struct Streamed {
     id: PointCloudId,
-    /// `None` when reading failed: keep the current selection.
-    nodes: Option<Vec<CloudNode>>,
+    /// Why reading failed, when it did: the current selection is kept.
+    nodes: Result<Vec<CloudNode>, String>,
     /// Every node is decoded (the thread is finished).
     done: bool,
 }
@@ -85,6 +85,11 @@ pub struct CloudStreamer {
     revision: u64,
     /// The frame last built, and what it was built from.
     frame: Option<((u64, u64, bool), Arc<CloudFrame>)>,
+    /// Each failing cloud's last reported error (reported once until it
+    /// streams again).
+    failing: HashMap<PointCloudId, String>,
+    /// Errors not yet taken by [`Self::take_errors`].
+    errors: Vec<(PointCloudId, String)>,
 }
 
 impl Default for CloudStreamer {
@@ -98,6 +103,8 @@ impl Default for CloudStreamer {
             selections: HashMap::new(),
             revision: 0,
             frame: None,
+            failing: HashMap::new(),
+            errors: Vec::new(),
         }
     }
 }
@@ -107,16 +114,39 @@ impl CloudStreamer {
     pub fn drain(&mut self) -> bool {
         let mut changed = false;
         while let Ok(s) = self.rx.try_recv() {
-            if s.done || s.nodes.is_none() {
+            if s.done || s.nodes.is_err() {
                 self.in_flight.remove(&s.id);
             }
-            if let Some(nodes) = s.nodes {
-                self.selections.insert(s.id, nodes);
-                self.revision += 1;
-                changed = true;
+            match s.nodes {
+                Ok(nodes) => {
+                    if s.done {
+                        self.failing.remove(&s.id);
+                    }
+                    self.selections.insert(s.id, nodes);
+                    self.revision += 1;
+                    changed = true;
+                }
+                Err(e) => self.fail(
+                    s.id,
+                    format!("could not read more detail ({e}); showing what was loaded already"),
+                ),
             }
         }
         changed
+    }
+
+    /// Records that `id` could not be streamed (`error` is the whole message);
+    /// reported unless it was the last error reported for it.
+    pub fn fail(&mut self, id: PointCloudId, error: String) {
+        if self.failing.get(&id) != Some(&error) {
+            self.failing.insert(id, error.clone());
+            self.errors.push((id, error));
+        }
+    }
+
+    /// Streaming errors since the last call, for the log.
+    pub fn take_errors(&mut self) -> Vec<(PointCloudId, String)> {
+        std::mem::take(&mut self.errors)
     }
 
     /// Whether a selection is still being read for any cloud (the app keeps
@@ -142,13 +172,16 @@ impl CloudStreamer {
         self.in_flight.insert(id);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let Ok(src) = CopcSource::shared(&path) else {
-                let _ = tx.send(Streamed {
-                    id,
-                    nodes: None,
-                    done: true,
-                });
-                return;
+            let src = match CopcSource::shared(&path) {
+                Ok(src) => src,
+                Err(e) => {
+                    let _ = tx.send(Streamed {
+                        id,
+                        nodes: Err(e.to_string()),
+                        done: true,
+                    });
+                    return;
+                }
             };
             let selection = src.select(&view, BUDGET);
             let mut file = DefaultHasher::new();
@@ -180,17 +213,16 @@ impl CloudStreamer {
             let complete = first.iter().all(|n| n.points.is_some());
             let _ = tx.send(Streamed {
                 id,
-                nodes: Some(first),
+                nodes: Ok(first),
                 done: complete,
             });
             if complete {
                 return;
             }
             let keys: Vec<NodeKey> = selection.iter().map(|s| s.key).collect();
-            let loaded = src.load(&keys).is_ok();
             let _ = tx.send(Streamed {
                 id,
-                nodes: loaded.then(|| nodes(&src)),
+                nodes: src.load(&keys).map(|()| nodes(&src)).map_err(|e| e.to_string()),
                 done: true,
             });
         });
@@ -253,4 +285,40 @@ fn node_id(file: u64, key: NodeKey) -> u64 {
     let mut h = DefaultHasher::new();
     (file, key).hash(&mut h);
     h.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_errors_are_reported_once_until_streaming_recovers() {
+        let mut s = CloudStreamer::default();
+        let id = PointCloudId(1);
+        let fail = |s: &mut CloudStreamer| {
+            s.tx.send(Streamed {
+                id,
+                nodes: Err("bad chunk".into()),
+                done: true,
+            })
+            .expect("send");
+            s.drain();
+        };
+        fail(&mut s);
+        fail(&mut s);
+        let errors = s.take_errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].1.contains("bad chunk"));
+
+        // Once it streams again, a new failure is reported again.
+        s.tx.send(Streamed {
+            id,
+            nodes: Ok(Vec::new()),
+            done: true,
+        })
+        .expect("send");
+        assert!(s.drain());
+        fail(&mut s);
+        assert_eq!(s.take_errors().len(), 1);
+    }
 }

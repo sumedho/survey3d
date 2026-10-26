@@ -131,6 +131,11 @@ impl Tool for SelectTool {
             }
             Some(Entity::Point(p)) => out.points.push(p.position),
             Some(Entity::Text(t)) => out.points.push(t.position),
+            Some(Entity::Dimension(d)) => {
+                let [a, b] = d.line();
+                out.polylines
+                    .push(vec![d.from, a.extend(d.line_at.z), b.extend(d.line_at.z), d.to]);
+            }
             None => {}
         }
     }

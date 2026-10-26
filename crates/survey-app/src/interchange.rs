@@ -329,6 +329,50 @@ pub fn dxf_export(doc: &Document, opts: &DxfExportOptions) -> DxfDrawing {
                     ));
                 }
             }
+            Entity::Dimension(d) => {
+                // Lines, closed arrowheads and the text, laid out on paper
+                // millimetres in world metres.
+                let height = TextNote::DEFAULT_HEIGHT * k;
+                let Some(drawing) = crate::dimension::layout(d, doc.conventions(), |w| w, k, height, true)
+                else {
+                    continue;
+                };
+                let z = d.line_at.z;
+                for [a, b] in &drawing.lines {
+                    entities.push(DxfEntity::new(
+                        layer.clone(),
+                        DxfGeometry::Polyline {
+                            vertices: vec![a.extend(z), b.extend(z)],
+                            bulges: Vec::new(),
+                            closed: false,
+                        },
+                    ));
+                }
+                for arrow in &drawing.arrows {
+                    entities.push(DxfEntity::new(
+                        layer.clone(),
+                        DxfGeometry::Polyline {
+                            vertices: arrow.iter().map(|p| p.extend(z)).collect(),
+                            bulges: Vec::new(),
+                            closed: true,
+                        },
+                    ));
+                }
+                // TEXT sits on the left end of its baseline.
+                let size = height / survey_io::plot::CAP_HEIGHT;
+                let along = glam::DVec2::from_angle(drawing.angle);
+                let width = survey_io::plot::text_width(&drawing.text, size, false);
+                let at = drawing.text_at - along * (width / 2.0) - along.perp() * (height / 2.0);
+                entities.push(DxfEntity::new(
+                    layer,
+                    DxfGeometry::Text {
+                        at: at.extend(z),
+                        height,
+                        text: drawing.text,
+                        rotation: drawing.angle.to_degrees(),
+                    },
+                ));
+            }
         }
     }
     if names && !layers.iter().any(|l| l.name.eq_ignore_ascii_case(NAMES_LAYER)) {

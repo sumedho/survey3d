@@ -87,7 +87,10 @@ impl Recovery {
             let stale = p.extension().is_some_and(|x| x == "lock")
                 && !p.with_extension("s3d").exists()
                 && p != self.snapshot.with_extension("lock")
-                && File::options().write(true).open(&p).is_ok_and(|f| f.try_lock().is_ok());
+                && File::options()
+                    .write(true)
+                    .open(&p)
+                    .is_ok_and(|f| f.try_lock().is_ok());
             if stale {
                 let _ = std::fs::remove_file(&p);
             }
@@ -234,20 +237,27 @@ mod tests {
             description: String::new(),
             layer: project.doc.current_layer(),
         });
-        project
-            .history
-            .execute(Box::new(ChangeSet::new("add").insert_entity(point)), &mut project.doc);
+        project.history.execute(
+            Box::new(ChangeSet::new("add").insert_entity(point)),
+            &mut project.doc,
+        );
         {
             let mut crashed = Recovery::new(d.clone()).expect("slot");
-            crashed.write(project.snapshot().expect("snapshot"), Some("/jobs/site.s3d".into()));
+            crashed.write(
+                project.snapshot().expect("snapshot"),
+                Some("/jobs/site.s3d".into()),
+            );
             if let Some(w) = crashed.writer.take() {
                 w.join().expect("writer");
             }
             // Simulate the lock of a stopped process going away (here: it is ours,
             // so release it by taking a fresh slot name).
             crashed.snapshot = d.join("recovery-1.s3d");
-            std::fs::rename(d.join(format!("recovery-{}.s3d", std::process::id())), &crashed.snapshot)
-                .expect("rename");
+            std::fs::rename(
+                d.join(format!("recovery-{}.s3d", std::process::id())),
+                &crashed.snapshot,
+            )
+            .expect("rename");
             std::fs::rename(
                 d.join(format!("recovery-{}.json", std::process::id())),
                 crashed.snapshot.with_extension("json"),
@@ -265,7 +275,10 @@ mod tests {
             .expect("open")
             .load_document()
             .expect("load");
-        assert!(doc.find_point_by_name("UNSAVED").is_some(), "unsaved work comes back");
+        assert!(
+            doc.find_point_by_name("UNSAVED").is_some(),
+            "unsaved work comes back"
+        );
         found[0].discard();
         next.close();
         let _ = std::fs::remove_dir_all(&d);

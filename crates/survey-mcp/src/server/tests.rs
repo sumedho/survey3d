@@ -865,3 +865,137 @@ fn layer_rename_carries_through_and_locks_hold() {
     assert!(layer.locked && !layer.visible, "display state kept through undo");
     assert_eq!(doc.meta().feature_codes.codes[0].layer, "BANKS");
 }
+
+/// Phase 9 through the agent's tools: a lot with a curved corner keyed by
+/// bearing and distance and named as a parcel, a lot closed with a computed
+/// leg, the curve solver, a dimension, line and curve tables on a plan sheet,
+/// and Carlson-style control codes.
+#[test]
+fn cadastral_deliverables_end_to_end() {
+    let mut s = Server::new_for_tests();
+    let out = ok(
+        &mut s,
+        "run_commands",
+        json!({ "lines": ["bd", "1000,2000", "0 20", "90 10", "r=10 d=90 r", "180 10", "270 20", "c", "Lot 7"] }),
+    );
+    let text = out.clone();
+    assert!(text.contains("misclose") && text.contains("exact"), "{text}");
+    let parcels = ok_json(&mut s, "query", json!({ "kind": "parcel" }));
+    assert_eq!(parcels["rows"][0]["name"], "Lot 7", "{parcels}");
+    let lot = ok_json(&mut s, "query", json!({ "kind": "polylines" }));
+    let area = lot["rows"][0]["area"].as_f64().expect("area");
+    assert!(
+        (area - (300.0 + 25.0 * std::f64::consts::PI)).abs() < 1e-6,
+        "{area}"
+    );
+    assert!(lot["rows"][0]["bulges"].is_array(), "the curved corner is an arc");
+
+    // A second lot, closed with the computed leg and the next lot number.
+    let out = ok(
+        &mut s,
+        "run_commands",
+        json!({ "lines": ["bd", "1020,2000", "0 20", "90 15", "j", "y"] }),
+    );
+    assert!(out.contains("Closing leg"), "{out}");
+    let parcels = ok_json(&mut s, "query", json!({ "kind": "parcel" }));
+    assert_eq!(parcels["total"], 2);
+    assert_eq!(parcels["rows"][1]["name"], "Lot 8");
+
+    // The curve solver: radius and chord have a minor and a major arc.
+    let solved = ok_json(&mut s, "solve_curve", json!({ "radius": 10, "chord": 10 }));
+    let solutions = solved["solutions"].as_array().expect("solutions");
+    assert_eq!(solutions.len(), 2);
+    assert!((solutions[0]["delta_degrees"].as_f64().expect("delta") - 60.0).abs() < 1e-6);
+    assert!(
+        call(&mut s, "solve_curve", json!({ "radius": 10 })).1,
+        "one element is not enough"
+    );
+    let out = ok(
+        &mut s,
+        "run_commands",
+        json!({ "lines": ["curve", "r=20 d=90", ""] }),
+    );
+    assert!(out.contains("31.416"), "{out}");
+
+    // A dimension along the first lot's frontage, 3 m outside it.
+    let added = ok_json(
+        &mut s,
+        "add_dimension",
+        json!({ "dimensions": [{ "from": [1000.0, 2000.0], "to": [1000.0, 2020.0], "offset": 3.0, "text": "<> (frontage)" }] }),
+    );
+    assert_eq!(added["added"][0]["shows"], "20.000 (frontage)", "{added}");
+    assert_eq!(
+        added["added"][0]["line"][0][0], 997.0,
+        "left of south → north is west"
+    );
+    let out = ok(
+        &mut s,
+        "run_commands",
+        json!({ "lines": ["dim", "h", "1000,2000", "1035,2000", "4", ""] }),
+    );
+    assert!(out.contains("35.000"), "{out}");
+    let dims = ok_json(&mut s, "query", json!({ "kind": "dimensions" }));
+    assert_eq!(dims["total"], 2);
+    assert_eq!(dims["rows"][1]["kind"], "horizontal");
+    let id = dims["rows"][1]["id"].as_i64().expect("id");
+    ok(
+        &mut s,
+        "edit_entities",
+        json!({ "filter": { "ids": [id] }, "set": { "text": "<> overall" } }),
+    );
+    let dims = ok_json(&mut s, "query", json!({ "kind": "dimensions" }));
+    assert_eq!(dims["rows"][1]["shows"], "35.000 overall");
+
+    // A plan sheet with every boundary in line and curve tables.
+    let sheet = ok_json(
+        &mut s,
+        "set_record",
+        json!({ "kind": "sheet", "record": { "name": "Plan", "centre": [1020.0, 2010.0], "scale": 250.0,
+                "content": { "tables": "all" } } }),
+    );
+    assert_eq!(sheet["content"]["tables"], "all");
+    let record = s
+        .doc()
+        .record::<SheetRecord>(RecordId(sheet["id"].as_i64().expect("id")))
+        .cloned()
+        .expect("sheet");
+    let plot = s.session.plot(&record);
+    let svg = survey_io::plot::write_svg(&plot);
+    for text in [
+        // The lot's area is exact, the arc included (not from its drawn chords).
+        "378.540",
+        "LINE TABLE",
+        "CURVE TABLE",
+        ">L1<",
+        ">C1<",
+        "20.000 (frontage)",
+        "Lot 7",
+    ] {
+        assert!(svg.contains(text), "{text} on the plan");
+    }
+    if let Ok(dir) = std::env::var("SURVEY3D_PLOT_DIR") {
+        let png = svg_to_png(&svg, 2400).expect("png");
+        std::fs::write(std::path::Path::new(&dir).join("phase9.png"), png).expect("write");
+    }
+
+    // Carlson-style control codes: a rectangle from two points and a tree circle.
+    ok(&mut s, "set_feature_codes", json!({ "preset": "example" }));
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": [
+            { "e": 1100.0, "n": 2000.0, "code": "BLD" },
+            { "e": 1100.0, "n": 2012.0, "code": "BLD RECT8" },
+            { "e": 1120.0, "n": 2005.0, "code": "TR CIR1.5" }
+        ] }),
+    );
+    let out = ok(&mut s, "run_commands", json!({ "lines": ["linework"] }));
+    assert!(out.contains("2 strings"), "{out}");
+    let lines = ok_json(
+        &mut s,
+        "query",
+        json!({ "kind": "polylines", "filter": { "code": "BLD" } }),
+    );
+    assert_eq!(lines["rows"][0]["closed"], true);
+    assert_eq!(lines["rows"][0]["area"], 96.0);
+}

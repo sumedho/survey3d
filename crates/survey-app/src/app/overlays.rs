@@ -21,6 +21,10 @@ impl SurveyApp {
         let mut ids = Vec::new();
         doc.query(&|b| view.intersects_aabb(b), &mut ids);
         for id in ids {
+            if let Some(Entity::Dimension(d)) = doc.entity(id) {
+                self.draw_dimension(painter, rect, theme, d, selection.contains(id));
+                continue;
+            }
             let Some(Entity::Text(t)) = doc.entity(id) else {
                 continue;
             };
@@ -63,6 +67,53 @@ impl SurveyApp {
         }
     }
 
+    /// A dimension at its paper size, in its layer's colour (or the selection's).
+    fn draw_dimension(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        theme: &CadTheme,
+        d: &survey_model::Dimension,
+        selected: bool,
+    ) {
+        let cam = &self.viewport.camera;
+        let doc = &self.session.project.doc;
+        let Some(layer) = doc.layer(d.layer).filter(|l| l.visible) else {
+            return;
+        };
+        let color = if selected {
+            theme.selection
+        } else {
+            let [r, g, b, a] = crate::scene_build::layer_color(layer.color.0, theme);
+            Color32::from_rgba_unmultiplied(r, g, b, a)
+        };
+        let Some(drawing) = dimension_on_screen(cam, d, doc.conventions()) else {
+            return;
+        };
+        let stroke = Stroke::new(if selected { 2.0 } else { 1.0 }, color);
+        for [a, b] in &drawing.lines {
+            painter.line_segment([to_screen(rect, *a), to_screen(rect, *b)], stroke);
+        }
+        for arrow in &drawing.arrows {
+            painter.add(egui::Shape::convex_polygon(
+                arrow.iter().map(|p| to_screen(rect, *p)).collect(),
+                color,
+                Stroke::NONE,
+            ));
+        }
+        let font_px = survey_model::TextNote::DEFAULT_HEIGHT * crate::scene_build::TEXT_PX_PER_MM
+            / survey_io::plot::CAP_HEIGHT;
+        halo_text(
+            painter,
+            to_screen(rect, drawing.text_at),
+            drawing.text,
+            &egui::FontId::proportional(font_px as f32),
+            drawing.angle as f32,
+            color,
+            theme.viewport_bg,
+        );
+    }
+
     pub(super) fn draw_overlays(
         &mut self,
         painter: &egui::Painter,
@@ -90,6 +141,15 @@ impl SurveyApp {
                     if let Some(corners) = text_corners(cam, rect, t) {
                         let stroke = Stroke::new(1.5, theme.hover);
                         painter.add(egui::Shape::closed_line(corners.to_vec(), stroke));
+                    }
+                }
+                Some(Entity::Dimension(d)) => {
+                    if let Some(drawing) = dimension_on_screen(cam, d, self.session.project.doc.conventions())
+                    {
+                        let stroke = Stroke::new(3.0, theme.hover.gamma_multiply(0.8));
+                        for [a, b] in &drawing.lines {
+                            painter.line_segment([to_screen(rect, *a), to_screen(rect, *b)], stroke);
+                        }
                     }
                 }
                 None => {}
@@ -566,7 +626,12 @@ impl SurveyApp {
                 halo_text(
                     painter,
                     p + egui::vec2(0.0, 8.0),
-                    conv.format_area((area / 2.0).abs()),
+                    // Exact, arcs and all (the ring above only places it).
+                    conv.format_area(
+                        survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, true)
+                            .2
+                            .abs(),
+                    ),
                     &font,
                     0.0,
                     theme.text,
@@ -601,6 +666,32 @@ fn halo_text(
     painter.add(egui::epaint::TextShape::new(origin, galley, color).with_angle(angle));
 }
 
+/// A dimension laid out in viewport pixels (y down), at the size text notes
+/// are drawn; `None` when it is behind the camera.
+fn dimension_on_screen(
+    cam: &cad_render::Camera,
+    d: &survey_model::Dimension,
+    conv: &survey_core::Conventions,
+) -> Option<crate::dimension::DimensionDrawing> {
+    let z = d.line_at.z;
+    let screen = |w: glam::DVec2| cam.world_to_screen(w.extend(z)).map(|(s, _)| s);
+    // Every point it is laid out from must be in front of the camera.
+    let [p, q] = d.line();
+    for w in [p, q, d.from.truncate(), d.to.truncate()] {
+        screen(w)?;
+    }
+    let px_per_mm = crate::scene_build::TEXT_PX_PER_MM;
+    let height = survey_model::TextNote::DEFAULT_HEIGHT * px_per_mm;
+    crate::dimension::layout(
+        d,
+        conv,
+        |w| screen(w).unwrap_or_default(),
+        px_per_mm,
+        height,
+        false,
+    )
+}
+
 /// A text note's box on screen.
 fn text_corners(
     cam: &cad_render::Camera,
@@ -627,9 +718,15 @@ impl SurveyApp {
         theme: &CadTheme,
     ) {
         use crate::tools::grips::GripKind;
-        let vertices: Vec<(glam::DVec3, usize)> = self
-            .current_grips()
+        let grips = self.current_grips().to_vec();
+        let vertices: Vec<(glam::DVec3, usize)> = grips
             .iter()
+            .filter(|g| {
+                matches!(
+                    self.session.project.doc.entity(g.entity),
+                    Some(Entity::Polyline(_))
+                )
+            })
             .filter_map(|g| match g.kind {
                 GripKind::Vertex(i) => Some((g.position, i)),
                 _ => None,

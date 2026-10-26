@@ -96,7 +96,8 @@ pub fn build_linework(
         }
     }
 
-    let lines = library.build_linework(points.iter().map(|(_, p)| (p.position, p.code.as_str())));
+    let find = |name: &str| doc.find_point_by_name(name).map(|(_, p)| p.position);
+    let lines = library.build_linework_with(points.iter().map(|(_, p)| (p.position, p.code.as_str())), &find);
     let new_names: BTreeSet<&str> = lines.iter().map(|l| l.name.as_str()).collect();
 
     // Earlier generated linework: all of it when processing everything, otherwise
@@ -104,9 +105,10 @@ pub fn build_linework(
     for (id, e) in doc.entities() {
         if let Entity::Polyline(l) = e
             && doc.is_entity_editable(id)
+            // Point codes make lines too: circles (CIR).
             && library
                 .find(&l.code)
-                .is_some_and(|f| f.linework && is_generated_name(&l.name, &f.code))
+                .is_some_and(|f| is_generated_name(&l.name, &f.code))
             && (options.only.is_none() || new_names.contains(l.name.as_str()))
         {
             cmd.delete(id);
