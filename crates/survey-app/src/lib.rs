@@ -15,6 +15,8 @@ mod listing;
 mod plan;
 mod platform;
 pub mod project;
+#[cfg(not(target_arch = "wasm32"))]
+mod recovery;
 mod scene_build;
 pub mod session;
 pub mod settings;

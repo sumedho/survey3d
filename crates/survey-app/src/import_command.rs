@@ -184,6 +184,10 @@ impl Command for ImportEntities {
         }
     }
 
+    fn memory_size(&self) -> usize {
+        self.inner.as_ref().map_or(0, Command::memory_size)
+    }
+
     fn audit_detail(&self) -> Value {
         self.inner.as_ref().map_or(Value::Null, Command::audit_detail)
     }

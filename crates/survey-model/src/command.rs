@@ -24,6 +24,69 @@ pub trait Command: Send {
     fn audit_detail(&self) -> Value {
         Value::Null
     }
+    /// Roughly how much memory the command keeps (bytes), for the undo
+    /// history's memory budget.
+    fn memory_size(&self) -> usize {
+        0
+    }
+}
+
+/// Approximate bytes held by a copy of an entity.
+fn entity_size(e: &Entity) -> usize {
+    std::mem::size_of::<Entity>()
+        + match e {
+            Entity::Point(p) => p.name.len() + p.code.len() + p.description.len(),
+            Entity::Polyline(l) => l.vertices.len() * 24 + l.bulges.len() * 8 + l.name.len() + l.code.len(),
+            Entity::Text(t) => t.text.len(),
+        }
+}
+
+fn surface_size(s: &Surface) -> usize {
+    std::mem::size_of::<Surface>() + s.tin.vertices.len() * 24 + s.tin.triangles.len() * 12
+}
+
+fn record_size(r: &AnyRecord) -> usize {
+    match r {
+        AnyRecord::FieldData(f) => {
+            1024 + f.points.len() * 64
+                + f.setups
+                    .iter()
+                    .map(|s| 128 + s.observations.len() * 96)
+                    .sum::<usize>()
+        }
+        _ => 2048,
+    }
+}
+
+fn meta_size(m: &ProjectMeta) -> usize {
+    4096 + m.feature_codes.codes.len() * 256 + m.calibration.pairs.len() * 128
+}
+
+impl Op {
+    fn memory_size(&self) -> usize {
+        let both = |a: Option<usize>, b: Option<usize>| a.unwrap_or(0) + b.unwrap_or(0);
+        64 + match self {
+            Op::Entity { before, after, .. } => {
+                both(before.as_ref().map(entity_size), after.as_ref().map(entity_size))
+            }
+            Op::Layer { .. } | Op::SurfaceStyle { .. } | Op::CloudStyle { .. } => 128,
+            Op::Surface { before, after, .. } => both(
+                before.as_deref().map(surface_size),
+                after.as_deref().map(surface_size),
+            ),
+            // Points are shared with the document while the cloud is in it;
+            // a deleted cloud lives on only here.
+            Op::Cloud { before, after, .. } => match (before, after) {
+                (Some(c), None) => c.points.len() * 12 + c.colors.as_ref().map_or(0, |c| c.len() * 3),
+                _ => 512,
+            },
+            Op::Record { before, after, .. } => both(
+                before.as_deref().map(|(_, r)| record_size(r)),
+                after.as_deref().map(record_size),
+            ),
+            Op::Meta { before, after } => meta_size(after) + before.as_deref().map_or(0, meta_size),
+        }
+    }
 }
 
 /// Visibility and locking are display state, changed outside the undo
@@ -460,6 +523,10 @@ impl Command for ChangeSet {
                 _ => {}
             }
         }
+    }
+
+    fn memory_size(&self) -> usize {
+        self.ops.iter().map(Op::memory_size).sum()
     }
 
     fn audit_detail(&self) -> Value {

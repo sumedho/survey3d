@@ -15,7 +15,6 @@ impl SurveyApp {
     // ------------------------------------------------------------------ dialogs
 
     pub(super) fn dialogs(&mut self, ctx: &egui::Context) {
-        #[cfg(target_arch = "wasm32")]
         self.recovery_prompt(ctx);
 
         if let Some(dialog) = &mut self.csv_dialog {
@@ -369,35 +368,121 @@ impl SurveyApp {
         };
         let bytes = self.recovery.take().unwrap_or_default();
         if recover {
-            let result = ProjectStore::from_bytes(&bytes)
-                .and_then(|store| Project::from_store(store, "Recovered".into(), &self.settings));
-            match result {
-                Ok(mut p) => {
-                    // Not saved anywhere the user controls yet.
-                    p.doc.mark_all_dirty();
-                    let count =
-                        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
-                    let mut parts = vec![count(p.doc.entity_count(), "object", "objects")];
-                    let surfaces = p.doc.surfaces().count();
-                    if surfaces > 0 {
-                        parts.push(count(surfaces, "surface", "surfaces"));
-                    }
-                    let clouds = p.doc.clouds().count();
-                    if clouds > 0 {
-                        parts.push(count(clouds, "point cloud", "point clouds"));
-                    }
-                    self.replace_project(p);
-                    self.session.log.warn(format!(
-                        "Recovered {} — save to keep them (Ctrl+S)",
-                        parts.join(", ")
-                    ));
-                }
-                Err(e) => self.session.log.error(format!("Recovery failed: {e}")),
-            }
+            self.restore_snapshot(&bytes, None);
         } else {
             wasm_bindgen_futures::spawn_local(async {
                 let _ = crate::platform::opfs::remove(crate::platform::opfs::AUTOSAVE).await;
             });
         }
+    }
+}
+
+impl SurveyApp {
+    /// Replaces the project with a crash-recovery snapshot (unsaved work).
+    /// `from` names the project file the work was on, if any.
+    fn restore_snapshot(&mut self, bytes: &[u8], from: Option<&str>) {
+        let name = match from {
+            Some(f) => format!(
+                "Recovered {}",
+                std::path::Path::new(f)
+                    .file_name()
+                    .map_or_else(|| f.to_string(), |n| n.to_string_lossy().into_owned())
+            ),
+            None => "Recovered".into(),
+        };
+        let result = ProjectStore::from_bytes(bytes)
+            .and_then(|store| Project::from_store(store, name, &self.settings));
+        match result {
+            Ok(mut p) => {
+                // Not saved anywhere the user controls yet.
+                p.doc.mark_all_dirty();
+                let count =
+                    |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+                let mut parts = vec![count(p.doc.entity_count(), "object", "objects")];
+                let surfaces = p.doc.surfaces().count();
+                if surfaces > 0 {
+                    parts.push(count(surfaces, "surface", "surfaces"));
+                }
+                let clouds = p.doc.clouds().count();
+                if clouds > 0 {
+                    parts.push(count(clouds, "point cloud", "point clouds"));
+                }
+                self.replace_project(p);
+                let hint = match from {
+                    Some(f) => format!(" — save to keep them (Save As over {f} to replace that file)"),
+                    None => " — save to keep them (Ctrl+S)".into(),
+                };
+                self.session
+                    .log
+                    .warn(format!("Recovered {}{hint}", parts.join(", ")));
+            }
+            Err(e) => self.session.log.error(format!("Recovery failed: {e}")),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SurveyApp {
+    /// Offers back unsaved work from a session that stopped unexpectedly
+    /// (one snapshot at a time, newest first).
+    fn recovery_prompt(&mut self, ctx: &egui::Context) {
+        let Some(found) = self.crash.pending.first().cloned() else {
+            return;
+        };
+        let what = match &found.source {
+            Some(f) => format!(
+                "unsaved changes to {}",
+                crate::platform::file_name(std::path::Path::new(f))
+            ),
+            None => "an unsaved new project".into(),
+        };
+        let ago = found
+            .modified
+            .elapsed()
+            .map(|d| match d.as_secs() {
+                s if s < 120 => "moments ago".to_string(),
+                s if s < 7200 => format!("{} minutes ago", s / 60),
+                s if s < 172_800 => format!("{} hours ago", s / 3600),
+                s => format!("{} days ago", s / 86_400),
+            })
+            .unwrap_or_default();
+        let mut choice = None;
+        egui::Modal::new(egui::Id::unique("crash_recovery")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading("Recover unsaved work?");
+            ui.label(format!(
+                "survey3d closed unexpectedly with {what} (last snapshot {ago})."
+            ));
+            if let Some(f) = &found.source {
+                ui.label(
+                    RichText::new(format!("The file {f} itself was not changed."))
+                        .small()
+                        .color(self.theme.text_secondary),
+                );
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Recover").clicked() {
+                    choice = Some(true);
+                }
+                if ui
+                    .button(RichText::new("Discard").color(self.theme.error))
+                    .clicked()
+                {
+                    choice = Some(false);
+                }
+            });
+        });
+        let Some(recover) = choice else {
+            return;
+        };
+        self.crash.pending.remove(0);
+        if recover {
+            match found.read() {
+                Ok(bytes) => self.restore_snapshot(&bytes, found.source.as_deref()),
+                Err(e) => self.session.log.error(format!("Recovery failed: {e}")),
+            }
+        }
+        found.discard();
     }
 }

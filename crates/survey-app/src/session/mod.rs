@@ -179,9 +179,19 @@ impl Session {
 
     pub fn execute(&mut self, command: Box<dyn Command>) {
         let p = &mut self.project;
+        let dropped = p.history.dropped();
         p.history.execute(command, &mut p.doc);
         let doc = &p.doc;
         p.selection.retain(|id| doc.contains(id));
+        let now = p.history.dropped() - dropped;
+        // Step-count trimming is routine; say so when memory forced it.
+        if now > 0 && p.history.memory_used() > survey_model::UNDO_MEMORY_LIMIT / 2 {
+            self.log.info(format!(
+                "Undo history is using {} MB: the {now} oldest undo step{} were let go",
+                p.history.memory_used() / (1024 * 1024),
+                if now == 1 { "" } else { "s" }
+            ));
+        }
     }
 
     /// Executes a command built elsewhere (a window or importer) and logs its summary.

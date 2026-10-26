@@ -440,7 +440,26 @@ pub struct SurveyApp {
     recovery: Option<Vec<u8>>,
     #[cfg(target_arch = "wasm32")]
     autosave: Autosave,
+    #[cfg(not(target_arch = "wasm32"))]
+    crash: CrashRecovery,
 }
+
+/// Desktop crash-recovery snapshots of unsaved work (see [`crate::recovery`]).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct CrashRecovery {
+    /// This session's snapshot slot (`None` without a writable data folder).
+    slot: Option<crate::recovery::Recovery>,
+    /// Snapshots from sessions that stopped unexpectedly, to offer back.
+    pending: Vec<crate::recovery::Found>,
+    /// `(document revision, pending audit entries)` last written.
+    written: Option<(u64, usize)>,
+    last: Option<std::time::Instant>,
+}
+
+/// How often unsaved work is snapshotted while editing.
+#[cfg(not(target_arch = "wasm32"))]
+const SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Camera state saved with each project so it reopens where it was left.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -578,6 +597,17 @@ impl SurveyApp {
             recovery: None,
             #[cfg(target_arch = "wasm32")]
             autosave: Autosave::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            crash: {
+                let slot = eframe::storage_dir("survey3d")
+                    .and_then(|d| crate::recovery::Recovery::new(d.join("recovery")));
+                let pending = slot.as_ref().map(|s| s.orphans()).unwrap_or_default();
+                CrashRecovery {
+                    slot,
+                    pending,
+                    ..Default::default()
+                }
+            },
         }
     }
 
@@ -1379,6 +1409,45 @@ impl SurveyApp {
         }
     }
 
+    /// Snapshots unsaved work for crash recovery while editing (desktop), and
+    /// removes the snapshot once the work is saved or discarded.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn snapshot_unsaved(&mut self, ctx: &egui::Context) {
+        let project = &self.session.project;
+        let Some(slot) = &mut self.crash.slot else {
+            return;
+        };
+        if !project.is_dirty() {
+            if self.crash.written.take().is_some() {
+                slot.clear();
+            }
+            return;
+        }
+        let key = (project.doc.revision(), project.history.pending_audit().len());
+        let due = self.crash.last.is_none_or(|t| t.elapsed() >= SNAPSHOT_INTERVAL);
+        if self.crash.written == Some(key) {
+            return;
+        }
+        if !due {
+            ctx.request_repaint_after(SNAPSHOT_INTERVAL / 3);
+            return;
+        }
+        self.crash.last = Some(std::time::Instant::now());
+        // (Not the camera view: that is written into the project file itself,
+        // which must stay untouched until the user saves.)
+        let project = &self.session.project;
+        match project.snapshot() {
+            Ok(bytes) => {
+                let source = project.store.file_path().map(|p| p.display().to_string());
+                if let Some(slot) = &mut self.crash.slot {
+                    slot.write(bytes, source);
+                }
+                self.crash.written = Some(key);
+            }
+            Err(e) => log::warn!("crash-recovery snapshot failed: {e}"),
+        }
+    }
+
     /// Periodically snapshots unsaved work to browser storage (web).
     #[cfg(target_arch = "wasm32")]
     fn autosave(&mut self, ctx: &egui::Context) {
@@ -1450,6 +1519,8 @@ impl eframe::App for SurveyApp {
         self.handle_file_events();
         #[cfg(target_arch = "wasm32")]
         self.autosave(&ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.snapshot_unsaved(&ctx);
         self.handle_close_request(&ctx);
         self.handle_shortcuts(&ctx);
         self.update_title(&ctx);
@@ -1490,6 +1561,15 @@ impl eframe::App for SurveyApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
+    }
+
+    /// A clean exit (any unsaved work was saved or knowingly discarded):
+    /// nothing to recover.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn on_exit(&mut self) {
+        if let Some(slot) = self.crash.slot.take() {
+            slot.close();
+        }
     }
 }
 

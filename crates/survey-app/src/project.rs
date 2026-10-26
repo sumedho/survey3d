@@ -85,7 +85,6 @@ impl Project {
     }
 
     /// The project including unsaved changes, without saving (crash recovery).
-    #[cfg(target_arch = "wasm32")]
     pub fn snapshot(&self) -> Result<Vec<u8>, StoreError> {
         self.store
             .snapshot_bytes(&self.doc, self.history.pending_audit(), APP_VERSION)
