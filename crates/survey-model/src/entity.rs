@@ -104,6 +104,25 @@ impl Polyline {
         (0..self.vertices.len()).map(|i| self.bulge(i)).collect()
     }
 
+    /// Removes vertex `i`: the segments either side become one (taking the
+    /// bulge of the one before). Refuses (`false`) to leave fewer than two
+    /// vertices; a closed figure reduced to two straight vertices opens.
+    pub fn remove_vertex(&mut self, i: usize) -> bool {
+        if self.vertices.len() <= 2 || i >= self.vertices.len() {
+            return false;
+        }
+        if !self.bulges.is_empty() {
+            let mut bulges = self.padded_bulges();
+            bulges.remove(i);
+            self.bulges = bulges;
+        }
+        self.vertices.remove(i);
+        if self.closed && self.vertices.len() < 3 && self.bulges.iter().all(|b| *b == 0.0) {
+            self.closed = false;
+        }
+        true
+    }
+
     /// Reverses the direction of travel without changing the shape.
     pub fn reverse(&mut self) {
         reverse_bulges(&mut self.vertices, &mut self.bulges, self.closed);
@@ -346,5 +365,30 @@ mod tests {
         let exploded = joined[0].explode();
         assert_eq!(exploded.len(), 3);
         assert!(exploded.iter().all(|l| !l.closed && l.vertices.len() == 2));
+    }
+
+    #[test]
+    fn removing_vertices() {
+        // A closed square with an arc on its second side.
+        let mut l = line(
+            &[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            vec![0.0, 0.5, 0.0, 0.0],
+        );
+        l.closed = true;
+        assert!(l.remove_vertex(2));
+        assert_eq!(l.vertices.len(), 3);
+        // The merged side takes the arc of the segment before the removed vertex.
+        assert_eq!(l.bulges, vec![0.0, 0.5, 0.0]);
+        assert!(l.closed);
+        assert!(l.remove_vertex(0));
+        assert_eq!(l.vertices.len(), 2);
+        assert!(l.closed, "an arc still bounds an area");
+        assert!(!l.remove_vertex(0), "two vertices is the least");
+        assert!(!l.remove_vertex(9));
+        // A straight closed figure down to two vertices opens.
+        let mut tri = line(&[(0.0, 0.0), (10.0, 0.0), (5.0, 5.0)], Vec::new());
+        tri.closed = true;
+        assert!(tri.remove_vertex(1));
+        assert!(!tri.closed && tri.bulges.is_empty());
     }
 }

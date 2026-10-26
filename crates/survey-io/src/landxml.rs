@@ -85,7 +85,7 @@ pub fn read_surfaces(bytes: &[u8]) -> Result<(Vec<LandXmlSurface>, Vec<String>),
                 let nums: Vec<&str> = t.as_ref().split_whitespace().collect();
                 match *kind {
                     "P" => {
-                        let v: Vec<f64> = nums.iter().filter_map(|s| s.parse().ok()).collect();
+                        let v: Vec<f64> = nums.iter().filter_map(|s| crate::finite(s)).collect();
                         let Some(id) = id.clone() else {
                             continue;
                         };

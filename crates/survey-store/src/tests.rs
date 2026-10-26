@@ -21,6 +21,26 @@ fn sample() -> (Document, History) {
     meta.conventions = Conventions::north_american();
     meta.feature_codes = survey_core::field_to_finish::FeatureLibrary::example();
     meta.tolerances.min_precision = Some(10_000.0);
+    // Settings kept as JSON: non-default values with full-precision floats.
+    meta.network_options.distance_ppm = 1.7;
+    meta.calibration = survey_core::calibration::SiteCalibration {
+        pairs: vec![survey_core::calibration::PairSetup {
+            measured: "G1".into(),
+            control: "C1".into(),
+            horizontal: true,
+            vertical: false,
+        }],
+        options: Default::default(),
+        applied: Some(survey_core::calibration::Calibration {
+            horizontal: Some(survey_core::calibration::Horizontal {
+                origin: glam::DVec2::new(331_123.456_789_012_3, 6_250_987.654_321_098),
+                origin_control: glam::DVec2::new(1_000.1 / 3.0, 2_000.2 / 7.0),
+                a: 1.000_25 * 0.3f64.cos(),
+                b: 1.000_25 * 0.3f64.sin(),
+            }),
+            vertical: None,
+        }),
+    };
     let traverse = survey_core::traverse::TraverseRecord {
         name: "Loop 1".into(),
         start: "1".into(),
@@ -503,4 +523,28 @@ fn saved_files_open_from_their_bytes_alone() {
     assert_same(&doc, &loaded);
     drop(store);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_project_opens_in_one_place_at_a_time() {
+    let dir = std::env::temp_dir().join(format!("survey3d-lock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let (a, b) = (dir.join("a.s3d"), dir.join("b.s3d"));
+    let mut mem = ProjectStore::create_in_memory().expect("store");
+    mem.save_as_file(&a).expect("save a");
+    // A second opener is turned away while the first holds the file.
+    assert!(matches!(ProjectStore::open_file(&a), Err(StoreError::InUse)));
+    // Save As onto a project open elsewhere is refused (and leaves it alone).
+    let mut other = ProjectStore::create_in_memory().expect("store");
+    assert!(matches!(other.save_as_file(&a), Err(StoreError::InUse)));
+    other.save_as_file(&b).expect("save b");
+    // Closed, it can be opened again; the lock file goes with it.
+    drop(mem);
+    assert!(!dir.join("a.s3d-lock").exists());
+    let reopened = ProjectStore::open_file(&a).expect("reopen");
+    drop(reopened);
+    drop(other);
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -117,6 +117,7 @@ impl SurveyApp {
                 painter.rect_filled(r, 1.0, fill);
                 painter.rect_stroke(r, 1.0, Stroke::new(1.0, theme.bg), egui::StrokeKind::Outside);
             }
+            self.draw_vertex_numbers(painter, rect, &cam, theme);
         }
         let cam = &self.viewport.camera;
 
@@ -611,6 +612,62 @@ fn text_corners(
 }
 
 /// Draws text in a small box near `pos`, kept inside `bounds`.
+/// Vertex numbers beside a selected polyline's grips (its point sequence)
+/// are left out when a selection has more than this many vertices.
+const MAX_NUMBERED_VERTICES: usize = 500;
+
+impl SurveyApp {
+    /// Numbers each vertex of the selected polylines in drawing order, the
+    /// first one marked as the start; labels that would overlap are skipped.
+    fn draw_vertex_numbers(
+        &mut self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        cam: &cad_render::Camera,
+        theme: &CadTheme,
+    ) {
+        use crate::tools::grips::GripKind;
+        let vertices: Vec<(glam::DVec3, usize)> = self
+            .current_grips()
+            .iter()
+            .filter_map(|g| match g.kind {
+                GripKind::Vertex(i) => Some((g.position, i)),
+                _ => None,
+            })
+            .collect();
+        if vertices.len() > MAX_NUMBERED_VERTICES {
+            return;
+        }
+        let font = egui::FontId::monospace(10.5);
+        let mut placed: Vec<egui::Pos2> = Vec::new();
+        for (p, i) in vertices {
+            let Some((s, _)) = cam.world_to_screen(p) else {
+                continue;
+            };
+            let at = to_screen(rect, s) + egui::vec2(7.0, -7.0);
+            if !rect.contains(at) || placed.iter().any(|q| q.distance(at) < 14.0) {
+                continue;
+            }
+            placed.push(at);
+            let text = if i == 0 {
+                "1 start".to_string()
+            } else {
+                (i + 1).to_string()
+            };
+            let galley = painter.layout_no_wrap(text, font.clone(), theme.text);
+            let r =
+                egui::Rect::from_min_size(at - egui::vec2(0.0, galley.size().y), galley.size()).expand(2.0);
+            painter.rect_filled(r, 2.0, theme.panel.gamma_multiply(0.85));
+            let color = if i == 0 {
+                theme.accent
+            } else {
+                theme.text_secondary
+            };
+            painter.galley_with_override_text_color(r.min + egui::vec2(2.0, 2.0), galley, color);
+        }
+    }
+}
+
 fn label_box(painter: &egui::Painter, bounds: egui::Rect, pos: egui::Pos2, text: &str, theme: &CadTheme) {
     let galley = painter.layout_no_wrap(text.to_string(), egui::FontId::monospace(11.5), theme.text);
     let size = galley.size();

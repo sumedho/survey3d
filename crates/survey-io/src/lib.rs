@@ -20,6 +20,12 @@ pub use csv_points::{CsvField, CsvLayout, CsvPointImporter, HeaderMode, export_p
 
 use thiserror::Error;
 
+/// A finite number from text. Rust's parser also accepts `inf` and `NaN`,
+/// which turn up in some exports and would poison bounds and indexes.
+pub(crate) fn finite(text: &str) -> Option<f64> {
+    text.trim().parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
 /// A point read from an interchange file, in metres.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImportedPoint {

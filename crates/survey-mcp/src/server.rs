@@ -99,7 +99,7 @@ impl Server {
             ..AppSettings::default()
         };
         let project = match &options.project {
-            Some(path) => open(path, &settings)?,
+            Some(path) => open(path, &settings, options.read_only)?,
             None => Project::new(&settings).map_err(|e| e.to_string())?,
         };
         Ok(Self {
@@ -276,7 +276,7 @@ impl Server {
     fn open_project(&mut self, args: &Value) -> Outcome {
         self.check_unsaved(args)?;
         let path = PathBuf::from(required_str(args, "path")?);
-        let project = open(&path, &self.settings)?;
+        let project = open(&path, &self.settings, self.read_only)?;
         self.session.replace_project(project);
         Ok(ToolResult::json(&self.project_info()))
     }
@@ -847,9 +847,22 @@ impl Server {
 
 // ---------------------------------------------------------------------- helpers
 
-fn open(path: &Path, settings: &AppSettings) -> Result<Project, String> {
-    let store =
-        ProjectStore::open_file(path).map_err(|e| format!("Could not open {}: {e}", path.display()))?;
+/// Opens a project. Read-only, it works on a copy of the file as last saved,
+/// so it can look at a project the application has open (which holds it).
+fn open(path: &Path, settings: &AppSettings, read_only: bool) -> Result<Project, String> {
+    let fail = |e: &dyn std::fmt::Display| format!("Could not open {}: {e}", path.display());
+    let store = if read_only {
+        let bytes = std::fs::read(path).map_err(|e| fail(&e))?;
+        ProjectStore::from_bytes(&bytes).map_err(|e| fail(&e))?
+    } else {
+        ProjectStore::open_file(path).map_err(|e| match e {
+            survey_store::StoreError::InUse => format!(
+                "{} is open in survey3d (or another program). Close it there, or start this server with --read-only to look at it as last saved",
+                path.display()
+            ),
+            e => fail(&e),
+        })?
+    };
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

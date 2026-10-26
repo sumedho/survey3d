@@ -128,20 +128,8 @@ pub fn delete_vertex(entity: &Entity, grip: &Grip) -> Option<Entity> {
     let (Entity::Polyline(l), GripKind::Vertex(i)) = (entity, grip.kind) else {
         return None;
     };
-    if l.vertices.len() <= 2 || i >= l.vertices.len() {
-        return None;
-    }
     let mut l = l.clone();
-    l.vertices.remove(i);
-    if !l.bulges.is_empty() {
-        let mut bulges = l.padded_bulges();
-        bulges.remove(i);
-        l.bulges = bulges;
-    }
-    if l.closed && l.vertices.len() < 3 && l.bulges.iter().all(|b| *b == 0.0) {
-        l.closed = false;
-    }
-    Some(Entity::Polyline(l))
+    l.remove_vertex(i).then_some(Entity::Polyline(l))
 }
 
 #[cfg(test)]

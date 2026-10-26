@@ -133,6 +133,11 @@ pub trait Tool {
     fn takes_codes(&self) -> bool {
         false
     }
+    /// Whether the Delete key acts within the tool (it is sent as the text
+    /// `delete`) rather than deleting the selection.
+    fn takes_delete_key(&self) -> bool {
+        false
+    }
     /// The last point entered, for relative input, ortho and perpendicular snaps.
     fn base_point(&self) -> Option<ResolvedPoint> {
         None

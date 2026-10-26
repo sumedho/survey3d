@@ -60,7 +60,8 @@ impl Word<'_> {
                     Err(())
                 }
             })
-            .ok()?;
+            .ok()
+            .filter(|v: &f64| v.is_finite())?;
         Some(if self.negative { -v } else { v })
     }
 
@@ -228,7 +229,7 @@ impl Node {
         self.child(name).map(|c| c.text.trim()).filter(|t| !t.is_empty())
     }
     fn num(&self, name: &str) -> Option<f64> {
-        self.text_of(name)?.parse().ok()
+        crate::finite(self.text_of(name)?)
     }
     fn attr(&self, key: &str) -> Option<&str> {
         self.attrs.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())

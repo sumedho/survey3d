@@ -43,6 +43,8 @@ pub enum StoreError {
     NotAProject,
     #[error("project was written by a newer version (schema {found}, supported {supported})")]
     TooNew { found: i32, supported: i32 },
+    #[error("the project is already open in another survey3d window or program")]
+    InUse,
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -75,6 +77,46 @@ impl AuditVerification {
 pub struct ProjectStore {
     conn: Connection,
     path: Option<PathBuf>,
+    /// Held while the file is open, so a second window (or the MCP server)
+    /// can't open it too and overwrite this one's work.
+    #[cfg(not(target_arch = "wasm32"))]
+    _lock: Option<FileLock>,
+}
+
+/// An exclusive lock on `<project>-lock` beside a project file. The operating
+/// system releases it if the program stops, so it never goes stale.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+struct FileLock {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl FileLock {
+    fn acquire(project: &Path) -> Result<Self> {
+        let mut name = project.as_os_str().to_owned();
+        name.push("-lock");
+        let path = PathBuf::from(name);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { file, path }),
+            Err(std::fs::TryLockError::WouldBlock) => Err(StoreError::InUse),
+            Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        let _ = self.file.unlock();
+    }
 }
 
 impl ProjectStore {
@@ -82,7 +124,12 @@ impl ProjectStore {
     pub fn create_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         schema::initialise(&conn)?;
-        Ok(Self { conn, path: None })
+        Ok(Self {
+            conn,
+            path: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            _lock: None,
+        })
     }
 
     /// Loads a project from serialized bytes (e.g. an uploaded file on the web).
@@ -98,7 +145,12 @@ impl ProjectStore {
         conn.deserialize_read_exact(rusqlite::MAIN_DB, &bytes[..], bytes.len(), false)
             .map_err(|_| StoreError::NotAProject)?;
         schema::check_and_migrate(&conn)?;
-        Ok(Self { conn, path: None })
+        Ok(Self {
+            conn,
+            path: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            _lock: None,
+        })
     }
 
     /// Serializes the whole database (e.g. to download on the web).
@@ -110,24 +162,57 @@ impl ProjectStore {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
+        let lock = FileLock::acquire(path)?;
+        Self::open_locked(path, lock)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_locked(path: &Path, lock: FileLock) -> Result<Self> {
         let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         schema::check_and_migrate(&conn)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         Ok(Self {
             conn,
             path: Some(path.to_path_buf()),
+            _lock: Some(lock),
         })
     }
 
-    /// Copies the database to `path` and continues working on that file.
+    /// Copies the database (as last saved) to `path` and continues working on
+    /// that file. The copy is written beside it and renamed into place, so an
+    /// existing file there is only replaced once the copy is complete.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn save_as_file(&mut self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
-        if path.exists() {
-            std::fs::remove_file(path)?;
+        let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if self.path.as_deref().is_some_and(|current| same(current, path)) {
+            return Ok(());
         }
-        self.conn.backup(rusqlite::MAIN_DB, path, None)?;
-        *self = Self::open_file(path)?;
+        // Not over a project open elsewhere.
+        let lock = FileLock::acquire(path)?;
+        let mut temp = path.as_os_str().to_owned();
+        temp.push(".saving");
+        let temp = std::path::PathBuf::from(temp);
+        let _ = std::fs::remove_file(&temp);
+        let copied = self
+            .conn
+            .backup(rusqlite::MAIN_DB, &temp, None)
+            .map_err(StoreError::from)
+            .and_then(|()| std::fs::rename(&temp, path).map_err(StoreError::from));
+        if let Err(e) = copied {
+            let _ = std::fs::remove_file(&temp);
+            return Err(e);
+        }
+        // A stale write-ahead log of an older file at `path` must not be replayed.
+        for ext in ["-wal", "-shm"] {
+            let mut side = path.as_os_str().to_owned();
+            side.push(ext);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(side));
+        }
+        *self = Self::open_locked(path, lock)?;
         Ok(())
     }
 

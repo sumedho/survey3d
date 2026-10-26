@@ -24,8 +24,12 @@ impl Tool for SelectTool {
 
     fn prompt(&self, _conv: &Conventions) -> String {
         match &self.hot {
-            Some((grip, Entity::Polyline(_))) if matches!(grip.kind, super::grips::GripKind::Vertex(_)) => {
-                format!("{} — new position [Delete vertex]:", grip.describe())
+            Some((grip, Entity::Polyline(l))) if let super::grips::GripKind::Vertex(i) = grip.kind => {
+                format!(
+                    "Stretch vertex {} of {} — new position, or d / Delete key to remove it:",
+                    i + 1,
+                    l.vertices.len()
+                )
             }
             Some((grip, _)) => format!("{} — new position:", grip.describe()),
             None => "Command:".into(),
@@ -34,6 +38,10 @@ impl Tool for SelectTool {
 
     fn wants_point(&self) -> bool {
         self.hot.is_some()
+    }
+
+    fn takes_delete_key(&self) -> bool {
+        matches!(&self.hot, Some((grip, _)) if matches!(grip.kind, super::grips::GripKind::Vertex(_)))
     }
 
     fn base_point(&self) -> Option<ResolvedPoint> {
@@ -83,7 +91,12 @@ impl Tool for SelectTool {
                 match (&self.hot, text.trim().to_ascii_lowercase().as_str()) {
                     (Some((grip, entity)), "d" | "del" | "delete") => match delete_vertex(entity, grip) {
                         Some(edited) => {
-                            ctx.execute(ChangeSet::new("Delete vertex").update_entity(grip.entity, edited));
+                            let label = match grip.kind {
+                                super::grips::GripKind::Vertex(i) => format!("Delete vertex {}", i + 1),
+                                _ => "Delete vertex".into(),
+                            };
+                            ctx.log.info(&label);
+                            ctx.execute(ChangeSet::new(label).update_entity(grip.entity, edited));
                             self.hot = None;
                         }
                         None => ctx.log.warn("A polyline needs at least two vertices"),

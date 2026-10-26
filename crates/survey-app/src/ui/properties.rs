@@ -200,6 +200,9 @@ fn single(ui: &mut egui::Ui, doc: &Document, id: EntityId) -> Option<Box<dyn Com
                         ),
                     );
                 }
+                if vertex_list(g, conv, l) {
+                    changed = true;
+                }
             }
             Entity::Text(t) => {
                 g.section("Text");
@@ -238,6 +241,42 @@ fn single(ui: &mut egui::Ui, doc: &Document, id: EntityId) -> Option<Box<dyn Com
         let label = format!("Edit {} {}", e.kind_name().to_lowercase(), e.name());
         Box::new(ChangeSet::new(label.trim().to_string()).update_entity(id, e)) as Box<dyn Command>
     })
+}
+
+/// Longer polylines don't list their vertices (the grips still number them).
+const MAX_LISTED_VERTICES: usize = 200;
+
+/// The vertices in drawing order, each with a remove button; true when one
+/// was removed.
+fn vertex_list(g: &mut PropertyGridUi<'_>, conv: &Conventions, l: &mut survey_model::Polyline) -> bool {
+    if l.vertices.len() > MAX_LISTED_VERTICES {
+        return false;
+    }
+    g.section(if l.closed { "Vertices (closed)" } else { "Vertices" });
+    let removable = l.vertices.len() > 2;
+    let mut remove = None;
+    for (i, v) in l.vertices.iter().enumerate() {
+        let text = conv.format_coord(*v, l.heights_known);
+        let clicked = g.row(&(i + 1).to_string(), |ui| {
+            ui.horizontal(|ui| {
+                let button =
+                    egui::Button::new(RichText::new(egui_cad::icons::X).font(egui_cad::fonts::icon(11.0)))
+                        .frame(false);
+                let clicked = ui
+                    .add_enabled(removable, button)
+                    .on_hover_text("Remove this vertex")
+                    .on_disabled_hover_text("A polyline needs at least two vertices")
+                    .clicked();
+                ui.label(RichText::new(text).monospace().size(11.0));
+                clicked
+            })
+            .inner
+        });
+        if clicked {
+            remove = Some(i);
+        }
+    }
+    remove.is_some_and(|i| l.remove_vertex(i))
 }
 
 fn multiple(ui: &mut egui::Ui, doc: &Document, ids: &[EntityId]) -> Option<Box<dyn Command>> {

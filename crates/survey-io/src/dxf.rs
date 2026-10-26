@@ -153,7 +153,7 @@ impl<'a> Record<'a> {
     }
 
     fn f64(&self, code: i32) -> Option<f64> {
-        self.str(code).and_then(|v| v.parse().ok())
+        self.str(code).and_then(crate::finite)
     }
 
     fn f64_or(&self, code: i32, default: f64) -> f64 {
@@ -319,7 +319,7 @@ fn lwpolyline(r: &Record<'_>) -> Option<DxfGeometry> {
     let mut vertices = Vec::new();
     let mut bulges = Vec::new();
     for &(code, value) in r.pairs {
-        let v: f64 = value.parse().unwrap_or(0.0);
+        let v = crate::finite(value).unwrap_or(0.0);
         match code {
             10 => {
                 vertices.push(DVec3::new(v, 0.0, elevation));

@@ -31,12 +31,12 @@ pub fn read_xyz(bytes: &[u8]) -> Result<RawCloud, IoError> {
             if n == 6 {
                 break;
             }
-            match tok.parse::<f64>() {
-                Ok(x) => {
+            match crate::finite(tok) {
+                Some(x) => {
                     v[n] = x;
                     n += 1;
                 }
-                Err(_) => break,
+                None => break,
             }
         }
         if n < 3 {
@@ -148,6 +148,12 @@ pub fn read_cloud(bytes: &[u8]) -> Result<RawCloud, IoError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xyz_skips_non_finite_rows() {
+        let c = read_xyz(b"1 2 3\nnan 5 6\n7 inf 9\n10 11 12\n").expect("xyz");
+        assert_eq!(c.points.len(), 2, "rows with nan or inf are skipped");
+    }
 
     #[test]
     fn xyz_with_and_without_colour() {

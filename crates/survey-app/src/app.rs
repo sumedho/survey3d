@@ -1133,6 +1133,16 @@ impl SurveyApp {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_path(&mut self, path: &std::path::Path) {
         let name = crate::platform::file_name(path);
+        let current = self
+            .session
+            .project
+            .store
+            .file_path()
+            .and_then(|p| p.canonicalize().ok());
+        if current.is_some() && current == path.canonicalize().ok() {
+            self.session.log.info(format!("{name} is already open"));
+            return;
+        }
         self.open_store(ProjectStore::open_file(path), name);
     }
 
@@ -1661,7 +1671,12 @@ impl SurveyApp {
                 }
             }
             if del {
-                self.session.delete_selection();
+                // While a vertex grip is held, Delete removes that vertex, not the object.
+                if self.session.active_tool.takes_delete_key() {
+                    self.session.dispatch(ToolEvent::Text("delete"));
+                } else {
+                    self.session.delete_selection();
+                }
             }
             if tab {
                 self.snap_engine.cycle_next();
