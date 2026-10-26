@@ -276,6 +276,18 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::FILE_TEXT,
     ),
     cmd(
+        "renumber",
+        "Renumber points (renumber 1001 for the selection, +1000 to shift, 1-50 1001 by range)",
+        "Modify",
+        icons::TEXT_T,
+    ),
+    cmd(
+        "raise",
+        "Raise or lower the selection's heights (raise 0.15, raise -0.05)",
+        "Modify",
+        icons::ARROWS_IN,
+    ),
+    cmd(
         "rawedit",
         "Raw data editor (correct heights, codes, backsights; reduce)",
         "Survey",

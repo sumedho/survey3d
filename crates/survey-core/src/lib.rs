@@ -29,6 +29,7 @@ pub mod style;
 pub mod subdivide;
 pub mod tin;
 pub mod traverse;
+pub mod trim;
 pub mod volume;
 
 pub use angle::{Angle, Bearing, Dms, Quadrant};

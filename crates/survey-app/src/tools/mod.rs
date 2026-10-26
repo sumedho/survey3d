@@ -21,6 +21,7 @@ mod point;
 mod polyline;
 mod select;
 mod text;
+mod trim;
 
 use egui_cad::command_line::CommandLineState;
 use egui_cad::icons;
@@ -317,6 +318,36 @@ impl DomainModule for CoreModule {
             create: || Box::<modify::RotateTool>::default(),
         });
         tools.register(ToolDescriptor {
+            id: trim::TRIM_ID,
+            name: "Trim",
+            commands: &["trim"],
+            icon: icons::SCISSORS,
+            palette: true,
+            group: ToolGroup::Modify,
+            description: "Cut lines back to boundary lines: pick the boundaries (or Enter for all), then the parts to cut away",
+            create: || Box::new(trim::TrimExtendTool::new(false)),
+        });
+        tools.register(ToolDescriptor {
+            id: trim::EXTEND_ID,
+            name: "Extend",
+            commands: &["extend"],
+            icon: icons::ARROWS_LEFT_RIGHT,
+            palette: false,
+            group: ToolGroup::Modify,
+            description: "Lengthen lines to boundary lines: pick the boundaries (or Enter for all), then near the ends to extend",
+            create: || Box::new(trim::TrimExtendTool::new(true)),
+        });
+        tools.register(ToolDescriptor {
+            id: modify::SCALE_ID,
+            name: "Scale",
+            commands: &["scale", "sc"],
+            icon: icons::ARROWS_OUT_CARDINAL,
+            palette: false,
+            group: ToolGroup::Modify,
+            description: "Scale objects about a base point by a factor, or by a measured and a true length (plan; heights and text sizes unchanged)",
+            create: || Box::<modify::ScaleTool>::default(),
+        });
+        tools.register(ToolDescriptor {
             id: offset::ID,
             name: "Offset",
             commands: &["offset", "ofs"],
@@ -418,6 +449,17 @@ impl DomainModule for CoreModule {
                 },
             });
         }
+        tools.register(ToolDescriptor {
+            id: trim::APPARENT_ID,
+            name: "Apparent intersection",
+            // Not "intersect": while a point is wanted that is the intersection snap.
+            commands: &["ix", "apparent"],
+            icon: icons::CROSSHAIR,
+            palette: false,
+            group: ToolGroup::Cogo,
+            description: "Point where two lines meet when extended (building corners, kerb lines): pick each line, or type it as two points",
+            create: || Box::<trim::ApparentTool>::default(),
+        });
         tools.register(ToolDescriptor {
             id: cogo::CHAINAGE_ID,
             name: "Chainage & offset",

@@ -137,6 +137,7 @@ impl Server {
             "compare_asbuilt" => self.compare_asbuilt(args),
             "add_text" => self.add_text(args),
             "add_dimension" => self.add_dimension(args),
+            "trim_extend" => self.trim_extend(args),
             "edit_entities" => self.edit_entities(args),
             "create_surface" => self.create_surface(args),
             "set_surface" => self.set_surface(args),

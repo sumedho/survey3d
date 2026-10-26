@@ -27,6 +27,7 @@ pub mod session;
 pub mod settings;
 mod surface_view;
 pub mod tools;
+pub mod trim_extend;
 mod ui;
 
 pub use app::SurveyApp;

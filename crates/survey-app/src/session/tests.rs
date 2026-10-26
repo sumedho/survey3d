@@ -1,4 +1,5 @@
 use egui_cad::command_line::LogKind;
+use glam::DVec3;
 use survey_core::traverse::TraverseRecord;
 use survey_model::{Entity, RecordKind, SheetRecord};
 
@@ -495,7 +496,7 @@ SS,OP1,FP5,AZ90.0000,ZE90.0000,SD10.0,--TR
     );
     s.run("reduce b");
     let (_, p) = s.project.doc.find_point_by_name("5").expect("reduced");
-    assert!((p.position - glam::DVec3::new(110.0, 100.0, 10.0)).length() < 1e-9);
+    assert!((p.position - DVec3::new(110.0, 100.0, 10.0)).length() < 1e-9);
     assert_eq!(p.code, "TR");
 }
 
@@ -545,4 +546,144 @@ fn instrument_coordinates_are_recomputed_and_reimport_keeps_corrections() {
     s.reduce_raw("job").expect("reduce again");
     assert_eq!(p1(&s).code, "FH");
     assert!((p1(&s).position.x - 110.0).abs() < 1e-9);
+}
+
+#[test]
+fn bearing_distance_turned_angles_and_deflections() {
+    let mut s = session();
+    for line in [
+        "bd",
+        "0,0",
+        "a90.0000 10",
+        "0 10",
+        "a90.0000 10",
+        "dr90.0000 10",
+        "dl 90.0000 10",
+        "",
+    ] {
+        s.run(line);
+    }
+    let log = log_text(&s);
+    assert!(
+        log.iter()
+            .any(|t| t.contains("An angle turns from the line before")),
+        "the first leg needs a backsight: {log:?}"
+    );
+    // North 10, then 90° right of the back line (south) is west, a right
+    // deflection off west is north, and a left one off north is west.
+    for (e, n) in [(0.0, 10.0), (-10.0, 10.0), (-10.0, 20.0), (-20.0, 20.0)] {
+        assert!(has_point_at(&s, e, n), "({e}, {n}): {log:?}");
+    }
+    // A backsight lets the first leg be an angle.
+    for line in ["bd", "100,0", "bs 0", "a90.0000 10", ""] {
+        s.run(line);
+    }
+    assert!(has_point_at(&s, 110.0, 0.0), "{:?}", log_text(&s));
+}
+
+#[test]
+fn renumber_raise_and_scale() {
+    let mut s = session();
+    for line in ["point", "0,0,10", "10,0,10", "10,10", ""] {
+        s.run(line);
+    }
+    let ids: Vec<EntityId> = s.project.doc.entities().map(|(id, _)| id).collect();
+    s.project.selection.set(ids.clone());
+    s.run("renumber 101");
+    let name = |s: &Session, id: EntityId| match s.project.doc.entity(id) {
+        Some(Entity::Point(p)) => p.name.clone(),
+        _ => String::new(),
+    };
+    assert_eq!(
+        ids.iter().map(|id| name(&s, *id)).collect::<Vec<_>>(),
+        ["101", "102", "103"],
+        "{:?}",
+        log_text(&s)
+    );
+    s.run("renumber 101-102 +1000");
+    assert_eq!(name(&s, ids[0]), "1101");
+    assert_eq!(name(&s, ids[2]), "103", "outside the range");
+    // A taken number is refused.
+    s.project.selection.set([ids[2]]);
+    s.run("renumber 1102");
+    assert!(last_log(&s).1.contains("in use"), "{:?}", last_log(&s));
+    assert_eq!(name(&s, ids[2]), "103");
+
+    // Heights: the two with heights go up; the plan-only one is left.
+    s.project.selection.set(ids.clone());
+    s.run("raise 0.25");
+    assert!(last_log(&s).1.contains("Raised 2 objects"), "{:?}", last_log(&s));
+    let z = |s: &Session, id: EntityId| match s.project.doc.entity(id) {
+        Some(Entity::Point(p)) => p.position,
+        _ => DVec3::ZERO,
+    };
+    assert!((z(&s, ids[0]).z - 10.25).abs() < 1e-9);
+
+    // Scale about the first point by measured and true lengths: 10 → 10.01.
+    for line in ["scale", "0,0", "10 10.01"] {
+        s.run(line);
+    }
+    assert!(
+        (z(&s, ids[1]) - DVec3::new(10.01, 0.0, 10.25)).length() < 1e-9,
+        "{:?}",
+        log_text(&s)
+    );
+    s.undo();
+    assert!((z(&s, ids[1]).x - 10.0).abs() < 1e-9);
+}
+
+#[test]
+fn apparent_intersection_trim_and_extend() {
+    let mut s = session();
+    for line in ["point", "0,0", "5,0", "10,2", "10,8", ""] {
+        s.run(line);
+    }
+    // The corner the two faces would meet at, typed as point pairs.
+    for line in ["ix", "1 2", "3 4", ""] {
+        s.run(line);
+    }
+    assert!(has_point_at(&s, 10.0, 0.0), "{:?}", log_text(&s));
+
+    // A kerb crossing two lines: trim its middle out (all lines are boundaries).
+    for line in ["pl", "0,20", "30,20", ""] {
+        s.run(line);
+    }
+    for line in ["pl", "10,15", "10,25", ""] {
+        s.run(line);
+    }
+    for line in ["pl", "20,15", "20,25", ""] {
+        s.run(line);
+    }
+    let kerb = s
+        .project
+        .doc
+        .entities()
+        .find(|(_, e)| matches!(e, Entity::Polyline(l) if l.vertices[0].y == 20.0))
+        .map(|(id, _)| id)
+        .expect("kerb");
+    s.project.selection.clear();
+    s.run("trim");
+    s.run("");
+    s.pointer.hovered = Some(kerb);
+    s.run("15,20");
+    s.run("");
+    assert_eq!(polylines(&s).len(), 4, "{:?}", log_text(&s));
+    // Extend the first piece's end (now at x = 10, on a boundary) out to the
+    // line at x = 20, chosen as the only boundary.
+    let far = s
+        .project
+        .doc
+        .entities()
+        .find(|(_, e)| matches!(e, Entity::Polyline(l) if l.vertices[0].x == 20.0))
+        .map(|(id, _)| id)
+        .expect("far");
+    s.project.selection.set([far]);
+    s.run("extend");
+    s.pointer.hovered = Some(kerb);
+    s.run("9,20");
+    s.run("");
+    let Some(Entity::Polyline(l)) = s.project.doc.entity(kerb) else {
+        panic!()
+    };
+    assert_eq!(l.vertices.last().map(|v| v.x), Some(20.0), "{:?}", log_text(&s));
 }

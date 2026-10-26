@@ -1,4 +1,4 @@
-//! Move, copy and rotate.
+//! Move, copy, rotate and scale.
 //!
 //! Each works on the current selection; with nothing selected the tool first
 //! asks for objects (click or window, Enter to finish). Displacements are in
@@ -15,6 +15,7 @@ use super::{Preview, Tool, ToolCtx, ToolEvent, ToolOutcome, resolved};
 pub const MOVE_ID: &str = "move";
 pub const COPY_ID: &str = "copy";
 pub const ROTATE_ID: &str = "rotate";
+pub const SCALE_ID: &str = "scale";
 
 /// Ghost previews are skipped beyond this many vertices.
 const MAX_GHOST_VERTICES: usize = 20_000;
@@ -401,5 +402,130 @@ mod tests {
         // A point due north of the centre, rotated 90° clockwise, ends up due east.
         let p = rotate_cw(DVec3::new(0.0, 10.0, 3.0), DVec2::ZERO, 90f64.to_radians());
         assert!((p - DVec3::new(10.0, 0.0, 3.0)).length() < 1e-12);
+    }
+}
+
+/// Scales the plan about a base point: by a factor (`1.000123`, e.g. a
+/// combined scale factor for ground to grid) or by a measured length and the
+/// length it should be (`100.012 100.000`). Heights, text and symbol sizes
+/// stay as they are.
+#[derive(Default)]
+pub struct ScaleTool {
+    gather: Gather,
+    base: Option<ResolvedPoint>,
+}
+
+/// The scale factor in `text`: one number, or two lengths (as measured, as
+/// it should be).
+fn scale_factor(conv: &Conventions, text: &str) -> Option<Result<f64, String>> {
+    let parts: Vec<&str> = text.split([' ', ',']).filter(|t| !t.is_empty()).collect();
+    let factor = match parts[..] {
+        [f] => f.parse::<f64>().ok()?,
+        [a, b] => {
+            let (a, b) = (conv.parse_length(a).ok()?, conv.parse_length(b).ok()?);
+            if a <= 0.0 {
+                return Some(Err("The measured length must be greater than zero".into()));
+            }
+            b / a
+        }
+        _ => return None,
+    };
+    Some(if factor.is_finite() && factor > 0.0 {
+        Ok(factor)
+    } else {
+        Err("The scale factor must be greater than zero".into())
+    })
+}
+
+impl ScaleTool {
+    fn commit(&mut self, ctx: &mut ToolCtx<'_>, factor: f64) -> ToolOutcome {
+        let Some(base) = self.base else {
+            return ToolOutcome::Continue;
+        };
+        let centre = base.position.truncate();
+        let n = self.gather.ids.len();
+        let mut cs = ChangeSet::new(format!("Scale {} by {factor:.9}", objects(n)));
+        for id in &self.gather.ids {
+            if let Some(mut e) = ctx.doc.entity(*id).cloned() {
+                e.map_positions(|p| (centre + (p.truncate() - centre) * factor).extend(p.z));
+                cs.push_update_entity(*id, e);
+            }
+        }
+        ctx.log.result(format!(
+            "Scaled {} by {factor:.9} ({:+.1} ppm) about {}",
+            objects(n),
+            (factor - 1.0) * 1e6,
+            ctx.conventions().format_coord(base.position, false)
+        ));
+        ctx.execute(cs);
+        ToolOutcome::Done
+    }
+}
+
+impl Tool for ScaleTool {
+    fn id(&self) -> &'static str {
+        SCALE_ID
+    }
+
+    fn prompt(&self, _conv: &Conventions) -> String {
+        match (self.gather.is_ready(), self.base) {
+            (false, _) => format!("Scale — {PICK_PROMPT}"),
+            (true, None) => "Scale — base point (stays put):".into(),
+            (true, Some(_)) => {
+                "Scale — factor (e.g. 0.99982), or measured and true lengths (100.012 100.000):".into()
+            }
+        }
+    }
+
+    fn activate(&mut self, ctx: &mut ToolCtx<'_>) -> ToolOutcome {
+        self.gather.activate(ctx);
+        ToolOutcome::Continue
+    }
+
+    fn wants_point(&self) -> bool {
+        self.gather.is_ready() && self.base.is_none()
+    }
+
+    fn claims_text(&self, conv: &Conventions, text: &str) -> bool {
+        self.base.is_some() && scale_factor(conv, text).is_some()
+    }
+
+    fn base_point(&self) -> Option<ResolvedPoint> {
+        self.base
+    }
+
+    fn on_event(&mut self, ctx: &mut ToolCtx<'_>, event: ToolEvent<'_>) -> ToolOutcome {
+        if !self.gather.is_ready() {
+            return match self.gather.on_event(ctx, &event) {
+                Gathered::Cancelled => ToolOutcome::Done,
+                Gathered::Picking | Gathered::Ready => ToolOutcome::Continue,
+            };
+        }
+        match event {
+            ToolEvent::Point(pick) => {
+                if self.base.is_none() {
+                    self.base = Some(resolved(&pick));
+                }
+                ToolOutcome::Continue
+            }
+            ToolEvent::Text(text) => {
+                let conv = ctx.conventions().clone();
+                match scale_factor(&conv, text) {
+                    Some(Ok(f)) if self.base.is_some() => return self.commit(ctx, f),
+                    Some(Ok(_)) => ctx.log.error("Pick or type the base point first"),
+                    Some(Err(e)) => ctx.log.error(e),
+                    None => ctx.log.error("Type a factor, or the measured and true lengths"),
+                }
+                ToolOutcome::Continue
+            }
+            ToolEvent::Region(_) => ToolOutcome::Continue,
+            ToolEvent::Finish | ToolEvent::Cancel => ToolOutcome::Done,
+        }
+    }
+
+    fn preview(&self, _conv: &Conventions, _cursor: Option<&Pick>, out: &mut Preview) {
+        if let Some(base) = self.base {
+            out.points.push(base.position);
+        }
     }
 }

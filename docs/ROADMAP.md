@@ -124,6 +124,21 @@ cannot bring their work in.
 **Done when:** a day's field data from each of the four main controller families imports, reduces and can be
 sent back out for stake-out.
 
+## COGO additions
+
+From a check of everyday COGO against Carlson and MicroSurvey (2026-10-27).
+
+- [x] **Apparent intersections, trim and extend:** `ix` makes a point where two lines (or arcs) would meet if
+  extended, picked or typed as point pairs; `trim` and `extend` cut lines back to, or lengthen them to,
+  boundary lines, arcs included. MCP: `trim_extend`.
+- [x] **Angles in `bd`:** turned angles (`a`, `al`) and deflections (`dr`, `dl`) from the line arriving at the
+  current point, with `bs` setting a backsight for the first leg.
+- [x] **Point tools:** `renumber` (selection, shift or range, with clash checks; points from raw data are
+  renamed through their shots), `raise` for heights, and `scale` by a factor or measured and true lengths.
+- [ ] **Spiral (clothoid) curves** in alignments and the curve solver, for road set-out.
+- [ ] **Compound and reverse curves** in the curve solver.
+- [ ] **Building dimensions by right-angle legs** for detail surveys.
+
 ## Phase 11 — Coordinate systems (about 3 weeks)
 
 Nearly every GNSS job needs heights on a geoid model and coordinates tied to local control. survey3d's

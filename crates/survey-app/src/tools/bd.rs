@@ -9,6 +9,11 @@
 //! `r=` `a=` arc length, `c=` chord, `d=` delta and `t=` tangent length; `tb=`
 //! gives the starting tangent bearing instead).
 //!
+//! A straight leg's direction can also be an angle: turned from the line
+//! arriving at the current point (`a92.1500 25.31` clockwise, `al` anticlockwise)
+//! or a deflection from that line's prolongation (`dr12.3000`, `dl`). The first
+//! leg turns from a backsight set with `bs <point or bearing>`.
+//!
 //! `c` closes the figure on its start, the last leg being the one back to it,
 //! and reports the misclosure, precision and area (the figure is not
 //! adjusted); `j` joins back to the start with a computed closing leg instead.
@@ -54,6 +59,45 @@ pub struct BdTool {
     sideshot: bool,
     code: String,
     closed: Option<Closed>,
+    /// Bearing from the start to its backsight, for angles on the first leg.
+    backsight: Option<Bearing>,
+}
+
+/// How a leg's direction is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Turn2 {
+    /// Clockwise from the back line.
+    AngleRight,
+    /// Anticlockwise from the back line.
+    AngleLeft,
+    /// Right of the line ahead (the arriving line prolonged).
+    DeflectRight,
+    DeflectLeft,
+}
+
+/// A turned angle or deflection at the start of `parts`: its kind, the angle
+/// and how many fields it took (`a92.1500` or `a 92.1500`).
+fn angle_form(conv: &Conventions, parts: &[&str]) -> Option<(Turn2, Angle, usize)> {
+    const PREFIXES: [(&str, Turn2); 4] = [
+        ("al", Turn2::AngleLeft),
+        ("dr", Turn2::DeflectRight),
+        ("dl", Turn2::DeflectLeft),
+        ("a", Turn2::AngleRight),
+    ];
+    let first = parts.first()?.to_ascii_lowercase();
+    for (prefix, kind) in PREFIXES {
+        let Some(rest) = first.strip_prefix(prefix) else {
+            continue;
+        };
+        if rest.is_empty() {
+            let a = conv.parse_angle(parts.get(1)?).ok()?;
+            return Some((kind, a, 2));
+        }
+        if let Ok(a) = conv.parse_angle(rest) {
+            return Some((kind, a, 1));
+        }
+    }
+    None
 }
 
 /// Which way a curve turns.
@@ -310,26 +354,40 @@ impl BdTool {
             (curve.end, curve.length, curve.bulge, dz, report)
         } else {
             let parts = fields(text);
-            if !(2..=4).contains(&parts.len()) {
-                ctx.log
-                    .error("Enter: bearing distance[ dZ][ code] — e.g. 45.3020 25.31 or N45.3020E,25.31");
+            let (bearing, used, turned) = match angle_form(&conv, &parts) {
+                Some((kind, angle, used)) => match self.turned_bearing(kind, angle) {
+                    Ok(b) => (b, used, Some(angle)),
+                    Err(e) => {
+                        ctx.log.error(e);
+                        return;
+                    }
+                },
+                None => match conv.parse_bearing(parts.first().copied().unwrap_or_default()) {
+                    Ok(b) => (b, 1, None),
+                    Err(e) => {
+                        ctx.log.error(e.to_string());
+                        return;
+                    }
+                },
+            };
+            let rest = &parts[used..];
+            if !(1..=3).contains(&rest.len()) {
+                ctx.log.error(
+                    "Enter: bearing distance[ dZ][ code] — e.g. 45.3020 25.31 — or an angle: a92.1500 25.31",
+                );
                 return;
             }
-            let parsed = (|| {
-                let bearing = conv.parse_bearing(parts[0])?;
-                let dist = conv.parse_length(parts[1])?;
-                Ok::<_, survey_core::ParseError>((bearing, dist))
-            })();
-            let (bearing, dist) = match parsed {
-                Ok(v) => v,
+            let dist = match conv.parse_length(rest[0]) {
+                Ok(d) => d,
                 Err(e) => {
                     ctx.log.error(e.to_string());
                     return;
                 }
             };
-            let dz = self.take_rest(&conv, &parts[2..]);
+            let dz = self.take_rest(&conv, &rest[1..]);
             let report = format!(
-                "brg {}  dist {}",
+                "{}brg {}  dist {}",
+                turned.map_or_else(String::new, |a| format!("angle {}  ", conv.format_angle(a))),
                 conv.format_bearing(bearing),
                 conv.format_length(dist)
             );
@@ -365,6 +423,49 @@ impl BdTool {
             distance,
             bulge,
         });
+    }
+
+    /// The bearing of a leg turned `angle` from the line arriving at the
+    /// current point (or from the backsight, before the first leg).
+    fn turned_bearing(&self, kind: Turn2, angle: Angle) -> Result<Bearing, String> {
+        let back = match self.incoming() {
+            Some(d) => Bearing::from_delta(-d.x, -d.y),
+            None => self.backsight,
+        }
+        .ok_or("An angle turns from the line before: give the first leg as a bearing, or set a backsight with bs <point or bearing>")?;
+        let ahead = back.reverse().angle();
+        Ok(Bearing::new(
+            match kind {
+                Turn2::AngleRight => back.angle() + angle,
+                Turn2::AngleLeft => back.angle() - angle,
+                Turn2::DeflectRight => ahead + angle,
+                Turn2::DeflectLeft => ahead - angle,
+            }
+            .normalized(),
+        ))
+    }
+
+    /// `bs <point or bearing>`: the backsight angles on the first leg turn from.
+    fn set_backsight(&mut self, ctx: &mut ToolCtx<'_>, value: &str) {
+        let Some(from) = self.current() else { return };
+        let conv = ctx.conventions().clone();
+        let bearing = match ctx.doc.find_point_by_name(value) {
+            Some((_, p)) => {
+                let d = p.position - from.position;
+                Bearing::from_delta(d.x, d.y)
+                    .ok_or_else(|| "The backsight is at the current point".to_string())
+            }
+            None => conv
+                .parse_bearing(value)
+                .map_err(|e| format!("Backsight: not a point or a bearing ({e})")),
+        };
+        match bearing {
+            Ok(b) => {
+                self.backsight = Some(b);
+                ctx.log.info(format!("Backsight {}", conv.format_bearing(b)));
+            }
+            Err(e) => ctx.log.error(e),
+        }
     }
 
     /// Removes the last leg and its point.
@@ -539,7 +640,16 @@ impl BdTool {
         self.legs.clear();
         self.sideshot = false;
         self.closed = None;
+        self.backsight = None;
     }
+}
+
+/// The value after `bs`.
+fn backsight_arg(text: &str) -> Option<&str> {
+    let (head, rest) = text.trim().split_once(char::is_whitespace)?;
+    head.eq_ignore_ascii_case("bs")
+        .then(|| rest.trim())
+        .filter(|r| !r.is_empty())
 }
 
 /// Option keywords (exact, so codes in capitals are not taken for them).
@@ -581,7 +691,7 @@ impl Tool for BdTool {
             _ => String::new(),
         };
         format!(
-            "Bearing & distance{code}{mode}{status} — bearing distance[ dZ][ code], a curve (r=… l/r) / s / u / c close / j join:"
+            "Bearing & distance{code}{mode}{status} — bearing distance[ dZ][ code], angle (a/al/dr/dl…) distance, a curve (r=… l/r) / bs / s / u / c close / j join:"
         )
     }
 
@@ -602,10 +712,13 @@ impl Tool for BdTool {
         if self.start.is_none() || self.closed.is_some() {
             return false;
         }
-        if is_option(text) || is_curve(text) {
+        if is_option(text) || is_curve(text) || backsight_arg(text).is_some() {
             return true;
         }
         let parts = fields(text);
+        if let Some((_, _, used)) = angle_form(conv, &parts) {
+            return parts.get(used).is_some_and(|d| conv.parse_length(d).is_ok());
+        }
         parts.len() >= 2 && conv.parse_bearing(parts[0]).is_ok() && conv.parse_length(parts[1]).is_ok()
     }
 
@@ -668,6 +781,9 @@ impl Tool for BdTool {
                     "u" if self.start.is_some() => self.undo(ctx),
                     "c" if self.start.is_some() => self.close(ctx),
                     "j" if self.start.is_some() => self.join(ctx),
+                    t if self.start.is_some() && backsight_arg(t).is_some() => {
+                        self.set_backsight(ctx, backsight_arg(t).unwrap_or_default());
+                    }
                     t if self.start.is_some() && (is_curve(t) || fields(t).len() >= 2) => self.leg(ctx, t),
                     t => {
                         self.code = if t == "-" { String::new() } else { t.to_string() };

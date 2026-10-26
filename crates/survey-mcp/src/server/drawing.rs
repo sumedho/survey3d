@@ -345,3 +345,46 @@ impl Server {
         Ok(ToolResult::json(&out))
     }
 }
+
+impl Server {
+    /// Trims or extends a polyline to boundary polylines.
+    pub(super) fn trim_extend(&mut self, args: &Value) -> Outcome {
+        let doc = self.doc();
+        let polyline = |v: &Value, key: &str| -> Result<EntityId, String> {
+            let found = match v {
+                Value::Number(n) => n.as_i64().map(EntityId).filter(|id| doc.entity(*id).is_some()),
+                Value::String(name) => doc
+                    .entities()
+                    .find(|(_, e)| matches!(e, Entity::Polyline(l) if l.name == *name))
+                    .map(|(id, _)| id),
+                _ => None,
+            };
+            match found {
+                Some(id) if matches!(doc.entity(id), Some(Entity::Polyline(_))) => Ok(id),
+                _ => Err(format!("{key}: no polyline {v}")),
+            }
+        };
+        let target = polyline(args.get("target").ok_or("target is required")?, "target")?;
+        let boundaries: Vec<EntityId> = match args.get("boundaries") {
+            Some(Value::Array(list)) => list
+                .iter()
+                .map(|v| polyline(v, "boundaries"))
+                .collect::<Result<_, _>>()?,
+            None => Vec::new(),
+            Some(_) => return Err("boundaries: a list of polyline ids or names".into()),
+        };
+        let at = position(doc, args.get("at"), "at")?.truncate();
+        let (cs, summary) = match str_arg(args, "action").unwrap_or("trim") {
+            "trim" => survey_app::trim_extend::trim_command(doc, target, &boundaries, at)?,
+            "extend" => survey_app::trim_extend::extend_command(doc, target, &boundaries, at)?,
+            other => return Err(format!("action: '{other}' is not trim or extend")),
+        };
+        let first_new = next_entity_id(doc);
+        self.session.apply(Box::new(cs), summary.clone());
+        Ok(ToolResult::json(&json!({
+            "summary": summary,
+            "changed": target.0,
+            "added": self.new_entities(first_new),
+        })))
+    }
+}

@@ -1182,3 +1182,91 @@ SS,OP20,FP30,AR90.0000,ZE90.0000,SD10.000,--PEG
             .contains("AS-BUILT COMPARISON")
     );
 }
+
+#[test]
+fn cogo_angles_intersections_trim_and_point_tools() {
+    let mut s = Server::new_for_tests();
+    // A lot keyed by turned angles from a backsight.
+    let out = ok(
+        &mut s,
+        "run_commands",
+        json!({ "lines": ["bd", "0,0", "bs 0", "a90.0000 20", "a90.0000 10", "a90.0000 20", "a90.0000 10", "c", ""] }),
+    );
+    assert!(out.contains("exact"), "{out}");
+    let lot = ok_json(&mut s, "query", json!({ "kind": "polylines" }));
+    assert!(
+        (lot["rows"][0]["area"].as_f64().expect("area") - 200.0).abs() < 1e-6,
+        "{lot}"
+    );
+
+    // Two building faces' corner.
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": [
+            { "name": "A1", "e": 100.0, "n": 0.0 }, { "name": "A2", "e": 105.0, "n": 0.0 },
+            { "name": "B1", "e": 110.0, "n": 2.0 }, { "name": "B2", "e": 110.0, "n": 8.0 }
+        ] }),
+    );
+    let out = ok(
+        &mut s,
+        "run_commands",
+        json!({ "lines": ["ix", "A1 A2", "B1 B2", ""] }),
+    );
+    assert!(out.contains("at the intersection"), "{out}");
+
+    // Trim a kerb at a crossing line, then extend it back.
+    ok(
+        &mut s,
+        "add_polyline",
+        json!({ "name": "KERB", "vertices": [[200, 0], [220, 0]] }),
+    );
+    ok(
+        &mut s,
+        "add_polyline",
+        json!({ "name": "DRIVE", "vertices": [[210, -5], [210, 5]] }),
+    );
+    let t = ok_json(
+        &mut s,
+        "trim_extend",
+        json!({ "target": "KERB", "boundaries": ["DRIVE"], "at": [215, 0] }),
+    );
+    assert_eq!(t["summary"], "Trimmed", "{t}");
+    ok(
+        &mut s,
+        "add_polyline",
+        json!({ "name": "FENCE", "vertices": [[230, -5], [230, 5]] }),
+    );
+    let t = ok_json(
+        &mut s,
+        "trim_extend",
+        json!({ "action": "extend", "target": "KERB", "boundaries": ["FENCE"], "at": [209, 0] }),
+    );
+    assert!(
+        t["summary"].as_str().expect("summary").contains("by 20.000"),
+        "{t}"
+    );
+    assert!(
+        call(
+            &mut s,
+            "trim_extend",
+            json!({ "target": "KERB", "boundaries": ["NOPE"], "at": [0, 0] })
+        )
+        .1
+    );
+
+    // Renumber the building points, then raise them.
+    ok(
+        &mut s,
+        "select",
+        json!({ "kind": "points", "filter": { "names": ["A1", "A2"] } }),
+    );
+    let out = ok(&mut s, "run_commands", json!({ "lines": ["renumber 501"] }));
+    assert!(out.contains("Renumber 2 points"), "{out}");
+    let q = ok_json(
+        &mut s,
+        "query",
+        json!({ "kind": "points", "filter": { "names": ["501", "502"] } }),
+    );
+    assert_eq!(q["total"], 2, "{q}");
+}

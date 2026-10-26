@@ -431,6 +431,23 @@ pub fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "trim_extend",
+            "title": "Trim or extend a line",
+            "description": "Trims a polyline back to boundary lines, or extends it to one, in one undoable step. target: the polyline (id or name). boundaries: the polylines it is cut at or extended to (ids or names); omit for every visible line. at: [e, n] or a point name. trim: removes the part of the target around 'at' between the boundary crossings either side of it (an open line may become two pieces; a closed one becomes open). extend: lengthens the end nearer 'at' to the nearest boundary it meets — a straight end along its line, an arc round its circle; heights carry on at the end's grade. For the point where two lines would meet when extended, use run_commands ['ix', '101 102', '103 104'] (each line as two points).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["trim", "extend"], "default": "trim" },
+                    "target": { "type": ["integer", "string"] },
+                    "boundaries": { "type": "array", "items": { "type": ["integer", "string"] } },
+                    "at": { "type": ["array", "string"], "items": { "type": "number" } }
+                },
+                "required": ["target", "at"],
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": true }
+        }),
+        json!({
             "name": "raw_data",
             "title": "Raw field data",
             "description": "Works with raw total station data imported with import_file (one record per file; file is its name, optional when there is one). Actions: show — the file's setups (station, instrument height, backsight, shot count, corrections); with setup (from 1), that setup's shots (target, code, target height, circle readings, distance, excluded). reduce — orients each setup on its backsight (else the first shot to a point with coordinates) and radiates its shots into points carrying their codes, setup by setup, so a traverse carries forward; both faces and repeated shots are averaged; shots to points that already have coordinates are checks (returned). Reducing again updates the points it made. edit — corrects a setup (setup with station, instrument_height, backsight; empty backsight orients on the first known point) or a shot (setup and shot with target, code, target_height, excluded); heights in metres; the recorded observations are kept, and a reduced file is re-reduced in the same undoable step, recorded in the audit trail. revert — drops the corrections to that setup or shot. report — the reduction report as text. After reducing, run_commands 'linework' strings the coded points into lines.",
