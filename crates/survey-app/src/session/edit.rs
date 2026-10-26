@@ -4,8 +4,9 @@ use glam::DVec3;
 use survey_core::field_to_finish::FeatureLibrary;
 use survey_core::traverse::TraverseRecord;
 use survey_model::{
-    AlignmentRecord, ChangeSet, CloudStyle, Color, Entity, EntityId, ParcelRecord, PointCloudId, Polyline,
-    Record, RecordId, Surface, SurfaceDefinition, SurfaceId, SurfaceStyle, SurveyPoint,
+    AlignmentRecord, ChangeSet, CloudStyle, Color, Document, Entity, EntityId, Layer, ParcelRecord,
+    PointCloudId, Polyline, Record, RecordId, Surface, SurfaceDefinition, SurfaceId, SurfaceStyle,
+    SurveyPoint,
 };
 
 use super::{Event, Panel, Session, Toast};
@@ -13,6 +14,63 @@ use crate::import_command::{ImportEntities, LayerRef};
 
 /// Polyline ends closer than this (plan, metres) are joined.
 const JOIN_TOLERANCE: f64 = 0.001;
+
+/// A change to a layer's name, colour or line style as one undoable step.
+/// Feature codes and surface definitions name their layers, so a rename is
+/// carried into them too (otherwise linework would recreate the old layer and
+/// surfaces would lose their points). Visibility and locking are display state
+/// and are set directly, not through this.
+pub fn layer_change(doc: &Document, layer: Layer) -> Result<ChangeSet, String> {
+    let name = layer.name.trim().to_string();
+    if name.is_empty() {
+        return Err("A layer needs a name".into());
+    }
+    if doc.layer_by_name(&name).is_some_and(|other| other.id != layer.id) {
+        return Err(format!("There is already a layer called {name}"));
+    }
+    let layer = Layer { name, ..layer };
+    let Some(old) = doc.layer(layer.id).map(|l| l.name.clone()) else {
+        return Ok(ChangeSet::new(format!("Add layer {}", layer.name)).insert_layer(layer));
+    };
+    let renamed = old != layer.name;
+    let label = if renamed {
+        format!("Rename layer {old} to {}", layer.name)
+    } else {
+        format!("Edit layer {}", layer.name)
+    };
+    let new = layer.name.clone();
+    let mut cs = ChangeSet::new(label).update_layer(layer);
+    if !renamed {
+        return Ok(cs);
+    }
+    let same = |n: &String| n.eq_ignore_ascii_case(&old);
+    let mut meta = doc.meta().clone();
+    let mut codes_changed = false;
+    for code in &mut meta.feature_codes.codes {
+        if same(&code.layer) {
+            code.layer = new.clone();
+            codes_changed = true;
+        }
+    }
+    if codes_changed {
+        cs = cs.set_meta(meta);
+    }
+    for (id, surface) in doc.surfaces() {
+        let Some(def) = &surface.definition else { continue };
+        if def.point_layers.iter().chain(&def.breakline_layers).any(same) {
+            let mut surface = surface.clone();
+            if let Some(def) = &mut surface.definition {
+                for n in def.point_layers.iter_mut().chain(&mut def.breakline_layers) {
+                    if same(n) {
+                        *n = new.clone();
+                    }
+                }
+            }
+            cs = cs.update_surface(id, surface);
+        }
+    }
+    Ok(cs)
+}
 
 impl Session {
     // ------------------------------------------------------------------ selection
@@ -478,6 +536,7 @@ impl Session {
             surface.tin.vertices.len(),
             surface.tin.triangles.len()
         );
+        self.warn_surface(&surface);
         let cmd = ChangeSet::new(format!("Create surface {}", surface.name)).insert_surface(surface);
         self.execute(Box::new(cmd));
         // New surfaces get the highest id.
@@ -544,6 +603,10 @@ impl Session {
         if let Some(style) = style {
             surface.style = style;
         }
+        if rebuild {
+            self.warn_surface(&surface);
+        }
+        let doc = &self.project.doc;
         if doc.surface(id) != Some(&surface) {
             let label = format!("Change surface {}", surface.name);
             self.execute(Box::new(ChangeSet::new(label).update_surface(id, surface)));
@@ -551,7 +614,18 @@ impl Session {
         Ok(())
     }
 
+    /// Logs what a surface's definition selects but could not use (missing
+    /// heights, a deleted boundary…).
+    fn warn_surface(&mut self, surface: &Surface) {
+        if let Some(def) = &surface.definition {
+            for w in def.warnings(&self.project.doc) {
+                self.log.warn(format!("Surface {}: {w}", surface.name));
+            }
+        }
+    }
+
     pub fn update_surface(&mut self, id: SurfaceId, surface: Surface) {
+        self.warn_surface(&surface);
         let label = format!("Rebuild surface {}", surface.name);
         self.execute(Box::new(ChangeSet::new(label).update_surface(id, surface)));
     }

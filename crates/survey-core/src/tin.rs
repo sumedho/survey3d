@@ -98,8 +98,9 @@ pub fn triangle_height(a: DVec3, b: DVec3, c: DVec3, p: DVec2) -> Option<f64> {
 pub fn build(input: &TinInput) -> Result<Tin, TinError> {
     let origin = input
         .points
-        .first()
-        .or_else(|| input.breaklines.iter().flatten().next())
+        .iter()
+        .chain(input.breaklines.iter().flatten())
+        .find(|p| p.is_finite())
         .map(|p| p.truncate())
         .ok_or(TinError::TooFewPoints)?;
     let rel = |p: DVec3| Vertex {
@@ -149,34 +150,47 @@ pub fn build(input: &TinInput) -> Result<Tin, TinError> {
     }
 
     // Boundary and holes become constraints (so the trimmed edge is clean) where
-    // they lie on the surface; their heights come from the surface.
+    // they lie on the surface; their heights come from the surface. Segments
+    // are cut where they cross the edge of the data, so a boundary drawn partly
+    // outside it still clips exactly.
     let plan = |poly: &Vec<DVec2>| -> Vec<DVec2> { poly.iter().map(|p| *p - origin).collect() };
     let boundary = input.boundary.as_ref().map(plan);
     let holes: Vec<Vec<DVec2>> = input.holes.iter().map(plan).collect();
-    for ring in boundary.iter().chain(&holes) {
+    if boundary.is_some() || !holes.is_empty() {
         let interim = extract(&cdt, DVec2::ZERO);
         let index = interim.index();
         let height = |p: DVec2| index.height_at(&interim, p);
-        let mut handles = Vec::new();
-        for p in ring {
-            let h = height(*p).and_then(|z| {
-                cdt.insert(Vertex {
-                    pos: Point2::new(p.x, p.y),
-                    z,
-                })
-                .ok()
-            });
-            handles.push(h);
-        }
-        let n = handles.len();
-        for i in 0..n {
-            if let (Some(a), Some(b)) = (handles[i], handles[(i + 1) % n])
-                && a != b
-            {
-                cdt.add_constraint_and_split(a, b, |pos| Vertex {
-                    pos,
-                    z: height(DVec2::new(pos.x, pos.y)).unwrap_or(f64::NAN),
+        let hull: Vec<(DVec3, DVec3)> = cdt
+            .convex_hull()
+            .map(|e| {
+                let [a, b] = e.vertices().map(|v| {
+                    let d = v.data();
+                    DVec3::new(d.pos.x, d.pos.y, d.z)
                 });
+                (a, b)
+            })
+            .collect();
+        for ring in boundary.iter().chain(&holes) {
+            let n = ring.len();
+            for i in 0..n {
+                let (a, b) = (ring[i], ring[(i + 1) % n]);
+                for (p, q) in on_surface(a, b, &hull, &height) {
+                    let insert = |cdt: &mut Cdt, (pos, z): (DVec2, f64)| {
+                        cdt.insert(Vertex {
+                            pos: Point2::new(pos.x, pos.y),
+                            z,
+                        })
+                        .ok()
+                    };
+                    if let (Some(ha), Some(hb)) = (insert(&mut cdt, p), insert(&mut cdt, q))
+                        && ha != hb
+                    {
+                        cdt.add_constraint_and_split(ha, hb, |pos| Vertex {
+                            pos,
+                            z: height(DVec2::new(pos.x, pos.y)).unwrap_or(f64::NAN),
+                        });
+                    }
+                }
             }
         }
     }
@@ -221,6 +235,54 @@ pub fn build(input: &TinInput) -> Result<Tin, TinError> {
         return Err(TinError::Empty);
     }
     Ok(out)
+}
+
+/// The parts of the segment `a`–`b` that lie on the surface, with heights:
+/// cut where it crosses the hull (whose edges carry their end heights).
+fn on_surface(
+    a: DVec2,
+    b: DVec2,
+    hull: &[(DVec3, DVec3)],
+    height: &dyn Fn(DVec2) -> Option<f64>,
+) -> Vec<((DVec2, f64), (DVec2, f64))> {
+    let d = b - a;
+    if d.length_squared() < 1e-18 {
+        return Vec::new();
+    }
+    // Stops along the segment: its ends and each hull crossing (with the
+    // crossing's height from the hull edge, which `height` may miss by a hair).
+    let mut stops: Vec<(f64, Option<f64>)> = vec![(0.0, height(a)), (1.0, height(b))];
+    for (p, q) in hull {
+        let e = (*q - *p).truncate();
+        let denom = d.perp_dot(e);
+        if denom.abs() < 1e-12 * d.length() * e.length() {
+            continue;
+        }
+        let w = p.truncate() - a;
+        let t = w.perp_dot(e) / denom;
+        let u = w.perp_dot(d) / denom;
+        if (0.0..=1.0).contains(&t) && (-1e-9..=1.0 + 1e-9).contains(&u) {
+            stops.push((t, Some(p.z + (q.z - p.z) * u.clamp(0.0, 1.0))));
+        }
+    }
+    stops.sort_by(|x, y| x.0.total_cmp(&y.0));
+    stops.dedup_by(|x, y| {
+        let same = (x.0 - y.0).abs() * d.length() < 1e-9;
+        if same && y.1.is_none() {
+            y.1 = x.1;
+        }
+        same
+    });
+    let at = |t: f64| a + d * t;
+    stops
+        .windows(2)
+        .filter_map(|w| {
+            let ((t0, z0), (t1, z1)) = (w[0], w[1]);
+            // The piece is on the surface when its middle is.
+            height(at(0.5 * (t0 + t1)))?;
+            Some(((at(t0), z0?), (at(t1), z1?)))
+        })
+        .collect()
 }
 
 /// All faces of a triangulation as a TIN, offset by `origin`.
@@ -698,5 +760,255 @@ mod tests {
                 .any(|p| (p.z - 4.0).abs() < 1e-12 && (p.x - 0.45).abs() < 1e-12)
         );
         assert!(thin_to_grid(pts, 1.0, Thin::Highest).contains(&DVec3::new(0.2, 0.2, 5.0)));
+    }
+
+    // ------------------------------------------------------------ edge cases
+
+    fn ring(pts: &[(f64, f64)]) -> Vec<DVec2> {
+        pts.iter()
+            .map(|(x, y)| O.truncate() + DVec2::new(*x, *y))
+            .collect()
+    }
+
+    /// Every triangle's height matches the plane the test points lie on.
+    fn assert_on_plane(tin: &Tin) {
+        for v in &tin.vertices {
+            let (x, y) = (v.x - O.x, v.y - O.y);
+            assert!(
+                (v.z - (100.0 + 0.1 * x + 0.2 * y)).abs() < 1e-6,
+                "{x} {y} {}",
+                v.z
+            );
+        }
+    }
+
+    #[test]
+    fn boundary_partly_outside_the_data_clips_cleanly() {
+        // Data covers 0..90; the boundary runs from -20 to 50 in x.
+        let tin = build(&TinInput {
+            points: plane(),
+            boundary: Some(ring(&[(-20.0, 5.0), (50.0, 5.0), (50.0, 120.0), (-20.0, 120.0)])),
+            ..Default::default()
+        })
+        .expect("tin");
+        // Inside both: x 0..50, y 5..90.
+        assert!(
+            (tin.plan_area() - 50.0 * 85.0).abs() < 1e-6,
+            "{}",
+            tin.plan_area()
+        );
+        assert_on_plane(&tin);
+    }
+
+    #[test]
+    fn boundary_around_all_the_data_keeps_everything() {
+        let tin = build(&TinInput {
+            points: plane(),
+            boundary: Some(ring(&[
+                (-10.0, -10.0),
+                (100.0, -10.0),
+                (100.0, 100.0),
+                (-10.0, 100.0),
+            ])),
+            ..Default::default()
+        })
+        .expect("tin");
+        assert!((tin.plan_area() - 8100.0).abs() < 1e-6, "{}", tin.plan_area());
+    }
+
+    #[test]
+    fn diagonal_and_concave_boundaries_clip_exactly() {
+        // A triangle cutting across the grid diagonally.
+        let tin = build(&TinInput {
+            points: plane(),
+            boundary: Some(ring(&[(3.0, 7.0), (83.0, 11.0), (41.0, 77.0)])),
+            ..Default::default()
+        })
+        .expect("tin");
+        let area = 0.5 * ((83.0f64 - 3.0) * (77.0 - 7.0) - (41.0 - 3.0) * (11.0 - 7.0)).abs();
+        assert!(
+            (tin.plan_area() - area).abs() < 1e-6,
+            "{} vs {area}",
+            tin.plan_area()
+        );
+        assert_on_plane(&tin);
+        // An L shape.
+        let tin = build(&TinInput {
+            points: plane(),
+            boundary: Some(ring(&[
+                (5.0, 5.0),
+                (85.0, 5.0),
+                (85.0, 35.0),
+                (35.0, 35.0),
+                (35.0, 85.0),
+                (5.0, 85.0),
+            ])),
+            ..Default::default()
+        })
+        .expect("tin");
+        assert!(
+            (tin.plan_area() - (80.0 * 30.0 + 30.0 * 50.0)).abs() < 1e-6,
+            "{}",
+            tin.plan_area()
+        );
+    }
+
+    #[test]
+    fn hole_partly_outside_the_data() {
+        let tin = build(&TinInput {
+            points: plane(),
+            holes: vec![ring(&[(70.0, 40.0), (120.0, 40.0), (120.0, 60.0), (70.0, 60.0)])],
+            ..Default::default()
+        })
+        .expect("tin");
+        assert!(
+            (tin.plan_area() - (8100.0 - 20.0 * 20.0)).abs() < 1e-6,
+            "{}",
+            tin.plan_area()
+        );
+    }
+
+    #[test]
+    fn breakline_through_existing_points() {
+        // The ridge runs exactly through grid points (x = 40) and lifts them.
+        let ridge: Vec<DVec3> = (0..10)
+            .map(|j| O + DVec3::new(40.0, j as f64 * 10.0, 130.0))
+            .collect();
+        let tin = build(&TinInput {
+            points: plane(),
+            breaklines: vec![ridge],
+            ..Default::default()
+        })
+        .expect("tin");
+        let index = tin.index();
+        for j in 0..10 {
+            let h = index.height_at(
+                &tin,
+                (O + DVec3::new(40.0, j as f64 * 10.0 + 0.0, 0.0)).truncate(),
+            );
+            assert!(
+                (h.expect("on") - 130.0).abs() < 1e-9,
+                "breakline height wins at {j}"
+            );
+        }
+        // Mid-way between ridge vertices it is still on the ridge.
+        let h = index.height_at(&tin, (O + DVec3::new(40.0, 45.0, 0.0)).truncate());
+        assert!((h.expect("on") - 130.0).abs() < 1e-9);
+        assert_eq!(tin.vertices.len(), 100, "no duplicate vertices");
+    }
+
+    #[test]
+    fn crossing_and_overlapping_breaklines() {
+        // Off the grid points (survey points on a breakline keep their own heights).
+        let a = vec![O + DVec3::new(5.0, 6.0, 110.0), O + DVec3::new(85.0, 86.0, 130.0)];
+        let b = vec![O + DVec3::new(5.0, 86.0, 120.0), O + DVec3::new(86.0, 5.0, 120.0)];
+        // Overlaps part of `a`.
+        let c = vec![
+            O + DVec3::new(25.0, 26.0, 115.0),
+            O + DVec3::new(65.0, 66.0, 125.0),
+        ];
+        let tin = build(&TinInput {
+            points: plane(),
+            breaklines: vec![a.clone(), b.clone(), c],
+            ..Default::default()
+        })
+        .expect("tin");
+        // No triangle crosses either diagonal.
+        let o = O.truncate();
+        for i in 0..tin.triangles.len() {
+            let t = tin.triangle(i).map(|p| p.truncate() - o);
+            for (p, q) in [((5.0, 6.0), (85.0, 86.0)), ((5.0, 86.0), (86.0, 5.0))] {
+                let (p, q) = (DVec2::new(p.0, p.1), DVec2::new(q.0, q.1));
+                let side = t.map(|v| (q - p).perp_dot(v - p));
+                let pos = side.iter().any(|s| *s > 1e-6);
+                let neg = side.iter().any(|s| *s < -1e-6);
+                let within = t.iter().all(|v| v.x >= 5.0 - 1e-9 && v.x <= 85.0 + 1e-9);
+                assert!(!(pos && neg && within), "triangle {t:?} crosses a breakline");
+            }
+        }
+        // Along `a` the surface follows a (the overlapping `c` agrees with it).
+        let index = tin.index();
+        let h = index.height_at(&tin, o + DVec2::new(35.0, 36.0)).expect("on");
+        assert!((h - 117.5).abs() < 1e-9, "{h}");
+        // The crossing (both lines are 120 there) and along `b`.
+        let h = index.height_at(&tin, o + DVec2::new(45.0, 46.0)).expect("on");
+        assert!((h - 120.0).abs() < 1e-9, "{h}");
+        let h = index.height_at(&tin, o + DVec2::new(15.0, 76.0)).expect("on");
+        assert!((h - 120.0).abs() < 1e-9, "{h}");
+    }
+
+    #[test]
+    fn boundary_crossing_a_breakline() {
+        let ridge = vec![
+            O + DVec3::new(45.0, -20.0, 130.0),
+            O + DVec3::new(45.0, 120.0, 130.0),
+        ];
+        let tin = build(&TinInput {
+            points: plane(),
+            breaklines: vec![ridge],
+            boundary: Some(ring(&[(5.0, 5.0), (85.0, 5.0), (85.0, 85.0), (5.0, 85.0)])),
+            ..Default::default()
+        })
+        .expect("tin");
+        assert!((tin.plan_area() - 6400.0).abs() < 1e-6, "{}", tin.plan_area());
+        let index = tin.index();
+        // Where the boundary crosses the ridge, the surface is on the ridge.
+        let h = index
+            .height_at(&tin, O.truncate() + DVec2::new(45.0, 5.0))
+            .expect("on");
+        assert!((h - 130.0).abs() < 1e-9, "{h}");
+        // Every vertex is inside the boundary (the ridge ends were cut off).
+        for v in &tin.vertices {
+            let (x, y) = (v.x - O.x, v.y - O.y);
+            assert!((5.0 - 1e-9..=85.0 + 1e-9).contains(&x) && (5.0 - 1e-9..=85.0 + 1e-9).contains(&y));
+        }
+    }
+
+    #[test]
+    fn duplicate_positions_and_bad_values() {
+        let mut pts = plane();
+        // A second shot at the same place (a different height) and junk.
+        pts.push(O + DVec3::new(10.0, 10.0, 999.0));
+        pts.push(DVec3::new(f64::NAN, 0.0, 0.0));
+        let tin = build(&TinInput {
+            points: pts,
+            ..Default::default()
+        })
+        .expect("tin");
+        assert_eq!(tin.vertices.len(), 100);
+        // A NaN first point must not poison the origin.
+        let mut pts = vec![DVec3::new(f64::NAN, f64::NAN, 1.0)];
+        pts.extend(plane());
+        let tin = build(&TinInput {
+            points: pts,
+            ..Default::default()
+        })
+        .expect("tin");
+        assert!((tin.plan_area() - 8100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn many_holes_build_quickly() {
+        let mut pts = Vec::new();
+        for i in 0..200 {
+            for j in 0..200 {
+                pts.push(O + DVec3::new(i as f64, j as f64, 100.0));
+            }
+        }
+        let holes: Vec<Vec<DVec2>> = (0..100)
+            .map(|k| {
+                let (x, y) = (5.0 + (k % 10) as f64 * 19.0, 5.0 + (k / 10) as f64 * 19.0);
+                ring(&[(x, y), (x + 4.5, y), (x + 4.5, y + 4.5), (x, y + 4.5)])
+            })
+            .collect();
+        let t = std::time::Instant::now();
+        let tin = build(&TinInput {
+            points: pts,
+            holes,
+            ..Default::default()
+        })
+        .expect("tin");
+        assert!((tin.plan_area() - (199.0 * 199.0 - 100.0 * 4.5 * 4.5)).abs() < 1e-6);
+        assert!(t.elapsed().as_secs_f64() < 5.0, "{:?}", t.elapsed());
     }
 }

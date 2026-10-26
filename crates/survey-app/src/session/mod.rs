@@ -7,6 +7,8 @@
 //! for the caller to [`take`](Session::take_events).
 
 mod edit;
+
+pub use edit::layer_change;
 mod io;
 
 use egui_cad::command_line::{CommandLineState, LogKind};

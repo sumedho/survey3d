@@ -74,22 +74,7 @@ impl Server {
         let Some(s) = doc.surface(id) else {
             return json!({});
         };
-        let mut warnings = Vec::new();
-        if let Some(def) = &s.definition {
-            let unused = def.unused(doc);
-            if unused.points_without_height > 0 {
-                warnings.push(format!(
-                    "{} selected points have no height and were left out",
-                    unused.points_without_height
-                ));
-            }
-            if unused.plan_only_breaklines > 0 {
-                warnings.push(format!(
-                    "{} selected breaklines are plan-only (no heights) and were left out",
-                    unused.plan_only_breaklines
-                ));
-            }
-        }
+        let warnings = s.definition.as_ref().map(|d| d.warnings(doc)).unwrap_or_default();
         let z = s.tin.vertices.iter().map(|v| v.z);
         let (low, high) = z.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), z| {
             (lo.min(z), hi.max(z))

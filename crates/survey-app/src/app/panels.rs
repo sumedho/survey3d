@@ -298,11 +298,37 @@ impl SurveyApp {
             .collect()
     }
 
+    /// New objects go on the current layer: say so when it is hidden or locked.
+    fn warn_current_layer(&mut self) {
+        let doc = &self.session.project.doc;
+        let Some(l) = doc.layer(doc.current_layer()) else {
+            return;
+        };
+        let why = match (l.visible, l.locked) {
+            (false, _) => "hidden, so new objects drawn on it won't show",
+            (true, true) => "locked, so new objects drawn on it can't be selected or edited",
+            _ => return,
+        };
+        let message = format!("Layer {} is current and {why}", l.name);
+        self.session.log.warn(message);
+    }
+
+    /// A layer edit (name, colour), or why it can't be made.
+    fn change_layer(&mut self, layer: Layer) {
+        match crate::session::layer_change(&self.session.project.doc, layer) {
+            Ok(cs) => self.session.execute(Box::new(cs)),
+            Err(e) => self.session.log.warn(e),
+        }
+    }
+
     fn apply_layer_action(&mut self, action: LayerAction) {
         let doc = &mut self.session.project.doc;
         let layer = |doc: &survey_model::Document, id: i64| doc.layer(LayerId(id)).cloned();
         match action {
-            LayerAction::SetCurrent(id) => doc.set_current_layer(LayerId(id)),
+            LayerAction::SetCurrent(id) => {
+                doc.set_current_layer(LayerId(id));
+                self.warn_current_layer();
+            }
             // Visibility and locking are display state: saved, but not undoable or audited.
             LayerAction::SetVisible(id, visible) => {
                 if let Some(mut l) = layer(doc, id) {
@@ -313,6 +339,7 @@ impl SurveyApp {
                         .project
                         .selection
                         .retain(|e| doc.is_entity_editable(e));
+                    self.warn_current_layer();
                 }
             }
             LayerAction::SetLocked(id, locked) => {
@@ -324,22 +351,19 @@ impl SurveyApp {
                         .project
                         .selection
                         .retain(|e| doc.is_entity_editable(e));
+                    self.warn_current_layer();
                 }
             }
             LayerAction::SetColor(id, c) => {
                 if let Some(mut l) = layer(doc, id) {
                     l.color = Color(c.to_srgba_unmultiplied());
-                    let label = format!("Change colour of layer {}", l.name);
-                    self.session
-                        .execute(Box::new(ChangeSet::new(label).update_layer(l)));
+                    self.change_layer(l);
                 }
             }
             LayerAction::Rename(id, name) => {
                 if let Some(mut l) = layer(doc, id) {
-                    let label = format!("Rename layer {} to {name}", l.name);
                     l.name = name;
-                    self.session
-                        .execute(Box::new(ChangeSet::new(label).update_layer(l)));
+                    self.change_layer(l);
                 }
             }
             LayerAction::Add => {

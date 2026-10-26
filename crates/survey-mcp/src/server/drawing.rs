@@ -121,13 +121,25 @@ impl Server {
         let doc = self.doc();
         let kind = Kind::parse(str_arg(args, "kind").unwrap_or("all"))?;
         let filter = Filter::parse(doc, args.get("filter"))?;
-        let targets: Vec<(EntityId, Entity)> = doc
+        let matching: Vec<(EntityId, Entity)> = doc
             .entities()
             .filter(|(id, e)| kind.accepts(e) && filter.matches(doc, *id, e))
             .map(|(id, e)| (id, e.clone()))
             .collect();
-        if targets.is_empty() {
+        if matching.is_empty() {
             return Err("No objects match the filter".into());
+        }
+        // Objects on locked layers are left alone (as in the application).
+        let locked_layer = |e: &Entity| doc.layer(e.layer()).filter(|l| l.locked).map(|l| l.name.clone());
+        let (targets, locked): (Vec<_>, Vec<_>) =
+            matching.into_iter().partition(|(_, e)| locked_layer(e).is_none());
+        if targets.is_empty() {
+            let names: std::collections::BTreeSet<String> =
+                locked.iter().filter_map(|(_, e)| locked_layer(e)).collect();
+            return Err(format!(
+                "The matching objects are on locked layers ({}); unlock with set_layer first",
+                names.into_iter().collect::<Vec<_>>().join(", ")
+            ));
         }
         let moving = ["e", "n", "z"].iter().any(|k| set.contains_key(*k));
         if moving && targets.len() != 1 {
@@ -234,6 +246,10 @@ impl Server {
             .iter()
             .filter_map(|(id, _)| Some(super::entity_row(doc, *id, doc.entity(*id)?)))
             .collect();
-        Ok(ToolResult::json(&json!({ "changed": changed, "objects": rows })))
+        let mut out = json!({ "changed": changed, "objects": rows });
+        if !locked.is_empty() {
+            out["skipped_locked"] = json!(locked.len());
+        }
+        Ok(ToolResult::json(&out))
     }
 }

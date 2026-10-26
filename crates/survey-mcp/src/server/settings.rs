@@ -89,29 +89,19 @@ impl Server {
 
     pub(super) fn set_layer(&mut self, args: &Value) -> Outcome {
         let name = required_str(args, "layer")?.trim().to_string();
+        if name.is_empty() {
+            return Err("layer: a name".into());
+        }
         let doc = self.doc();
         let existing = doc.layer_by_name(&name).cloned();
         let mut layer = existing.clone().unwrap_or_else(|| {
             Layer::new(LayerId(0), name.clone(), Layer::palette_color(doc.layers().len()))
         });
-        if let Some(new_name) = str_arg(args, "rename") {
-            let new_name = new_name.trim();
-            if doc
-                .layer_by_name(new_name)
-                .is_some_and(|l| Some(l.id) != existing.as_ref().map(|e| e.id))
-            {
-                return Err(format!("rename: there is already a layer called '{new_name}'"));
-            }
-            layer.name = new_name.to_string();
+        if let Some(new_name) = args.get("rename").and_then(Value::as_str) {
+            layer.name = new_name.trim().to_string();
         }
         if let Some(color) = str_arg(args, "color") {
             layer.color = parse_color(color)?;
-        }
-        if let Some(v) = args.get("visible").and_then(Value::as_bool) {
-            layer.visible = v;
-        }
-        if let Some(v) = args.get("locked").and_then(Value::as_bool) {
-            layer.locked = v;
         }
         if let Some(style) = str_arg(args, "line_style") {
             layer.line_style = LineStyle::from_key(style).ok_or_else(|| {
@@ -127,25 +117,41 @@ impl Server {
             }
             layer.line_weight = w as f32;
         }
-        let id = match existing {
+        // Name, colour and style are one undoable step (a rename carries into
+        // feature codes and surfaces); visibility and locking are display
+        // state, as in the layer panel.
+        let visible = args.get("visible").and_then(Value::as_bool);
+        let locked = args.get("locked").and_then(Value::as_bool);
+        let id = match &existing {
             Some(old) => {
-                if old != layer {
-                    let label = format!("Edit layer {}", layer.name);
-                    self.session
-                        .execute(Box::new(ChangeSet::new(label).update_layer(layer)));
+                if *old != layer {
+                    let cs = survey_app::session::layer_change(self.doc(), layer.clone())?;
+                    self.session.execute(Box::new(cs));
                 }
                 old.id
             }
             None => {
-                let label = format!("Add layer {}", layer.name);
-                self.session
-                    .execute(Box::new(ChangeSet::new(label).insert_layer(layer.clone())));
+                let cs = survey_app::session::layer_change(self.doc(), layer.clone())?;
+                self.session.execute(Box::new(cs));
                 self.doc()
-                    .layer_by_name(&layer.name)
+                    .layer_by_name(layer.name.trim())
                     .map(|l| l.id)
                     .ok_or("The layer was not added")?
             }
         };
+        let doc = &mut self.session.project.doc;
+        if let Some(mut l) = doc.layer(id).cloned()
+            && (visible.is_some() || locked.is_some())
+        {
+            l.visible = visible.unwrap_or(l.visible);
+            l.locked = locked.unwrap_or(l.locked);
+            doc.set_layer(id, Some(l));
+            let doc = &self.session.project.doc;
+            self.session
+                .project
+                .selection
+                .retain(|e| doc.is_entity_editable(e));
+        }
         if flag(args, "current") {
             // Where new objects go: a view setting, not an edit.
             self.session.project.doc.set_current_layer(id);

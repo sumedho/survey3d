@@ -369,7 +369,15 @@ impl PointsWindow {
                             }
                         });
                         if cell.double_clicked() && f != Field::Layer {
-                            self.editing = Some((id, f, Self::text(doc, p, f), true));
+                            match doc.layer(p.layer).filter(|l| l.locked) {
+                                Some(l) => {
+                                    action = Some(PointsAction::Error(format!(
+                                        "Point {} is on locked layer {}: unlock it to edit",
+                                        p.name, l.name
+                                    )));
+                                }
+                                None => self.editing = Some((id, f, Self::text(doc, p, f), true)),
+                            }
                         }
                     }
                     if row.response().clicked() && self.editing.is_none() {

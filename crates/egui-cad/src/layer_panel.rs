@@ -39,7 +39,8 @@ pub fn layer_panel(ui: &mut egui::Ui, rows: &[LayerRow]) -> Vec<LayerAction> {
     let theme = CadTheme::current(ui.ctx());
     let mut actions = Vec::new();
     let rename_id = ui.scope_id().with("egui_cad_layer_rename");
-    let mut renaming: Option<(i64, String)> = ui.data(|d| d.get_temp(rename_id));
+    // The layer being renamed, its new name, and whether the field has had focus.
+    let mut renaming: Option<(i64, String, bool)> = ui.data(|d| d.get_temp(rename_id));
 
     for row in rows {
         let (rect, row_resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
@@ -92,11 +93,15 @@ pub fn layer_panel(ui: &mut egui::Ui, rows: &[LayerRow]) -> Vec<LayerAction> {
         cui.add_space(2.0);
 
         match &mut renaming {
-            Some((id, text)) if *id == row.id => {
+            Some((id, text, focused)) if *id == row.id => {
                 let width = cui.available_width() - 30.0;
                 let r = cui.add(egui::TextEdit::singleline(text).desired_width(width));
-                r.request_focus();
-                if r.lost_focus() {
+                // Focus once: asking every frame would take focus straight back
+                // when Enter (or a click elsewhere) gives it up, so it never commits.
+                if !*focused {
+                    r.request_focus();
+                    *focused = true;
+                } else if r.lost_focus() {
                     if !cui.input(|i| i.key_pressed(egui::Key::Escape)) && !text.trim().is_empty() {
                         actions.push(LayerAction::Rename(row.id, text.trim().to_string()));
                     }
@@ -121,7 +126,7 @@ pub fn layer_panel(ui: &mut egui::Ui, rows: &[LayerRow]) -> Vec<LayerAction> {
                     .add(label)
                     .on_hover_text("Click to make current · double-click to rename");
                 if name.double_clicked() {
-                    renaming = Some((row.id, row.name.clone()));
+                    renaming = Some((row.id, row.name.clone(), false));
                 } else if name.clicked() && !row.current {
                     actions.push(LayerAction::SetCurrent(row.id));
                 }
@@ -160,7 +165,7 @@ pub fn layer_panel(ui: &mut egui::Ui, rows: &[LayerRow]) -> Vec<LayerAction> {
             d.insert_temp(rename_id, r);
         }
         None => {
-            d.remove::<(i64, String)>(rename_id);
+            d.remove::<(i64, String, bool)>(rename_id);
         }
     });
     actions

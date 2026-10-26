@@ -454,14 +454,26 @@ impl Document {
         self.surfaces_revision += 1;
     }
 
+    /// Where a layer is in the layer list.
+    pub fn layer_position(&self, id: LayerId) -> Option<usize> {
+        self.layers.iter().position(|l| l.id == id)
+    }
+
     /// Inserts, replaces (`Some`) or removes (`None`) a layer; returns the previous value.
     /// New layers are appended to the end of the layer list.
     pub fn set_layer(&mut self, id: LayerId, layer: Option<Layer>) -> Option<Layer> {
-        let pos = self.layers.iter().position(|l| l.id == id);
+        self.set_layer_at(id, layer, None)
+    }
+
+    /// As [`Self::set_layer`], putting a new layer at `at` (to restore one
+    /// removed by an undone delete) rather than the end.
+    pub fn set_layer_at(&mut self, id: LayerId, layer: Option<Layer>, at: Option<usize>) -> Option<Layer> {
+        let pos = self.layer_position(id);
         let previous = match (layer, pos) {
             (Some(l), Some(i)) => Some(std::mem::replace(&mut self.layers[i], l)),
             (Some(l), None) => {
-                self.layers.push(l);
+                let at = at.unwrap_or(self.layers.len()).min(self.layers.len());
+                self.layers.insert(at, l);
                 None
             }
             (None, Some(i)) => Some(self.layers.remove(i)),

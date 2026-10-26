@@ -26,6 +26,15 @@ pub trait Command: Send {
     }
 }
 
+/// Visibility and locking are display state, changed outside the undo
+/// history: undoing or redoing a layer's colour or name keeps them as they are.
+fn keep_display_state(doc: &Document, layer: &mut Layer) {
+    if let Some(current) = doc.layer(layer.id) {
+        layer.visible = current.visible;
+        layer.locked = current.locked;
+    }
+}
+
 /// Above this many operations the audit detail is summarised instead of listing every record.
 const AUDIT_DETAIL_LIMIT: usize = 500;
 
@@ -42,6 +51,8 @@ enum Op {
         id: Option<LayerId>,
         before: Option<Layer>,
         after: Option<Layer>,
+        /// The layer's place in the list before (restored on undo of a delete).
+        at: Option<usize>,
     },
     Surface {
         id: Option<SurfaceId>,
@@ -153,6 +164,7 @@ impl ChangeSet {
             id: None,
             before: None,
             after: Some(layer),
+            at: None,
         });
         self
     }
@@ -162,6 +174,7 @@ impl ChangeSet {
             id: Some(layer.id),
             before: None,
             after: Some(layer),
+            at: None,
         });
         self
     }
@@ -171,6 +184,7 @@ impl ChangeSet {
             id: Some(id),
             before: None,
             after: None,
+            at: None,
         });
         self
     }
@@ -336,11 +350,18 @@ impl Command for ChangeSet {
                     let id = *id.get_or_insert_with(|| doc.alloc_entity_id());
                     *before = doc.set_entity(id, after.clone());
                 }
-                Op::Layer { id, before, after } => {
+                Op::Layer {
+                    id,
+                    before,
+                    after,
+                    at,
+                } => {
                     let id = *id.get_or_insert_with(|| doc.alloc_layer_id());
                     if let Some(layer) = after {
                         layer.id = id;
+                        keep_display_state(doc, layer);
                     }
+                    *at = doc.layer_position(id);
                     *before = doc.set_layer(id, after.clone());
                 }
                 Op::Surface { id, before, after } => {
@@ -384,9 +405,16 @@ impl Command for ChangeSet {
                     doc.set_entity(*id, before.clone());
                 }
                 Op::Layer {
-                    id: Some(id), before, ..
+                    id: Some(id),
+                    before,
+                    at,
+                    ..
                 } => {
-                    doc.set_layer(*id, before.clone());
+                    let mut layer = before.clone();
+                    if let Some(l) = &mut layer {
+                        keep_display_state(doc, l);
+                    }
+                    doc.set_layer_at(*id, layer, *at);
                 }
                 Op::Surface {
                     id: Some(id), before, ..
@@ -541,6 +569,42 @@ mod tests {
         let mut more = ChangeSet::new("more").insert_record(sheet("D"));
         more.apply(&mut doc);
         assert!(more.inserted_record_ids()[0] > ids[2]);
+    }
+
+    #[test]
+    fn layer_undo_keeps_place_and_display_state() {
+        use crate::layer::Color;
+        let mut doc = Document::new();
+        let mut add = ChangeSet::new("add")
+            .insert_layer(Layer::new(LayerId(0), "A", Color::WHITE))
+            .insert_layer(Layer::new(LayerId(0), "B", Color::WHITE))
+            .insert_layer(Layer::new(LayerId(0), "C", Color::WHITE));
+        add.apply(&mut doc);
+        let names = |doc: &Document| doc.layers().iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+        let first = names(&doc);
+        let b = doc.layer_by_name("B").expect("b").clone();
+        // Deleting B and undoing puts it back where it was, not at the end.
+        let mut del = ChangeSet::new("del").delete_layer(b.id);
+        del.apply(&mut doc);
+        del.revert(&mut doc);
+        assert_eq!(names(&doc), first);
+        // A colour change, then B is hidden and locked (display state, not
+        // undoable): undoing and redoing the colour leaves B hidden and locked.
+        let mut recolour = ChangeSet::new("colour").update_layer(Layer {
+            color: Color::rgb(1, 2, 3),
+            ..b.clone()
+        });
+        recolour.apply(&mut doc);
+        let mut hidden = doc.layer(b.id).expect("b").clone();
+        hidden.visible = false;
+        hidden.locked = true;
+        doc.set_layer(b.id, Some(hidden));
+        recolour.revert(&mut doc);
+        let l = doc.layer(b.id).expect("b");
+        assert_eq!((l.color, l.visible, l.locked), (Color::WHITE, false, true));
+        recolour.apply(&mut doc);
+        let l = doc.layer(b.id).expect("b");
+        assert_eq!((l.color, l.visible, l.locked), (Color::rgb(1, 2, 3), false, true));
     }
 
     #[test]

@@ -155,6 +155,10 @@ pub fn outline(doc: &Document, id: EntityId) -> Option<Vec<DVec2>> {
 pub struct Unused {
     pub points_without_height: usize,
     pub plan_only_breaklines: usize,
+    /// The boundary polyline is gone (or no longer outlines an area).
+    pub missing_boundary: bool,
+    /// Hole polylines that are gone.
+    pub missing_holes: usize,
 }
 
 impl SurfaceDefinition {
@@ -184,7 +188,41 @@ impl SurfaceDefinition {
                 _ => {}
             }
         }
+        unused.missing_boundary = self.boundary.is_some_and(|id| outline(doc, id).is_none());
+        unused.missing_holes = self
+            .holes
+            .iter()
+            .filter(|id| outline(doc, **id).is_none())
+            .count();
         unused
+    }
+
+    /// Plain-language notes on what the definition selects but cannot use.
+    pub fn warnings(&self, doc: &Document) -> Vec<String> {
+        let u = self.unused(doc);
+        let mut out = Vec::new();
+        if u.points_without_height > 0 {
+            out.push(format!(
+                "{} selected points have no height and were left out",
+                u.points_without_height
+            ));
+        }
+        if u.plan_only_breaklines > 0 {
+            out.push(format!(
+                "{} selected breaklines are plan-only (no heights) and were left out",
+                u.plan_only_breaklines
+            ));
+        }
+        if u.missing_boundary {
+            out.push("The boundary polyline has been deleted, so the surface is not clipped; choose a new boundary".into());
+        }
+        if u.missing_holes > 0 {
+            out.push(format!(
+                "{} hole polylines have been deleted and are not cut out",
+                u.missing_holes
+            ));
+        }
+        out
     }
 
     /// The points, breaklines and limits this definition selects from `doc`.

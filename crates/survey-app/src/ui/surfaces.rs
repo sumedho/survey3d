@@ -384,6 +384,9 @@ impl SurfaceWindow {
                     ))
                     .color(theme.text_secondary),
                 );
+                for w in def.warnings(doc) {
+                    ui.label(RichText::new(format!("{} {w}", icons::WARNING)).color(theme.warning));
+                }
                 ui.horizontal(|ui| {
                     let verb = if self.editing.is_some() {
                         "Rebuild"

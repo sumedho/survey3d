@@ -14,11 +14,29 @@ pub fn properties_panel(
     selection: &Selection,
 ) -> Option<Box<dyn Command>> {
     let ids: Vec<EntityId> = selection.ids().iter().copied().collect();
-    match ids.as_slice() {
-        [] => project_summary(ui, doc),
-        [id] => single(ui, doc, *id),
-        many => multiple(ui, doc, many),
+    // Objects on locked layers are shown but cannot be changed.
+    let locked = ids
+        .iter()
+        .filter_map(|id| doc.entity(*id))
+        .filter_map(|e| doc.layer(e.layer()))
+        .find(|l| l.locked)
+        .map(|l| l.name.clone());
+    if let Some(name) = &locked {
+        let theme = CadTheme::current(ui.ctx());
+        ui.label(
+            RichText::new(format!("On locked layer {name}: unlock it to edit"))
+                .small()
+                .color(theme.warning),
+        );
     }
+    let edit = ui
+        .add_enabled_ui(locked.is_none(), |ui| match ids.as_slice() {
+            [] => project_summary(ui, doc),
+            [id] => single(ui, doc, *id),
+            many => multiple(ui, doc, many),
+        })
+        .inner;
+    edit.filter(|_| locked.is_none())
 }
 
 fn project_summary(ui: &mut egui::Ui, doc: &Document) -> Option<Box<dyn Command>> {

@@ -298,7 +298,7 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "name": "set_layer",
             "title": "Create or change a layer",
-            "description": "Creates a layer (if no layer has this name) or changes one: rename, color (#rrggbb), visible, locked, line_style and line_weight (for lines on it whose feature code has no style of its own), current (where new objects go). New layers otherwise get the next colour of a palette. One undoable step.",
+            "description": "Creates a layer (if no layer has this name) or changes one: rename, color (#rrggbb), visible, locked, line_style and line_weight (for lines on it whose feature code has no style of its own), current (where new objects go). New layers otherwise get the next colour of a palette. Name, colour and line style are one undoable step; a rename also renames the layer in feature codes and surface definitions. visible and locked are display settings (not undone by undo, as in the app); objects on a locked layer can't be selected or edited until it is unlocked.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

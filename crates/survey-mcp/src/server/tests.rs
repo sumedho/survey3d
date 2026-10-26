@@ -725,3 +725,143 @@ fn site_calibration_previews_then_applies() {
     ok(&mut s, "run_commands", json!({ "lines": ["undo"] }));
     assert_eq!(d1(&mut s).0, cx + 10.0);
 }
+
+#[test]
+fn surface_clipping_holes_and_breaklines_end_to_end() {
+    let mut s = Server::new_for_tests();
+    // Ground on the plane z = 50 + 0.1 e over 0..100 × 0..100.
+    let shots: Vec<Value> = (0..=10)
+        .flat_map(|i| (0..=10).map(move |j| (i as f64 * 10.0, j as f64 * 10.0)))
+        .map(|(e, n)| json!({ "e": e, "n": n, "z": 50.0 + 0.1 * e }))
+        .collect();
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": shots, "layer": "GROUND" }),
+    );
+    // A pond rim (closed 3D breakline, picked by code), lower than the ground.
+    ok(
+        &mut s,
+        "add_polyline",
+        json!({ "vertices": [[62, 62, 40], [78, 62, 40], [78, 78, 40], [62, 78, 40]], "closed": true, "code": "POND" }),
+    );
+    // A boundary that runs off the data on the west and south, and a hole.
+    ok(
+        &mut s,
+        "add_polyline",
+        json!({ "name": "LIMIT", "vertices": [[-30, -30], [85, -30], [85, 85], [-30, 85]], "closed": true }),
+    );
+    ok(
+        &mut s,
+        "add_polyline",
+        json!({ "name": "SHED", "vertices": [[20, 20], [30, 20], [30, 30], [20, 30]], "closed": true }),
+    );
+    let made = ok_json(
+        &mut s,
+        "create_surface",
+        json!({ "name": "EG", "breakline_codes": ["POND"], "boundary": "LIMIT", "holes": ["SHED"] }),
+    );
+    assert!(made["warnings"].as_array().expect("w").is_empty(), "{made}");
+    let id = made["id"].as_i64().expect("id");
+    let doc = s.doc();
+    let tin = &doc.surface(survey_model::SurfaceId(id)).expect("surface").tin;
+    // Data 0..100 clipped to 0..85, less the 10 × 10 shed.
+    assert!(
+        (tin.plan_area() - (85.0 * 85.0 - 100.0)).abs() < 1e-6,
+        "{}",
+        tin.plan_area()
+    );
+    let index = tin.index();
+    let at = |e: f64, n: f64| index.height_at(tin, glam::DVec2::new(e, n));
+    // On the rim the surface is at the rim's height; inside the shed there is none.
+    assert!((at(70.0, 62.0).expect("rim") - 40.0).abs() < 1e-9);
+    assert!((at(78.0, 70.0).expect("rim") - 40.0).abs() < 1e-9);
+    assert!(at(25.0, 25.0).is_none());
+    // Clipped exactly at the boundary, at the ground's height there.
+    assert!((at(85.0, 10.0).expect("edge") - 58.5).abs() < 1e-9);
+    assert!(at(86.0, 10.0).is_none());
+
+    // The boundary deleted: the rebuild says so instead of silently not clipping.
+    ok(&mut s, "select", json!({ "filter": { "names": ["LIMIT"] } }));
+    ok(&mut s, "run_commands", json!({ "lines": ["delete"] }));
+    let rebuilt = ok_json(&mut s, "set_surface", json!({ "surface": id, "rebuild": true }));
+    assert!(
+        rebuilt["warnings"]
+            .to_string()
+            .contains("boundary polyline has been deleted"),
+        "{rebuilt}"
+    );
+}
+
+#[test]
+fn layer_rename_carries_through_and_locks_hold() {
+    let mut s = Server::new_for_tests();
+    ok(
+        &mut s,
+        "set_feature_codes",
+        json!({ "codes": [{ "code": "TB", "layer": "BANKS" }] }),
+    );
+    ok(&mut s, "set_layer", json!({ "layer": "BANKS" }));
+    let shots: Vec<Value> = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+        .iter()
+        .map(|(e, n)| json!({ "e": e, "n": n, "z": 5.0, "code": "TB" }))
+        .collect();
+    ok(&mut s, "add_points", json!({ "points": shots, "layer": "BANKS" }));
+    ok(
+        &mut s,
+        "create_surface",
+        json!({ "name": "EG", "point_layers": ["BANKS"], "breakline_layers": ["BANKS"] }),
+    );
+
+    // Bad names are refused.
+    let (text, error) = call(&mut s, "set_layer", json!({ "layer": "BANKS", "rename": "  " }));
+    assert!(error && text.contains("needs a name"), "{text}");
+    let (text, error) = call(&mut s, "set_layer", json!({ "layer": " " }));
+    assert!(error, "{text}");
+    ok(&mut s, "set_layer", json!({ "layer": "ROADS" }));
+    let (text, error) = call(
+        &mut s,
+        "set_layer",
+        json!({ "layer": "BANKS", "rename": "roads" }),
+    );
+    assert!(error && text.contains("already a layer"), "{text}");
+
+    // A rename reaches the feature codes and the surface definition.
+    ok(
+        &mut s,
+        "set_layer",
+        json!({ "layer": "BANKS", "rename": "TOP OF BANK" }),
+    );
+    let doc = s.doc();
+    assert_eq!(doc.meta().feature_codes.codes[0].layer, "TOP OF BANK");
+    let def = doc
+        .surfaces()
+        .next()
+        .expect("surface")
+        .1
+        .definition
+        .clone()
+        .expect("def");
+    assert_eq!(def.point_layers, ["TOP OF BANK"]);
+    assert_eq!(def.breakline_layers, ["TOP OF BANK"]);
+    let rebuilt = ok_json(&mut s, "set_surface", json!({ "surface": "EG", "rebuild": true }));
+    assert_eq!(rebuilt["points"], 4, "the surface still finds its points");
+
+    // Locked: edits are refused, and undoing the rename leaves the lock alone.
+    ok(
+        &mut s,
+        "set_layer",
+        json!({ "layer": "TOP OF BANK", "locked": true, "visible": false }),
+    );
+    let (text, error) = call(
+        &mut s,
+        "edit_entities",
+        json!({ "filter": { "layer": "TOP OF BANK" }, "set": { "code": "XX" } }),
+    );
+    assert!(error && text.contains("locked"), "{text}");
+    ok(&mut s, "run_commands", json!({ "lines": ["undo"] }));
+    let doc = s.doc();
+    let layer = doc.layer_by_name("BANKS").expect("rename undone");
+    assert!(layer.locked && !layer.visible, "display state kept through undo");
+    assert_eq!(doc.meta().feature_codes.codes[0].layer, "BANKS");
+}
