@@ -399,6 +399,16 @@ impl BdTool {
                 report,
             )
         };
+        // Distances typed at ground go onto the grid × the line's combined factor.
+        let plan = if ctx.doc.ground_distances() {
+            let o = from.position.truncate();
+            let k = ctx
+                .doc
+                .typed_to_grid(from.position, Some(plan.extend(from.position.z)));
+            o + (plan - o) * k
+        } else {
+            plan
+        };
         let height_known = from.height_known && dz.is_some();
         let position = plan.extend(from.position.z + dz.unwrap_or(0.0));
         let name = ctx.doc.next_point_name();
@@ -500,9 +510,12 @@ impl BdTool {
         let mut vertices = self.figure();
         vertices.pop();
         let bulges = self.bulges();
-        let area = polyline_metrics(&vertices, &bulges, true).2.abs();
+        let area = ctx
+            .doc
+            .shown_area(polyline_metrics(&vertices, &bulges, true).2.abs(), start.position);
         let conv = ctx.conventions().clone();
-        let misclose = mis.length();
+        // The misclosure as the legs were typed (ground or grid).
+        let misclose = ctx.doc.shown_length(mis.length(), start.position, end);
         let precision = if misclose > 1e-9 {
             format!("1:{:.0}", perimeter / misclose)
         } else {
@@ -544,13 +557,14 @@ impl BdTool {
         bulges.push(0.0);
         let (perimeter, _, area) = polyline_metrics(&vertices, &bulges, true);
         let conv = ctx.conventions().clone();
+        let doc = ctx.doc;
         ctx.log.result(format!(
             "Closing leg: brg {}  dist {}  ({} legs, perimeter {}  area {})",
             conv.format_bearing(bearing),
-            conv.format_length(back.length()),
+            conv.format_length(doc.shown_distance(cur.position, start.position)),
             traverse + 1,
-            conv.format_length(perimeter),
-            conv.format_area(area.abs()),
+            conv.format_length(doc.shown_length(perimeter, start.position, cur.position)),
+            conv.format_area(doc.shown_area(area.abs(), start.position)),
         ));
         let cs = ChangeSet::new(format!("Join bearing & distance figure ({} legs)", traverse + 1));
         self.finish_closed(ctx, cs, vertices, bulges);

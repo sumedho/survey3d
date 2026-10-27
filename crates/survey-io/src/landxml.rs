@@ -162,8 +162,39 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// The coordinate system a LandXML file is written in.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CrsInfo {
+    pub name: String,
+    pub epsg: Option<u32>,
+    /// OGC WKT of the projection.
+    pub wkt: Option<String>,
+    pub ellipsoid: Option<String>,
+    /// The geoid model heights are on.
+    pub geoid: Option<String>,
+}
+
+/// `<CoordinateSystem>` (LandXML 1.2 attributes), when one is known.
+fn write_crs(s: &mut String, crs: Option<&CrsInfo>) {
+    let Some(c) = crs else { return };
+    let mut attrs = format!(r#"name="{}""#, escape(&c.name));
+    if let Some(code) = c.epsg {
+        attrs.push_str(&format!(r#" epsgCode="{code}""#));
+    }
+    if let Some(e) = &c.ellipsoid {
+        attrs.push_str(&format!(r#" ellipsoidName="{}""#, escape(e)));
+    }
+    if let Some(g) = &c.geoid {
+        attrs.push_str(&format!(r#" geoidName="{}""#, escape(g)));
+    }
+    if let Some(w) = &c.wkt {
+        attrs.push_str(&format!(r#" ogcWktCode="{}""#, escape(w)));
+    }
+    let _ = writeln!(s, "  <CoordinateSystem {attrs}/>");
+}
+
 /// Writes surfaces as LandXML 1.2 (metres).
-pub fn write_surfaces(project: &str, surfaces: &[(&str, &Tin)]) -> String {
+pub fn write_surfaces(project: &str, crs: Option<&CrsInfo>, surfaces: &[(&str, &Tin)]) -> String {
     let mut s = String::new();
     let _ = writeln!(s, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     let _ = writeln!(
@@ -174,6 +205,7 @@ pub fn write_surfaces(project: &str, surfaces: &[(&str, &Tin)]) -> String {
         s,
         r#"  <Units><Metric areaUnit="squareMeter" linearUnit="meter" volumeUnit="cubicMeter" temperatureUnit="celsius" pressureUnit="milliBars" angularUnit="decimal degrees" directionUnit="decimal degrees"/></Units>"#
     );
+    write_crs(&mut s, crs);
     let _ = writeln!(s, r#"  <Project name="{}"/>"#, escape(project));
     let _ = writeln!(
         s,
@@ -221,7 +253,7 @@ pub struct ParcelGeometry<'a> {
 
 /// Writes parcels as LandXML 1.2: shared corners as `<CgPoints>`, and each
 /// parcel's boundary as `<CoordGeom>` lines and curves referring to them.
-pub fn write_parcels(project: &str, parcels: &[ParcelGeometry<'_>]) -> String {
+pub fn write_parcels(project: &str, crs: Option<&CrsInfo>, parcels: &[ParcelGeometry<'_>]) -> String {
     let mut s = String::new();
     let _ = writeln!(s, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     let _ = writeln!(
@@ -232,6 +264,7 @@ pub fn write_parcels(project: &str, parcels: &[ParcelGeometry<'_>]) -> String {
         s,
         r#"  <Units><Metric areaUnit="squareMeter" linearUnit="meter" volumeUnit="cubicMeter" temperatureUnit="celsius" pressureUnit="milliBars" angularUnit="decimal degrees" directionUnit="decimal degrees"/></Units>"#
     );
+    write_crs(&mut s, crs);
     let _ = writeln!(s, r#"  <Project name="{}"/>"#, escape(project));
     let _ = writeln!(
         s,
@@ -324,7 +357,19 @@ mod tests {
     #[test]
     fn round_trip() {
         let tin = square();
-        let xml = write_surfaces("Job & Co", &[("Existing <EG>", &tin)]);
+        let crs = CrsInfo {
+            name: "MGA2020 zone 56".into(),
+            epsg: Some(7856),
+            geoid: Some("AUSGeoid2020".into()),
+            ..Default::default()
+        };
+        let xml = write_surfaces("Job & Co", Some(&crs), &[("Existing <EG>", &tin)]);
+        assert!(
+            xml.contains(
+                r#"<CoordinateSystem name="MGA2020 zone 56" epsgCode="7856" geoidName="AUSGeoid2020"/>"#
+            ),
+            "{xml}"
+        );
         let (surfaces, warnings) = read_surfaces(xml.as_bytes()).expect("read");
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(surfaces.len(), 1);
@@ -384,6 +429,7 @@ mod tests {
         let bulges = [0.0, 0.0, 0.2, 0.0];
         let xml = write_parcels(
             "Estate",
+            None,
             &[
                 ParcelGeometry {
                     name: "Lot 1",

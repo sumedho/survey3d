@@ -109,10 +109,7 @@ impl SurveyApp {
             }
         }
 
-        if let Some(cmd) = self
-            .settings_window
-            .show(ctx, &mut self.settings, &self.session.project.doc)
-        {
+        if let Some(cmd) = self.settings_window.show(ctx, &mut self.settings, &self.session) {
             self.session.execute(cmd);
         }
         self.audit_window.show(ctx, &self.session.project);
@@ -341,6 +338,10 @@ impl SurveyApp {
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.copc_window.open {
+            self.copc_window.project_wkt = self.session.project.doc.meta().coord_system.wkt();
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(action) = self.copc_window.show(ctx, self.settings.data_dir.as_deref()) {
             match action {

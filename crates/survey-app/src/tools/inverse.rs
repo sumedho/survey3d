@@ -12,18 +12,29 @@ pub const ID: &str = "inverse";
 #[derive(Default)]
 pub struct InverseTool {
     from: Option<ResolvedPoint>,
+    /// The combined factor at the start point when the project shows ground
+    /// distances (for the live label; the result uses the whole line's).
+    ground: Option<f64>,
 }
 
-/// One-line summary of an inverse between two points.
-pub fn describe(conv: &Conventions, from: ResolvedPoint, to: ResolvedPoint) -> String {
+/// One-line summary of an inverse between two points; `ground` is the
+/// combined factor when ground distances are shown.
+pub fn describe(conv: &Conventions, from: ResolvedPoint, to: ResolvedPoint, ground: Option<f64>) -> String {
     let inv = inverse(from.position, to.position);
     let bearing = inv
         .bearing
         .map_or_else(|| "—".to_string(), |b| conv.format_bearing(b));
-    let mut s = format!(
-        "Brg {bearing}  Dist {}",
-        conv.format_length_with_unit(inv.horizontal)
-    );
+    let mut s = match ground {
+        Some(k) => format!(
+            "Brg {bearing}  Ground {}  (grid {}, factor {k:.8})",
+            conv.format_length_with_unit(inv.horizontal / k),
+            conv.format_length(inv.horizontal)
+        ),
+        None => format!(
+            "Brg {bearing}  Dist {}",
+            conv.format_length_with_unit(inv.horizontal)
+        ),
+    };
     if from.height_known && to.height_known {
         s.push_str(&format!(
             "  dZ {}  Slope {}",
@@ -58,11 +69,18 @@ impl Tool for InverseTool {
         match event {
             ToolEvent::Point(pick) => {
                 let to = resolved(&pick);
+                let doc = ctx.doc;
+                let ground = |a: ResolvedPoint, b: ResolvedPoint| {
+                    doc.ground_distances()
+                        .then(|| doc.line_factor(a.position, b.position))
+                };
                 if let Some(from) = self.from {
-                    ctx.log.result(describe(ctx.conventions(), from, to));
+                    ctx.log
+                        .result(describe(ctx.conventions(), from, to, ground(from, to)));
                 }
                 // Chain: the end of one inverse starts the next.
                 self.from = Some(to);
+                self.ground = ground(to, to);
                 ToolOutcome::Continue
             }
             ToolEvent::Text(other) => {
@@ -78,8 +96,11 @@ impl Tool for InverseTool {
     fn preview(&self, conv: &Conventions, cursor: Option<&Pick>, out: &mut Preview) {
         if let (Some(from), Some(c)) = (self.from, cursor) {
             out.rubber.push([from.position, c.point]);
-            out.labels
-                .push((c.point, DVec2::new(14.0, 14.0), describe(conv, from, resolved(c))));
+            out.labels.push((
+                c.point,
+                DVec2::new(14.0, 14.0),
+                describe(conv, from, resolved(c), self.ground),
+            ));
         }
     }
 }

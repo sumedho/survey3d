@@ -37,6 +37,9 @@ pub struct AppSettings {
     pub data_dir: Option<std::path::PathBuf>,
     /// Eye-dome lighting on point clouds: shades depth edges so shapes read.
     pub cloud_edl: bool,
+    /// Folder of downloaded geoid models; projects name the file they use
+    /// (native only).
+    pub geoid_dir: Option<std::path::PathBuf>,
 }
 
 /// A domain module that adds its own menu.
@@ -143,6 +146,7 @@ impl Default for AppSettings {
             labels: LabelSettings::default(),
             data_dir: None,
             cloud_edl: true,
+            geoid_dir: None,
         }
     }
 }

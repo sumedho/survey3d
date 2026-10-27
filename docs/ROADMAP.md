@@ -39,7 +39,7 @@ general knowledge, as no feature list for it was found.
 | Field data import | RW5, JobXML, GSI, Topcon, Sokkia SDR; raw data editing | Partial | GSI, JobXML and RW5 with coded reduction and raw editing; no SDR or Topcon |
 | GNSS processing | Baseline processing, RTK and PPK review (TBC) | Missing | Out of scope for now |
 | Field-to-finish | Codes to symbols, layers and linework, with curve and offset control codes | Has | No best-fit, smoothing or templates (Carlson's BFIT, SMO, XSCT) |
-| Coordinate systems | Projections, geoid models, site calibration, grid and ground | Partial | Projection calculator with combined scale factor, one geoid separation per project, site calibration; no geoid grids or project-wide grid/ground |
+| Coordinate systems | Projections, geoid models, site calibration, grid and ground | Done (desktop) | Projection calculator, geoid models from a user folder, site calibration, project-wide grid or ground distances, coordinate system in exports; Transverse Mercator projections only |
 | Surfaces and volumes | TIN, breaklines, contours, volumes, sections, TIN editing, slope analysis | Has | No interactive TIN editing or slope analysis |
 | Point clouds | Import, classification, feature extraction, cloud to surface, sections | Partial | COPC streaming and conversion; no classification, snapping to the full cloud or sections |
 | Imagery | Orthophotos and basemaps under the drawing | Missing | Phase 13 |
@@ -154,8 +154,12 @@ calculations behind these windows now live in `survey_app::compute`, shared by t
 - [x] **Resection:** `resection` from directions and/or distances to known points.
 - [x] **Sections:** `sections`, long or cross, as tables.
 - [x] **Subdivision:** `subdivide` by area, parallel to an edge or swung about a point.
-- [ ] **Grid and geographic conversion** (the projection calculator) as a tool.
-- [ ] **Set-out calculations** (bearing and distance from a station to each point) as a tool.
+- [x] **Grid and geographic conversion:** `convert_coordinates` (points, grid or latitude/longitude, with
+  scale factors, convergence and the geoid separation; can create points) and `convert_heights`. The
+  projection calculator uses the same code.
+- [x] **Set-out calculations:** `setout` (angle from the backsight, bearing, grid or ground distance, height
+  difference, slope distance and zenith from instrument and target heights), shared with the stake-out
+  sheet.
 
 ## Phase 11 — Coordinate systems (about 3 weeks)
 
@@ -163,14 +167,25 @@ Nearly every GNSS job needs heights on a geoid model and coordinates tied to loc
 projection calculator already gives point scale factor, convergence and the combined scale factor, but the
 project holds a single geoid separation and nothing ties coordinates to local control.
 
-- [ ] **Geoid grids:** load common models (for example AUSGeoid2020, GEOID18, EGM2008) and convert ellipsoid
-  heights to orthometric heights per point, replacing the single project separation.
+- [x] **Geoid grids:** load common models (for example AUSGeoid2020, GEOID18, EGM2008) and convert ellipsoid
+  heights to orthometric heights per point, replacing the single project separation. Done: the user downloads
+  models into a geoid folder (Settings → Coordinates; `SURVEY3D_GEOID_DIR` or `set_project geoid_dir` for
+  MCP) and the project names its file. Reads PROJ GeoTIFF (cdn.proj.org), GA's AUSGeoid2020 NTv2 `.gsb`, NGS
+  `.bin`, VDatum `.gtx` and GeographicLib `.pgm`; checked against real AUSGeoid2020, EGM96 and GEOID18 files.
+  The constant separation still applies outside the model. `geoid ortho` / `geoid ellip` convert heights.
+  Desktop only (the web build has no geoid folder).
 - [x] **Site calibration (localization):** fit GNSS coordinates to local control points, with residuals
   reported. Done: `sitecal` window and the MCP `site_calibration` tool (similarity fit, free or fixed
   scale; constant or inclined-plane heights; live residuals and best-practice warnings).
-- [ ] **Grid and ground across the project:** a project or per-point combined scale factor, and distances in
-  inverses, listings and plans shown as grid or ground.
-- [ ] **Project coordinate system in exports:** carried into LandXML, DXF metadata and COPC.
+- [x] **Grid and ground across the project:** a project or per-point combined scale factor, and distances in
+  inverses, listings and plans shown as grid or ground. Done: a fixed factor, or the projection's along each
+  line (Simpson's rule, heights from the geoid). Ground covers inverse, list, set-out, plan boundary labels,
+  line and curve tables and lot areas (the title block says so), and `bd` and radiate take typed distances as
+  ground. Dimensions, the traverse and network windows (their own scale factor) and `@dist<bearing` input
+  stay on the grid.
+- [x] **Project coordinate system in exports:** carried into LandXML, DXF metadata and COPC. Done: LandXML
+  `<CoordinateSystem>` (EPSG, WKT, ellipsoid, geoid), DXF comments plus a `.prj` beside the file, and COPC
+  conversions record the project's WKT when the source has none. GeoPackage uses the same WKT.
 
 **Done when:** a GNSS job can be calibrated to local control and its points reported as grid or ground with
 geoid heights.
@@ -228,7 +243,7 @@ The biggest risk is GPU portability: the point cloud renderer has only run on on
 | --- | --- | --- | --- |
 | Viewer untested off macOS | Risk | The cloud shader reads a storage buffer in the vertex stage, which some drivers limit | Phases 8 and 12 |
 | Raw format specifications | Dependency | RW5, SDR and Topcon formats need sample files from real controllers to test against | Phase 10 |
-| Geoid grids | Dependency | Grids are large, licensed per country, and must be shipped or downloaded | Phase 11 |
+| Geoid grids | Resolved | The user downloads models into a geoid folder; none are shipped. Not on the web build | Phase 11 |
 | DWG library | Dependency | No mature open-source DWG writer in Rust; the options are the ODA SDK (licensed) or a converter | Phase 13 |
 | Target market | Decision | Which country's cadastral conventions, geoids and plan standards come first sets Phases 9 and 11 | Phases 9 and 11 |
 | Construction design | Decision | Whether vertical design and corridors are in scope at all | Later |

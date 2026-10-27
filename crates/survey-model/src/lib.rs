@@ -11,6 +11,7 @@ pub mod command;
 pub mod coord_system;
 pub mod document;
 pub mod entity;
+pub mod ground;
 pub mod history;
 pub mod ids;
 pub mod layer;
@@ -24,7 +25,7 @@ pub mod surface;
 pub use alignment::AlignmentRecord;
 pub use cloud::{CloudColor, CloudRef, CloudStyle, PointCloud, Resident};
 pub use command::{ChangeSet, Command};
-pub use coord_system::CoordinateSystem;
+pub use coord_system::{CoordinateSystem, DistanceKind, GroundFactor, GroundSettings};
 pub use document::{DirtyState, Document, ProjectMeta};
 pub use entity::{
     Dimension, DimensionKind, Entity, Polyline, SurveyPoint, TextAlign, TextNote, join_polylines,

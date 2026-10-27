@@ -15,8 +15,12 @@ pub enum CoordinateSystem {
         #[serde(default)]
         projection: Option<TransverseMercator>,
         /// Geoid–ellipsoid separation N (metres): ellipsoidal height = height + N.
+        /// Used where no geoid model is set or the model does not cover a point.
         #[serde(default)]
         geoid_separation: f64,
+        /// The geoid model's file name, found in the user's geoid folder.
+        #[serde(default)]
+        geoid: Option<String>,
     },
     /// An arbitrary site/local grid, optionally related to a projected system.
     LocalGrid { name: String, description: String },
@@ -74,10 +78,84 @@ impl CoordinateSystem {
         }
     }
 
-    /// Combined (grid / ground) scale factor at a point with a height above the
-    /// geoid; `None` without a projection.
-    pub fn combined_factor(&self, easting: f64, northing: f64, height: f64) -> Option<f64> {
-        let tm = self.projection()?;
-        Some(tm.combined_factor(easting, northing, height + self.geoid_separation()))
+    /// The geoid model's file name, when one is set.
+    pub fn geoid_model(&self) -> Option<&str> {
+        match self {
+            CoordinateSystem::Projected { geoid, .. } => geoid.as_deref().filter(|g| !g.trim().is_empty()),
+            _ => None,
+        }
     }
+
+    /// The EPSG code, when known.
+    pub fn epsg(&self) -> Option<u32> {
+        match self {
+            CoordinateSystem::Projected { epsg, .. } => *epsg,
+            _ => None,
+        }
+    }
+
+    /// The projection as OGC WKT (version 1, as LAS, GeoPackage and `.prj`
+    /// files take it); `None` without a projection.
+    pub fn wkt(&self) -> Option<String> {
+        let tm = self.projection()?;
+        let e = tm.ellipsoid;
+        let authority = self
+            .epsg()
+            .map(|c| format!(",AUTHORITY[\"EPSG\",\"{c}\"]"))
+            .unwrap_or_default();
+        Some(format!(
+            "PROJCS[\"{name}\",GEOGCS[\"{0}\",DATUM[\"{0}\",SPHEROID[\"{0}\",{1},{2}]],PRIMEM[\"Greenwich\",0],\
+             UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],\
+             PARAMETER[\"latitude_of_origin\",{3}],PARAMETER[\"central_meridian\",{4}],\
+             PARAMETER[\"scale_factor\",{5}],PARAMETER[\"false_easting\",{6}],PARAMETER[\"false_northing\",{7}],\
+             UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]{authority}]",
+            e.name,
+            e.a,
+            e.inv_f,
+            tm.latitude_of_origin,
+            tm.central_meridian,
+            tm.scale,
+            tm.false_easting,
+            tm.false_northing,
+            name = self.display_name().replace('"', "'"),
+        ))
+    }
+}
+
+/// Which distances are shown in reports and on plans, and typed in `bd`.
+/// Coordinates are always on the grid.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DistanceKind {
+    #[default]
+    Grid,
+    /// Grid distance ÷ the combined scale factor.
+    Ground,
+}
+
+impl DistanceKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            DistanceKind::Grid => "grid",
+            DistanceKind::Ground => "ground",
+        }
+    }
+}
+
+/// The combined (grid ÷ ground) scale factor for ground distances.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum GroundFactor {
+    /// From the projection along each line: point scale factor × height
+    /// factor at the points' heights above the ellipsoid.
+    #[default]
+    Projection,
+    /// One factor for the whole project.
+    Fixed(f64),
+}
+
+/// Grid or ground distances for a project.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GroundSettings {
+    pub distances: DistanceKind,
+    pub factor: GroundFactor,
 }

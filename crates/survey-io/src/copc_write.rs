@@ -46,7 +46,7 @@ pub struct CopcWritten {
 }
 
 /// Tuning (the defaults suit files of any size; tests use small values).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ConvertOptions {
     /// Most points of one chunk held in memory at once.
     pub chunk_points: usize,
@@ -54,6 +54,8 @@ pub struct ConvertOptions {
     pub leaf_points: usize,
     /// Sampling cells per side of a node: its spacing is its size / `grid`.
     pub grid: u32,
+    /// The coordinate system (OGC WKT) to record when the input has none.
+    pub fallback_wkt: Option<String>,
 }
 
 impl Default for ConvertOptions {
@@ -62,6 +64,7 @@ impl Default for ConvertOptions {
             chunk_points: 2_000_000,
             leaf_points: 100_000,
             grid: 128,
+            fallback_wkt: None,
         }
     }
 }
@@ -343,7 +346,7 @@ impl<'a> Converter<'a> {
         // 3. Build the chunks, in parallel.
         let builder = Builder {
             space: &space,
-            options: self.options,
+            options: self.options.clone(),
             vlr: &self.vlr,
             out: &out,
         };
@@ -741,13 +744,29 @@ impl<'a> Converter<'a> {
                 vlrs.push((v.user_id.clone(), v.record_id, v.data.clone()));
             }
         }
+        if let Some(wkt) = self.fallback_wkt() {
+            let mut data = wkt.as_bytes().to_vec();
+            data.push(0);
+            vlrs.push(("LASF_Projection".into(), 2112, data));
+        }
         vlrs
     }
 
+    /// The fallback coordinate system, when the input records none.
+    fn fallback_wkt(&self) -> Option<&str> {
+        let none = !self.header.all_vlrs().any(|v| v.user_id == "LASF_Projection");
+        self.options
+            .fallback_wkt
+            .as_deref()
+            .filter(|w| none && w.len() < u16::MAX as usize)
+    }
+
     fn has_wkt(&self) -> bool {
-        self.header
-            .all_vlrs()
-            .any(|v| v.user_id == "LASF_Projection" && v.record_id == 2112)
+        self.fallback_wkt().is_some()
+            || self
+                .header
+                .all_vlrs()
+                .any(|v| v.user_id == "LASF_Projection" && v.record_id == 2112)
     }
 
     /// The LAS 1.4 header (375 bytes).
@@ -1166,6 +1185,7 @@ mod tests {
             chunk_points: 20_000,
             leaf_points: 3_000,
             grid: 32,
+            ..Default::default()
         };
         let written = convert_to_copc(&las_path, &copc_path, options, &mut |_| true).expect("convert");
         assert_eq!(written.points, n as u64);
@@ -1341,6 +1361,8 @@ mod tests {
             // counting grid's level.
             leaf_points: 100_000,
             grid: 32,
+            // The input has no coordinate system: the project's is recorded.
+            fallback_wkt: Some("PROJCS[\"MGA2020 zone 56\"]".into()),
         };
         let written = convert_to_copc(&las_path, &copc_path, options, &mut |_| true).expect("convert");
         assert_eq!(written.points, 22_000);
@@ -1354,6 +1376,13 @@ mod tests {
             .expect("points")
             .count();
         assert_eq!(count, 22_000);
+        let header = las::Reader::from_path(&copc_path).expect("las").header().clone();
+        let wkt = header
+            .all_vlrs()
+            .find(|v| v.user_id == "LASF_Projection" && v.record_id == 2112)
+            .expect("WKT record");
+        assert_eq!(wkt.data, b"PROJCS[\"MGA2020 zone 56\"]\0");
+        assert!(header.has_wkt_crs());
         let _ = fs::remove_dir_all(&dir);
     }
 

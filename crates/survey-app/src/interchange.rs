@@ -203,6 +203,23 @@ fn symbol_block(symbol: Symbol) -> DxfBlock {
     }
 }
 
+/// The coordinate system as DXF comments (R12 has nowhere else to keep it;
+/// the `.prj` written beside the file carries it for GIS readers).
+fn crs_comments(doc: &Document) -> Vec<String> {
+    let crs = &doc.meta().coord_system;
+    if matches!(crs, survey_model::CoordinateSystem::Unspecified) {
+        return Vec::new();
+    }
+    let mut c = vec![format!("survey3d coordinate system: {}", crs.display_name())];
+    if let Some(g) = crs.geoid_model() {
+        c.push(format!("Heights: orthometric, geoid model {g}"));
+    }
+    if let Some(wkt) = crs.wkt() {
+        c.push(format!("WKT: {wkt}"));
+    }
+    c
+}
+
 /// The whole document as a DXF drawing: layers, points (with their code's
 /// symbol as a block and their name as text) and linework (with its code's
 /// line type and colour).
@@ -410,6 +427,7 @@ pub fn dxf_export(doc: &Document, opts: &DxfExportOptions) -> DxfDrawing {
         warnings: Vec::new(),
         blocks: symbols.into_iter().map(symbol_block).collect(),
         linetypes,
+        comments: crs_comments(doc),
     }
 }
 

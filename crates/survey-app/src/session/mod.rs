@@ -7,8 +7,10 @@
 //! for the caller to [`take`](Session::take_events).
 
 mod edit;
+mod geoid;
 
 pub use edit::layer_change;
+pub use geoid::{GEOID_HELP, geoid_files};
 mod io;
 mod points;
 
@@ -117,6 +119,10 @@ pub const SESSION_COMMANDS: &[(&str, &str)] = &[
         "raise",
         "Raise or lower the selection's heights: raise 0.15, raise -0.05",
     ),
+    (
+        "geoid",
+        "Geoid separation at the selection; geoid ortho / geoid ellip convert heights",
+    ),
 ];
 
 pub struct Session {
@@ -131,6 +137,9 @@ pub struct Session {
     pub pointer: Pointer,
     modules: Vec<Box<dyn DomainModule>>,
     events: Vec<Event>,
+    /// Folder the project's geoid model is read from.
+    geoid_dir: Option<std::path::PathBuf>,
+    geoid: geoid::GeoidState,
 }
 
 impl Session {
@@ -152,6 +161,8 @@ impl Session {
             pointer: Pointer::default(),
             modules,
             events: Vec::new(),
+            geoid_dir: None,
+            geoid: Default::default(),
         }
     }
 
@@ -164,6 +175,7 @@ impl Session {
         self.project = project;
         self.active_surface = None;
         self.set_tool(SELECT_TOOL_ID);
+        self.sync_geoid();
     }
 
     /// Events since the last call, oldest first.
@@ -196,6 +208,9 @@ impl Session {
         p.history.execute(command, &mut p.doc);
         let doc = &p.doc;
         p.selection.retain(|id| doc.contains(id));
+        // The coordinate system may have changed its geoid model.
+        self.sync_geoid();
+        let p = &mut self.project;
         let now = p.history.dropped() - dropped;
         // Step-count trimming is routine; say so when memory forced it.
         if now > 0 && p.history.memory_used() > survey_model::UNDO_MEMORY_LIMIT / 2 {
@@ -227,6 +242,7 @@ impl Session {
         }
         let doc = &p.doc;
         p.selection.retain(|id| doc.contains(id));
+        self.sync_geoid();
     }
 
     pub fn redo(&mut self) {
@@ -237,6 +253,7 @@ impl Session {
         }
         let doc = &p.doc;
         p.selection.retain(|id| doc.contains(id));
+        self.sync_geoid();
     }
 
     // ------------------------------------------------------------------ tools
@@ -403,7 +420,7 @@ impl Session {
         // Commands that take arguments.
         if let Some((head, args)) = text.trim().split_once(char::is_whitespace) {
             let head = head.to_ascii_lowercase();
-            if matches!(head.as_str(), "reduce" | "renumber" | "raise") {
+            if matches!(head.as_str(), "reduce" | "renumber" | "raise" | "geoid") {
                 if self.active_tool.id() != SELECT_TOOL_ID {
                     self.set_tool(SELECT_TOOL_ID);
                 }
@@ -411,6 +428,7 @@ impl Session {
                 let result = match head.as_str() {
                     "reduce" => self.reduce_raw(args),
                     "renumber" => self.renumber(args),
+                    "geoid" => self.geoid_command(args),
                     _ => self.raise_selection(args),
                 };
                 if let Err(e) = result {
@@ -454,6 +472,11 @@ impl Session {
                 }
             }
             "renumber" => self.log.info(format!("Usage: {}", points::RENUMBER_HELP)),
+            "geoid" => {
+                if let Err(e) = self.geoid_command("") {
+                    self.log.error(e);
+                }
+            }
             "raise" => self.log.info(
                 "Usage: raise <amount> — raise 0.150, or raise -0.05 to lower, the selection's heights",
             ),

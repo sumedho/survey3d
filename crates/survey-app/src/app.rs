@@ -288,6 +288,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::ARROWS_IN,
     ),
     cmd(
+        "geoid",
+        "Geoid separation N at the selected points (geoid ortho / geoid ellip convert their heights)",
+        "Survey",
+        icons::GLOBE,
+    ),
+    cmd(
         "rawedit",
         "Raw data editor (correct heights, codes, backsights; reduce)",
         "Survey",
@@ -1207,6 +1213,16 @@ impl SurveyApp {
                     "Exported DXF: {where_} (symbols and names sized for 1:{})",
                     opts.scale
                 ));
+                // The coordinate system beside it, for GIS readers.
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(wkt) = self.session.project.doc.meta().coord_system.wkt() {
+                    let prj = std::path::Path::new(&where_).with_extension("prj");
+                    if let Err(e) = std::fs::write(&prj, wkt) {
+                        self.session
+                            .log
+                            .warn(format!("Could not write {}: {e}", prj.display()));
+                    }
+                }
                 self.toasts.success("Exported DXF");
             }
             Ok(None) => {}
@@ -1605,6 +1621,7 @@ impl eframe::App for SurveyApp {
             .history
             .set_user(self.settings.user_name.clone());
         self.handle_file_events();
+        self.session.set_geoid_dir(self.settings.geoid_dir.clone());
         #[cfg(target_arch = "wasm32")]
         self.autosave(&ctx);
         #[cfg(not(target_arch = "wasm32"))]

@@ -203,7 +203,7 @@ impl Session {
                     ));
                 }
                 Some(Entity::Polyline(l)) => {
-                    text.push_str(&crate::listing::polyline_listing(l, conv));
+                    text.push_str(&crate::listing::polyline_listing(l, doc));
                 }
                 Some(Entity::Text(t)) => {
                     text.push_str(&format!(

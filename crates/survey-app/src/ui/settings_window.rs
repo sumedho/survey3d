@@ -9,8 +9,9 @@ use survey_core::conventions::{
     AngleFormat, AxisLabels, BearingStyle, ChainageStyle, CoordOrder, LinearUnit,
 };
 use survey_core::{Angle, Bearing, Conventions, DVec3};
-use survey_model::{ChangeSet, Command, CoordinateSystem, Document};
+use survey_model::{ChangeSet, Command, CoordinateSystem, DistanceKind, GroundFactor, GroundSettings};
 
+use crate::session::Session;
 use crate::settings::AppSettings;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -30,7 +31,10 @@ pub struct SettingsWindow {
     /// Draft project settings, applied together as one audited edit.
     conventions: Option<Conventions>,
     coord_system: Option<CoordinateSystem>,
+    ground: Option<GroundSettings>,
     tolerances: Option<Tolerances>,
+    /// Geoid files found in the geoid folder (rescanned when it changes).
+    geoid_files: Option<(Option<std::path::PathBuf>, Vec<String>)>,
 }
 
 impl SettingsWindow {
@@ -58,12 +62,15 @@ impl SettingsWindow {
         &mut self,
         ctx: &egui::Context,
         settings: &mut AppSettings,
-        doc: &Document,
+        session: &Session,
     ) -> Option<Box<dyn Command>> {
+        let doc = &session.project.doc;
         if !self.open {
             self.conventions = None;
             self.coord_system = None;
+            self.ground = None;
             self.tolerances = None;
+            self.geoid_files = None;
             return None;
         }
         let mut open = self.open;
@@ -133,20 +140,37 @@ impl SettingsWindow {
                         }
                     }
                     Tab::Coordinates => {
+                        let dir = settings.geoid_dir.clone();
+                        if self.geoid_files.as_ref().is_none_or(|(d, _)| *d != dir) {
+                            let files = dir
+                                .as_deref()
+                                .map(crate::session::geoid_files)
+                                .unwrap_or_default();
+                            self.geoid_files = Some((dir, files));
+                        }
+                        let files = self
+                            .geoid_files
+                            .as_ref()
+                            .map(|(_, f)| f.clone())
+                            .unwrap_or_default();
                         let draft = self
                             .coord_system
                             .get_or_insert_with(|| doc.meta().coord_system.clone());
-                        coord_system_editor(ui, draft);
+                        coord_system_editor(ui, draft, &files);
+                        if matches!(draft, CoordinateSystem::Projected { .. }) {
+                            geoid_folder(ui, settings, &mut self.geoid_files, &session.geoid_status());
+                        }
+                        let ground = self.ground.get_or_insert(doc.meta().ground);
+                        ground_editor(ui, ground, draft.projection().is_some());
                         ui.separator();
+                        let changed = *draft != doc.meta().coord_system || *ground != doc.meta().ground;
                         if ui
-                            .add_enabled(
-                                *draft != doc.meta().coord_system,
-                                egui::Button::new("Apply to project"),
-                            )
+                            .add_enabled(changed, egui::Button::new("Apply to project"))
                             .clicked()
                         {
                             let mut meta = doc.meta().clone();
                             meta.coord_system = draft.clone();
+                            meta.ground = *ground;
                             command = Some(
                                 Box::new(ChangeSet::new("Change coordinate system").set_meta(meta))
                                     as Box<dyn Command>,
@@ -159,6 +183,7 @@ impl SettingsWindow {
         if command.is_some() {
             self.conventions = None;
             self.coord_system = None;
+            self.ground = None;
             self.tolerances = None;
         }
         command
@@ -444,7 +469,98 @@ fn combo<T: Copy + PartialEq>(
         });
 }
 
-fn coord_system_editor(ui: &mut egui::Ui, cs: &mut CoordinateSystem) {
+/// The folder geoid models are kept in, and what is loaded.
+fn geoid_folder(
+    ui: &mut egui::Ui,
+    settings: &mut AppSettings,
+    files: &mut Option<(Option<std::path::PathBuf>, Vec<String>)>,
+    status: &str,
+) {
+    #[cfg(not(target_arch = "wasm32"))]
+    ui.horizontal(|ui| {
+        ui.label("Geoid folder");
+        let shown = settings
+            .geoid_dir
+            .as_ref()
+            .map_or_else(|| "(none set)".to_string(), |p| p.display().to_string());
+        ui.label(RichText::new(shown).monospace().small());
+        if ui
+            .button("Change…")
+            .on_hover_text("The folder you download geoid models into")
+            .clicked()
+            && let Some(dir) = rfd::FileDialog::new().pick_folder()
+        {
+            settings.geoid_dir = Some(dir);
+        }
+        if ui.small_button("Rescan").clicked() {
+            *files = None;
+        }
+    });
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (settings, files);
+        ui.label(RichText::new("Geoid models are available in the desktop app.").small());
+    }
+    ui.label(RichText::new(status).small());
+    ui.label(
+        RichText::new(
+            "Download a model into the folder: PROJ's GeoTIFF grids from cdn.proj.org \
+             (au_ga_AUSGeoid2020_20180201.tif, us_noaa_g2018u0.tif, us_nga_egm08_25.tif…), \
+             Geoscience Australia's AUSGeoid2020 .gsb, NGS GEOID18 .bin, VDatum .gtx or GeographicLib .pgm.",
+        )
+        .small()
+        .weak(),
+    );
+}
+
+/// Grid or ground distances.
+fn ground_editor(ui: &mut egui::Ui, g: &mut GroundSettings, projection: bool) {
+    section_header(ui, "Distances");
+    segmented(
+        ui,
+        &mut g.distances,
+        &[(DistanceKind::Grid, "Grid"), (DistanceKind::Ground, "Ground")],
+    );
+    ui.label(
+        RichText::new(
+            "Coordinates stay on the grid. Ground shows distances in inverses, listings, set-out and on plans \
+             as grid ÷ the combined scale factor, and takes distances typed in bd as ground.",
+        )
+        .small(),
+    );
+    if g.distances == DistanceKind::Ground {
+        let mut fixed = matches!(g.factor, GroundFactor::Fixed(_));
+        ui.horizontal(|ui| {
+            ui.label("Combined factor");
+            ui.radio_value(&mut fixed, false, "From the projection, along each line");
+            ui.radio_value(&mut fixed, true, "Fixed");
+        });
+        match (fixed, &mut g.factor) {
+            (false, f) => {
+                *f = GroundFactor::Projection;
+                if !projection {
+                    ui.label(
+                        RichText::new(
+                            "Set a projection above, or a fixed factor: without one, ground = grid.",
+                        )
+                        .small(),
+                    );
+                }
+            }
+            (true, GroundFactor::Fixed(k)) => {
+                ui.add(
+                    egui::DragValue::new(k)
+                        .speed(0.00001)
+                        .max_decimals(9)
+                        .range(0.9..=1.1),
+                );
+            }
+            (true, f) => *f = GroundFactor::Fixed(1.0),
+        }
+    }
+}
+
+fn coord_system_editor(ui: &mut egui::Ui, cs: &mut CoordinateSystem, geoid_files: &[String]) {
     use survey_core::projection::{Ellipsoid, TransverseMercator};
     #[derive(PartialEq, Clone, Copy)]
     enum Kind {
@@ -472,6 +588,7 @@ fn coord_system_editor(ui: &mut egui::Ui, cs: &mut CoordinateSystem) {
                 zone: None,
                 projection: None,
                 geoid_separation: 0.0,
+                geoid: None,
             },
             Kind::Local => CoordinateSystem::LocalGrid {
                 name: "Site grid".into(),
@@ -489,6 +606,7 @@ fn coord_system_editor(ui: &mut egui::Ui, cs: &mut CoordinateSystem) {
             zone,
             projection,
             geoid_separation,
+            geoid,
         } => {
             #[derive(PartialEq, Clone, Copy)]
             enum Preset {
@@ -603,7 +721,31 @@ fn coord_system_editor(ui: &mut egui::Ui, cs: &mut CoordinateSystem) {
                     ui.label("EPSG code");
                     optional_u32(ui, epsg);
                     ui.end_row();
-                    ui.label("Geoid separation N");
+                    ui.label("Geoid model");
+                    let none = "None (constant separation)";
+                    egui::ComboBox::from_id_salt("crs_geoid")
+                        .selected_text(geoid.as_deref().unwrap_or(none))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(geoid, None, none);
+                            for f in geoid_files {
+                                ui.selectable_value(geoid, Some(f.clone()), f);
+                            }
+                            if let Some(g) = geoid.clone()
+                                && !geoid_files.contains(&g)
+                            {
+                                ui.selectable_value(
+                                    geoid,
+                                    Some(g.clone()),
+                                    format!("{g} (not in the folder)"),
+                                );
+                            }
+                        });
+                    ui.end_row();
+                    ui.label(if geoid.is_some() {
+                        "Separation outside it"
+                    } else {
+                        "Geoid separation N"
+                    });
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(geoid_separation).speed(0.01).suffix(" m"));
                         ui.label(RichText::new("ellipsoidal height = height + N").small());

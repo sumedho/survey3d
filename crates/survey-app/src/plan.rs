@@ -778,7 +778,8 @@ impl<'a> Builder<'a> {
             if area.abs() < 1e-9 {
                 continue;
             }
-            let centre = self.t.to_paper(c / (3.0 * area));
+            let world_centre = c / (3.0 * area);
+            let centre = self.t.to_paper(world_centre);
             if !self.frame.contains(centre) {
                 continue;
             }
@@ -791,9 +792,12 @@ impl<'a> Builder<'a> {
                 [centre[0], centre[1] - 0.6],
                 // Exact, arcs and all (the ring above only places it).
                 conv.format_area(
-                    survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, true)
-                        .2
-                        .abs(),
+                    doc.shown_area(
+                        survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, true)
+                            .2
+                            .abs(),
+                        world_centre.extend(l.vertices[0].z),
+                    ),
                 ),
                 size,
             )
@@ -1234,12 +1238,14 @@ fn boundary_segments(doc: &Document, t: &SheetTransform, frame: &Rect, size: f64
             let Some(chord_bearing) = survey_core::Bearing::from_delta(d.x, d.y) else {
                 continue;
             };
+            // Grid to shown lengths (ground plans divide by the combined factor).
+            let scale = doc.shown_length(1.0, a, b);
             let (mid, tangent, top, bottom, cells, curve) =
                 match survey_core::arc::Arc::from_bulge(a, b, bulge) {
                     Some(arc) => {
                         let (r, len) = (
-                            conv.format_length(arc.radius),
-                            conv.format_length(arc.length_2d()),
+                            conv.format_length(arc.radius * scale),
+                            conv.format_length(arc.length_2d() * scale),
                         );
                         (
                             arc.midpoint().truncate(),
@@ -1250,14 +1256,16 @@ fn boundary_segments(doc: &Document, t: &SheetTransform, frame: &Rect, size: f64
                                 r,
                                 len,
                                 conv.format_bearing(chord_bearing),
-                                conv.format_length(d.length()),
+                                conv.format_length(d.length() * scale),
                             ],
                             true,
                         )
                     }
                     None => {
-                        let (brg, dist) =
-                            (conv.format_bearing(chord_bearing), conv.format_length(d.length()));
+                        let (brg, dist) = (
+                            conv.format_bearing(chord_bearing),
+                            conv.format_length(d.length() * scale),
+                        );
                         (
                             ((a + b) * 0.5).truncate(),
                             d,
@@ -1975,7 +1983,14 @@ fn title_block(plot: &mut Plot, r: Rect, title: &str, doc: &Document, sheet: &Sh
         ("REFERENCE", tb.reference.clone()),
         ("SHEET", tb.sheet.clone()),
         ("SCALE", sheet.scale_label()),
-        ("COORDINATES", doc.meta().coord_system.display_name()),
+        (
+            "COORDINATES",
+            if doc.ground_distances() {
+                format!("{} · ground distances", doc.meta().coord_system.display_name())
+            } else {
+                doc.meta().coord_system.display_name()
+            },
+        ),
     ];
     let cols = 2.0;
     let rows = 3.0;

@@ -11,6 +11,7 @@ pub mod copc;
 pub mod copc_write;
 pub mod csv_points;
 pub mod dxf;
+pub mod geoid;
 pub mod landxml;
 pub mod plot;
 pub mod pointcloud;

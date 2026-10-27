@@ -36,6 +36,9 @@ pub struct ProjectMeta {
     /// Site calibration (GNSS grid to local control).
     #[serde(default)]
     pub calibration: survey_core::calibration::SiteCalibration,
+    /// Grid or ground distances.
+    #[serde(default)]
+    pub ground: crate::coord_system::GroundSettings,
 }
 
 impl Default for ProjectMeta {
@@ -49,6 +52,7 @@ impl Default for ProjectMeta {
             tolerances: Tolerances::default(),
             network_options: Default::default(),
             calibration: Default::default(),
+            ground: Default::default(),
         }
     }
 }
@@ -102,6 +106,8 @@ pub struct Document {
     revision: u64,
     surfaces_revision: u64,
     dirty: DirtyState,
+    /// The loaded geoid model (not saved: the project names its file).
+    geoid: Option<std::sync::Arc<survey_core::geoid::GeoidModel>>,
 }
 
 impl Default for Document {
@@ -149,6 +155,7 @@ impl Document {
             revision: 1,
             surfaces_revision: 1,
             dirty: DirtyState::default(),
+            geoid: None,
         }
     }
 
@@ -525,6 +532,17 @@ impl Document {
     }
 
     /// Replaces project settings; returns the previous value.
+    /// View-state change: the geoid model loaded for this project's
+    /// coordinate system (heights and scale factors use it).
+    pub fn set_geoid(&mut self, geoid: Option<std::sync::Arc<survey_core::geoid::GeoidModel>>) {
+        self.geoid = geoid;
+        self.revision += 1;
+    }
+
+    pub fn geoid(&self) -> Option<&std::sync::Arc<survey_core::geoid::GeoidModel>> {
+        self.geoid.as_ref()
+    }
+
     pub fn set_meta(&mut self, meta: ProjectMeta) -> ProjectMeta {
         self.dirty.meta = true;
         self.revision += 1;

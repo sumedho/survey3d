@@ -404,7 +404,7 @@ impl TraverseWindow {
                     let start = doc.find_point_by_name(self.start.trim()).map(|(_, p)| p);
                     let factor = start.and_then(|p| {
                         let h = if p.height_known { p.position.z } else { 0.0 };
-                        doc.meta().coord_system.combined_factor(p.position.x, p.position.y, h)
+                        doc.combined_factor_at(p.position.truncate().extend(h))
                     });
                     if ui
                         .add_enabled(factor.is_some(), egui::Button::new("From project"))

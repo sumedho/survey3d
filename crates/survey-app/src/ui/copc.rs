@@ -47,6 +47,9 @@ pub struct CopcWindow {
     /// A conversion waiting for the user to agree to replace its output:
     /// `(source, output)`.
     replace: Option<(PathBuf, PathBuf)>,
+    /// The project's coordinate system (WKT), recorded in conversions of
+    /// files that have none.
+    pub project_wkt: Option<String>,
 }
 
 impl Default for CopcWindow {
@@ -61,6 +64,7 @@ impl Default for CopcWindow {
             entries: Vec::new(),
             scanned: None,
             replace: None,
+            project_wkt: None,
         }
     }
 }
@@ -242,8 +246,12 @@ impl CopcWindow {
         let (progress, cancel) = (job.progress.clone(), job.cancel.clone());
         self.jobs.push(job);
         let tx = self.tx.clone();
+        let options = survey_io::copc_write::ConvertOptions {
+            fallback_wkt: self.project_wkt.clone(),
+            ..Default::default()
+        };
         std::thread::spawn(move || {
-            let result = survey_io::copc_write::convert_to_copc(&src, &dst, Default::default(), &mut |f| {
+            let result = survey_io::copc_write::convert_to_copc(&src, &dst, options, &mut |f| {
                 progress.store(f.to_bits(), Ordering::Relaxed);
                 !cancel.load(Ordering::Relaxed)
             })

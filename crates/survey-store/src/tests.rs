@@ -61,6 +61,7 @@ fn sample() -> (Document, History) {
             survey_core::projection::Ellipsoid::GRS80,
         )),
         geoid_separation: 22.5,
+        geoid: Some("au_ga_AUSGeoid2020_20180201.tif".into()),
     };
     history.execute(Box::new(ChangeSet::new("settings").set_meta(meta)), &mut doc);
     let records = ChangeSet::new("records")

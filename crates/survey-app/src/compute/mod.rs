@@ -5,8 +5,10 @@
 
 pub mod closure;
 pub mod network;
+pub mod projection;
 pub mod resection;
 pub mod sections;
+pub mod setout;
 pub mod subdivide;
 pub mod traverse;
 pub mod volumes;

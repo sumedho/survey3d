@@ -234,14 +234,14 @@ impl Session {
 }
 
 /// Whether a raw data reduction placed the point named `name`.
-fn from_raw_data(doc: &survey_model::Document, name: &str) -> bool {
+pub(super) fn from_raw_data(doc: &survey_model::Document, name: &str) -> bool {
     doc.field_data()
         .iter()
         .any(|f| f.reduced.iter().any(|r| r == name))
 }
 
 /// Up to five names, with … when there are more.
-fn some_names(names: &[&str]) -> String {
+pub(super) fn some_names(names: &[&str]) -> String {
     let more = if names.len() > 5 { "…" } else { "" };
     format!("{}{more}", names[..names.len().min(5)].join(", "))
 }

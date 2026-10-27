@@ -356,7 +356,7 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "name": "set_project",
             "title": "Project settings",
-            "description": "Sets the project's name, description, conventions preset and coordinate system (shown on plan sheets and used for grid/geographic conversions). coordinate_system: {\"name\": \"MGA2020 zone 50\"} is enough for MGA (zone, south, GRS80 and EPSG 7850 follow); likewise \"MGA94 zone 56\" or \"UTM zone 33N\" (WGS84). Or give type (projected, local, unspecified), zone, hemisphere, ellipsoid (GRS80, WGS84), epsg, geoid_separation (metres), and for a local grid a description. One undoable step.",
+            "description": "Sets the project's name, description, conventions preset and coordinate system (shown on plan sheets and used for grid/geographic conversions). coordinate_system: {\"name\": \"MGA2020 zone 50\"} is enough for MGA (zone, south, GRS80 and EPSG 7850 follow); likewise \"MGA94 zone 56\" or \"UTM zone 33N\" (WGS84). Or give type (projected, local, unspecified), zone, hemisphere, ellipsoid (GRS80, WGS84), epsg, geoid_separation (metres; used where no geoid model covers a point), geoid (a geoid model file name), and for a local grid a description. geoid: the geoid model by file name (e.g. au_ga_AUSGeoid2020_20180201.tif; null clears it), found in geoid_dir — the folder the user downloads models into (PROJ GeoTIFF from cdn.proj.org, AUSGeoid2020 .gsb, NGS .bin, .gtx, GeographicLib .pgm; default from the SURVEY3D_GEOID_DIR environment variable); the result lists the files there and whether the model loaded. distances: grid (default) or ground — whether inverses, listings, set-out, plan labels and bd typed distances are ground (grid ÷ combined scale factor); ground_factor: projection (default; point scale × height factor along each line, heights from the geoid) or a fixed combined factor. Coordinates always stay on the grid. One undoable step.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -373,10 +373,15 @@ pub fn definitions() -> Vec<Value> {
                             "ellipsoid": { "type": "string", "enum": ["GRS80", "WGS84"] },
                             "epsg": { "type": "integer" },
                             "geoid_separation": { "type": "number" },
+                            "geoid": { "type": "string" },
                             "description": { "type": "string" }
                         },
                         "additionalProperties": false
-                    }
+                    },
+                    "geoid": { "type": ["string", "null"] },
+                    "geoid_dir": { "type": "string" },
+                    "distances": { "type": "string", "enum": ["grid", "ground"] },
+                    "ground_factor": { "type": ["string", "number"] }
                 },
                 "additionalProperties": false
             }
@@ -657,6 +662,58 @@ pub fn definitions() -> Vec<Value> {
                 "additionalProperties": false
             },
             "annotations": { "destructiveHint": false }
+        }),
+        json!({
+            "name": "convert_coordinates",
+            "title": "Grid and geographic conversion",
+            "description": "Converts with the project's projection (set_project) and geoid model. points: names, \"selection\" or \"all\" (grid coordinates and heights above the geoid); grid: [[e, n, h?]] or [{easting, northing, height?, name?}]; geographic: [{latitude, longitude, height?, name?}] in decimal degrees or text in the project's angle format (south and west negative), with height_kind orthometric (default: above the geoid) or ellipsoidal (as GNSS gives). Each result: latitude/longitude (decimal and d°m's\"), easting, northing, height (H), ellipsoidal_height (h = H + N), geoid_separation N and its source (the model, or the project constant outside it), point_scale, convergence (grid bearing = true bearing + convergence), height_factor and combined_factor (grid = ground × combined). create: true makes points from the geographic positions (one undoable step). report: true adds the text report.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "points": { "type": ["array", "string"], "items": { "type": ["string", "integer"] } },
+                    "grid": { "type": "array" },
+                    "geographic": { "type": "array", "items": { "type": "object" } },
+                    "height_kind": { "type": "string", "enum": ["orthometric", "ellipsoidal"], "default": "orthometric" },
+                    "create": { "type": "boolean", "default": false },
+                    "report": { "type": "boolean", "default": false }
+                },
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": false }
+        }),
+        json!({
+            "name": "convert_heights",
+            "title": "Ellipsoidal and orthometric heights",
+            "description": "Converts point heights with the geoid separation N at each point (the project's geoid model, else its constant): to orthometric (H = h − N, for GNSS points with ellipsoidal heights) or to ellipsoidal (h = H + N). points: names, \"selection\" or \"all\"; points without heights are left alone. Needs a projected coordinate system. One undoable step; warns about points that come from raw data (reducing again restores them). The command line equivalent is 'geoid ortho' / 'geoid ellip' on the selection.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "points": { "type": ["array", "string"], "items": { "type": ["string", "integer"] } },
+                    "to": { "type": "string", "enum": ["orthometric", "ellipsoidal"] }
+                },
+                "required": ["points", "to"],
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": false }
+        }),
+        json!({
+            "name": "setout",
+            "title": "Set-out from a station",
+            "description": "The set-out (stake-out) sheet from an instrument station (a point name) with a backsight (a point name or a bearing; omit for bearings only) to points (names, \"selection\" or \"all\"): per point the horizontal angle clockwise from the backsight, the grid bearing, the horizontal distance (grid or ground per the project's distances setting; grid_distance as well), the height difference, and with hi/ht (instrument and target heights, default 0) the slope distance and zenith angle. A backsight point gives a check distance. report: true adds the text sheet. Reporting only; to send points to a controller use export_file (jobxml, rw5, gsi).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "station": { "type": "string" },
+                    "backsight": { "type": ["string", "number"] },
+                    "points": { "type": ["array", "string"], "items": { "type": ["string", "integer"] } },
+                    "hi": { "type": ["number", "string"] },
+                    "ht": { "type": ["number", "string"] },
+                    "report": { "type": "boolean", "default": false }
+                },
+                "required": ["station", "points"],
+                "additionalProperties": false
+            },
+            "annotations": { "readOnlyHint": true }
         }),
         json!({
             "name": "raw_data",

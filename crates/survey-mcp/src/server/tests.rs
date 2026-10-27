@@ -1488,3 +1488,154 @@ fn survey_computations_end_to_end() {
     );
     assert!(error && text.contains("not a straight edge"), "{text}");
 }
+
+#[test]
+fn coordinates_geoid_and_setout() {
+    let mut s = Server::new_for_tests();
+    let close = |v: &Value, want: f64, tol: f64| (v.as_f64().unwrap_or(f64::NAN) - want).abs() < tol;
+    // A geoid model of constant N = 5 round Flinders Peak, in a geoid folder.
+    let dir = temp_dir("geoid");
+    let mut gtx = Vec::new();
+    for v in [-39.0f64, 143.0, 1.0, 1.0] {
+        gtx.extend_from_slice(&v.to_be_bytes());
+    }
+    gtx.extend_from_slice(&3i32.to_be_bytes());
+    gtx.extend_from_slice(&3i32.to_be_bytes());
+    for _ in 0..9 {
+        gtx.extend_from_slice(&5.0f32.to_be_bytes());
+    }
+    std::fs::write(dir.join("flat.gtx"), gtx).expect("geoid");
+    let set = ok_json(
+        &mut s,
+        "set_project",
+        json!({ "coordinate_system": { "name": "MGA2020 zone 55" }, "geoid_dir": dir, "geoid": "flat.gtx" }),
+    );
+    assert_eq!(set["geoid_files"], json!(["flat.gtx"]));
+    assert!(
+        set["geoid"].as_str().expect("value").starts_with("flat.gtx"),
+        "{set}"
+    );
+
+    // Geoscience Australia's Flinders Peak example, 105 m above the ellipsoid.
+    let lat = -(37.0 + 57.0 / 60.0 + 3.7203 / 3600.0);
+    let lon = 144.0 + 25.0 / 60.0 + 29.5244 / 3600.0;
+    let c = ok_json(
+        &mut s,
+        "convert_coordinates",
+        json!({ "geographic": [{ "latitude": lat, "longitude": lon, "height": 105.0, "name": "FP" }],
+                "height_kind": "ellipsoidal", "create": true }),
+    );
+    let p = &c["positions"][0];
+    assert!(
+        close(&p["easting"], 273_741.297, 1e-3) && close(&p["northing"], 5_796_489.777, 1e-3),
+        "{p}"
+    );
+    assert!(
+        close(&p["height"], 100.0, 1e-6) && close(&p["geoid_separation"], 5.0, 1e-6),
+        "{p}"
+    );
+    assert_eq!(p["geoid_source"], "flat.gtx");
+    assert_eq!(p["latitude_dms"], "-37°57'03.72030\"");
+    assert!(close(
+        &p["combined_factor"],
+        p["point_scale"].as_f64().expect("value") * p["height_factor"].as_f64().expect("value"),
+        1e-9
+    ));
+    assert_eq!(c["created"][0]["name"], "FP");
+    // And back from the point.
+    let back = ok_json(&mut s, "convert_coordinates", json!({ "points": ["FP"] }));
+    assert!(close(&back["positions"][0]["latitude"], lat, 1e-9), "{back}");
+    assert!(close(&back["positions"][0]["ellipsoidal_height"], 105.0, 1e-6));
+
+    // GNSS heights onto the geoid.
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": [{ "name": "G1", "e": 273_800.0, "n": 5_796_500.0, "z": 110.0 }] }),
+    );
+    let text = ok(
+        &mut s,
+        "convert_heights",
+        json!({ "points": ["G1"], "to": "orthometric" }),
+    );
+    assert!(text.contains("from ellipsoidal to orthometric"), "{text}");
+    let g1 = ok_json(
+        &mut s,
+        "query",
+        json!({ "kind": "points", "filter": { "names": ["G1"] } }),
+    );
+    assert!(close(&g1["rows"][0]["z"], 105.0, 1e-6), "{g1}");
+
+    // Set-out from a station at Flinders Peak backsighting due north, to a point 100 m east and 1 m up.
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": [
+            { "name": "ST", "e": 273_741.297, "n": 5_796_489.777, "z": 100.0 },
+            { "name": "BS", "e": 273_741.297, "n": 5_796_589.777, "z": 100.0 },
+            { "name": "T", "e": 273_841.297, "n": 5_796_489.777, "z": 101.0 },
+        ] }),
+    );
+    let args = json!({ "station": "ST", "backsight": "BS", "points": ["T", "G1"], "hi": 1.5, "ht": 2.0 });
+    let so = ok_json(&mut s, "setout", args.clone());
+    let t = &so["rows"][0];
+    assert!(t["angle"].as_str().expect("value").starts_with("90"), "{so}");
+    assert!(
+        close(&t["distance"], 100.0, 1e-6) && close(&t["dz"], 1.0, 1e-6),
+        "{t}"
+    );
+    assert!(close(&t["slope_distance"], 100.0f64.hypot(1.5), 1e-4), "{t}");
+    assert!(close(&so["backsight_distance"], 100.0, 1e-6) && so["distances"] == "grid");
+
+    // Ground distances: a fixed factor, then the projection's along the line.
+    ok(
+        &mut s,
+        "set_project",
+        json!({ "distances": "ground", "ground_factor": 0.9996 }),
+    );
+    let so = ok_json(&mut s, "setout", args.clone());
+    assert!(close(&so["rows"][0]["distance"], 100.0 / 0.9996, 1e-4), "{so}");
+    assert!(close(&so["rows"][0]["grid_distance"], 100.0, 1e-6) && so["distances"] == "ground");
+    ok(&mut s, "set_project", json!({ "ground_factor": "projection" }));
+    let mid = ok_json(
+        &mut s,
+        "convert_coordinates",
+        json!({ "grid": [[273_791.297, 5_796_489.777, 100.5]] }),
+    );
+    let k = mid["positions"][0]["combined_factor"].as_f64().expect("value");
+    let so = ok_json(&mut s, "setout", args);
+    assert!(close(&so["rows"][0]["distance"], 100.0 / k, 1e-4), "{so} vs {k}");
+    let info = ok_json(&mut s, "project_info", json!({}));
+    assert_eq!(
+        info["distances"],
+        json!({ "shown": "ground", "ground_factor": "projection" })
+    );
+
+    // Exports carry the coordinate system.
+    let dxf = dir.join("plan.dxf");
+    let text = ok(&mut s, "export_file", json!({ "format": "dxf", "path": dxf }));
+    assert!(text.contains("plan.prj"), "{text}");
+    let prj = std::fs::read_to_string(dir.join("plan.prj")).expect("prj");
+    assert!(
+        prj.starts_with("PROJCS[\"MGA2020 zone 55") && prj.contains("AUTHORITY[\"EPSG\",\"7855\"]"),
+        "{prj}"
+    );
+    let dxf = std::fs::read_to_string(&dxf).expect("dxf");
+    assert!(
+        dxf.starts_with("999\nsurvey3d coordinate system: MGA2020 zone 55"),
+        "{}",
+        &dxf[..200]
+    );
+    assert!(survey_io::dxf::read_dxf(dxf.as_bytes()).is_ok());
+
+    // Errors say what to do.
+    let (text, error) = call(&mut s, "setout", json!({ "station": "nope", "points": ["T"] }));
+    assert!(error && text.contains("instrument station"), "{text}");
+    let (text, error) = call(
+        &mut s,
+        "convert_heights",
+        json!({ "points": ["T"], "to": "sideways" }),
+    );
+    assert!(error && text.contains("orthometric"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

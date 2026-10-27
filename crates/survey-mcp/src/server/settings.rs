@@ -5,7 +5,7 @@ use survey_core::Conventions;
 use survey_core::field_to_finish::{FeatureCode, FeatureLibrary};
 use survey_core::projection::{Ellipsoid, TransverseMercator};
 use survey_core::style::LineStyle;
-use survey_model::{ChangeSet, Color, CoordinateSystem, Layer, LayerId};
+use survey_model::{ChangeSet, Color, CoordinateSystem, DistanceKind, GroundFactor, Layer, LayerId};
 
 use super::{Outcome, Server, ToolResult, flag, merge, required_str, str_arg};
 
@@ -185,6 +185,40 @@ impl Server {
         if let Some(cs) = args.get("coordinate_system") {
             meta.coord_system = coordinate_system(cs)?;
         }
+        if let Some(g) = args.get("geoid") {
+            let CoordinateSystem::Projected { geoid, .. } = &mut meta.coord_system else {
+                return Err("geoid: set a projected coordinate_system first".into());
+            };
+            *geoid = g
+                .as_str()
+                .map(str::trim)
+                .filter(|g| !g.is_empty())
+                .map(str::to_string);
+        }
+        match str_arg(args, "distances") {
+            None => {}
+            Some("grid") => meta.ground.distances = DistanceKind::Grid,
+            Some("ground") => meta.ground.distances = DistanceKind::Ground,
+            Some(other) => return Err(format!("distances: '{other}' (grid or ground)")),
+        }
+        match args.get("ground_factor") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(s)) if s == "projection" => meta.ground.factor = GroundFactor::Projection,
+            Some(v) => {
+                meta.ground.factor = GroundFactor::Fixed(
+                    v.as_f64()
+                        .filter(|k| (0.9..=1.1).contains(k))
+                        .ok_or("ground_factor: 'projection' or a factor near 1")?,
+                );
+            }
+        }
+        if let Some(dir) = args.get("geoid_dir") {
+            self.session.set_geoid_dir(
+                dir.as_str()
+                    .filter(|d| !d.trim().is_empty())
+                    .map(std::path::PathBuf::from),
+            );
+        }
         if &meta != self.doc().meta() {
             self.session
                 .execute(Box::new(ChangeSet::new("Project settings").set_meta(meta)));
@@ -196,6 +230,10 @@ impl Server {
             "conventions": meta.conventions.name,
             "coordinate_system": meta.coord_system.display_name(),
             "coordinate_system_detail": meta.coord_system,
+            "geoid": self.session.geoid_status(),
+            "geoid_dir": self.session.geoid_dir().map(|d| d.display().to_string()),
+            "geoid_files": self.session.geoid_dir().map(survey_app::session::geoid_files),
+            "distances": super::ground_json(self.doc()),
         })))
     }
 }
@@ -292,6 +330,12 @@ fn coordinate_system(v: &Value) -> Result<CoordinateSystem, String> {
                 zone,
                 projection: zone.map(|z| TransverseMercator::utm(z, south, ellipsoid)),
                 geoid_separation: v.get("geoid_separation").and_then(Value::as_f64).unwrap_or(0.0),
+                geoid: v
+                    .get("geoid")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|g| !g.is_empty())
+                    .map(str::to_string),
             })
         }
         "projected" | "" => Err("coordinate_system: give a name (e.g. \"MGA2020 zone 50\") or a zone".into()),

@@ -1,86 +1,39 @@
 //! Stake-out sheet: from an instrument station and backsight, the horizontal
 //! angle and distance to each point to be set out.
 
-use std::fmt::Write as _;
-
 use egui::RichText;
 use egui_cad::{CadTheme, fonts};
-use survey_core::cogo::inverse;
-use survey_core::{Angle, Bearing, Conventions};
-use survey_model::{Document, Entity, EntityId, SurveyPoint};
+use survey_model::{Document, EntityId};
+
+use crate::compute::setout::{Setout, setout};
 
 #[derive(Default)]
 pub struct StakeoutWindow {
     pub open: bool,
     station: String,
     backsight: String,
-}
-
-struct Row {
-    name: String,
-    angle: Option<Angle>,
-    bearing: Option<Bearing>,
-    distance: f64,
-    dz: Option<f64>,
-    description: String,
+    hi: String,
+    ht: String,
 }
 
 impl StakeoutWindow {
-    fn rows(&self, doc: &Document, targets: &[EntityId]) -> Result<(String, Vec<Row>), String> {
+    fn compute(&self, doc: &Document, targets: &[EntityId]) -> Result<Setout, String> {
         let conv = doc.conventions();
-        let station = doc
-            .find_point_by_name(self.station.trim())
-            .map(|(_, p)| p)
-            .ok_or_else(|| "Enter the instrument station (a point name).".to_string())?;
-        let bs = self.backsight.trim();
-        let backsight: Option<Bearing> = if bs.is_empty() {
-            None
-        } else if let Some((_, p)) = doc.find_point_by_name(bs) {
-            let d = p.position - station.position;
-            Some(Bearing::from_delta(d.x, d.y).ok_or("The backsight is at the station")?)
-        } else {
-            Some(
-                conv.parse_bearing(bs)
-                    .map_err(|e| format!("Backsight: not a point or bearing ({e})"))?,
-            )
+        let height = |text: &str, what: &str| {
+            if text.trim().is_empty() {
+                Ok(0.0)
+            } else {
+                conv.parse_length(text).map_err(|e| format!("{what}: {e}"))
+            }
         };
-        let points: Vec<&SurveyPoint> = targets
-            .iter()
-            .filter_map(|id| match doc.entity(*id) {
-                Some(Entity::Point(p)) if p.name != station.name => Some(p),
-                _ => None,
-            })
-            .collect();
-        if points.is_empty() {
-            return Err("Select the points to set out.".into());
-        }
-        let rows = points
-            .into_iter()
-            .map(|p| {
-                let inv = inverse(station.position, p.position);
-                Row {
-                    name: p.name.clone(),
-                    angle: match (inv.bearing, backsight) {
-                        (Some(b), Some(bs)) => Some((b.angle() - bs.angle()).normalized()),
-                        _ => None,
-                    },
-                    bearing: inv.bearing,
-                    distance: inv.horizontal,
-                    dz: (station.height_known && p.height_known).then_some(inv.delta.z),
-                    description: p.description.clone(),
-                }
-            })
-            .collect();
-        let header = match backsight {
-            Some(b) => format!(
-                "Station {}  backsight {} ({})",
-                station.name,
-                bs,
-                conv.format_bearing(b)
-            ),
-            None => format!("Station {}  (no backsight: bearings only)", station.name),
-        };
-        Ok((header, rows))
+        setout(
+            doc,
+            &self.station,
+            &self.backsight,
+            targets,
+            height(&self.hi, "Instrument height")?,
+            height(&self.ht, "Target height")?,
+        )
     }
 
     /// Returns a (title, text) report when one is requested.
@@ -121,6 +74,18 @@ impl StakeoutWindow {
                                 .font(fonts::mono(12.0)),
                         );
                         ui.end_row();
+                        ui.label("Instrument / target height");
+                        ui.horizontal(|ui| {
+                            for (text, hint) in [(&mut self.hi, "HI"), (&mut self.ht, "HT")] {
+                                ui.add_sized(
+                                    [64.0, 22.0],
+                                    egui::TextEdit::singleline(text)
+                                        .hint_text(hint)
+                                        .font(fonts::mono(12.0)),
+                                );
+                            }
+                        });
+                        ui.end_row();
                     });
                 ui.label(
                     RichText::new(
@@ -130,19 +95,22 @@ impl StakeoutWindow {
                     .color(theme.text_secondary),
                 );
                 ui.separator();
-                match self.rows(doc, targets) {
-                    Ok((header, rows)) => {
+                match self.compute(doc, targets) {
+                    Ok(set) => {
+                        ui.label(RichText::new(set.header(&conv)).small());
                         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                             egui::Grid::new("stakeout")
-                                .num_columns(5)
+                                .num_columns(7)
                                 .spacing([14.0, 3.0])
                                 .striped(true)
                                 .show(ui, |ui| {
-                                    for h in ["Point", "Angle", "Bearing", "Distance", "dZ"] {
+                                    for h in
+                                        ["Point", "Angle", "Bearing", "Distance", "dZ", "Slope", "Zenith"]
+                                    {
                                         ui.label(RichText::new(h).small().color(theme.text_secondary));
                                     }
                                     ui.end_row();
-                                    for r in &rows {
+                                    for r in &set.rows {
                                         ui.label(&r.name);
                                         let mono = |t: String| RichText::new(t).font(fonts::mono(12.0));
                                         ui.label(mono(
@@ -155,12 +123,18 @@ impl StakeoutWindow {
                                         ui.label(mono(
                                             r.dz.map(|d| conv.format_length(d)).unwrap_or_default(),
                                         ));
+                                        ui.label(mono(
+                                            r.slope.map(|d| conv.format_length(d)).unwrap_or_default(),
+                                        ));
+                                        ui.label(mono(
+                                            r.zenith.map(|z| conv.format_angle(z)).unwrap_or_default(),
+                                        ));
                                         ui.end_row();
                                     }
                                 });
                         });
                         if ui.button("Add to reports").clicked() {
-                            report = Some(("Stake-out".to_string(), text(&conv, &header, &rows)));
+                            report = Some(("Stake-out".to_string(), set.report(&conv)));
                         }
                     }
                     Err(e) => {
@@ -171,29 +145,4 @@ impl StakeoutWindow {
         self.open = open;
         report
     }
-}
-
-fn text(conv: &Conventions, header: &str, rows: &[Row]) -> String {
-    let mut s = String::new();
-    let _ = writeln!(s, "STAKE-OUT");
-    let _ = writeln!(s, "{header}");
-    let _ = writeln!(s);
-    let _ = writeln!(
-        s,
-        "{:<10} {:>14} {:>16} {:>12} {:>9}  Description",
-        "Point", "Angle", "Bearing", "Distance", "dZ"
-    );
-    for r in rows {
-        let _ = writeln!(
-            s,
-            "{:<10} {:>14} {:>16} {:>12} {:>9}  {}",
-            r.name,
-            r.angle.map(|a| conv.format_angle(a)).unwrap_or_default(),
-            r.bearing.map(|b| conv.format_bearing(b)).unwrap_or_default(),
-            conv.format_length(r.distance),
-            r.dz.map(|d| conv.format_length(d)).unwrap_or_default(),
-            r.description
-        );
-    }
-    s
 }

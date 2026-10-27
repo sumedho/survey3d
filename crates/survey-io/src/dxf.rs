@@ -118,6 +118,9 @@ pub struct DxfDrawing {
     pub blocks: Vec<DxfBlock>,
     /// Line types beyond `CONTINUOUS` (written only).
     pub linetypes: Vec<DxfLinetype>,
+    /// Comment lines (group 999) at the top of the file, such as the
+    /// coordinate system (written only).
+    pub comments: Vec<String>,
 }
 
 // ====================================================================== reading
@@ -428,6 +431,12 @@ pub fn write_dxf(drawing: &DxfDrawing) -> String {
     let mut pair = |code: i32, value: &dyn std::fmt::Display| {
         let _ = writeln!(out, "{code:>3}\n{value}");
     };
+    for c in &drawing.comments {
+        // One line per comment group.
+        for line in c.lines() {
+            pair(999, &line);
+        }
+    }
     pair(0, &"SECTION");
     pair(2, &"HEADER");
     pair(9, &"$ACADVER");

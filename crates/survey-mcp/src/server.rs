@@ -102,8 +102,11 @@ impl Server {
             Some(path) => open(path, &settings, options.read_only)?,
             None => Project::new(&settings).map_err(|e| e.to_string())?,
         };
+        let mut session = Session::new(project);
+        // Geoid models are found in this folder (set_project geoid_dir changes it).
+        session.set_geoid_dir(std::env::var_os("SURVEY3D_GEOID_DIR").map(PathBuf::from));
         Ok(Self {
-            session: Session::new(project),
+            session,
             settings,
             read_only: options.read_only,
         })
@@ -146,6 +149,9 @@ impl Server {
             "resection" => self.resection(args),
             "sections" => self.sections(args),
             "subdivide" => self.subdivide(args),
+            "convert_coordinates" => self.convert_coordinates(args),
+            "convert_heights" => self.convert_heights(args),
+            "setout" => self.setout(args),
             "edit_entities" => self.edit_entities(args),
             "create_surface" => self.create_surface(args),
             "set_surface" => self.set_surface(args),
@@ -226,6 +232,8 @@ impl Server {
             "name": meta.name,
             "description": meta.description,
             "coordinate_system": meta.coord_system.display_name(),
+            "geoid": self.session.geoid_status(),
+            "distances": ground_json(doc),
             "conventions": doc.conventions(),
             "conventions_presets": Conventions::presets().into_iter().map(|c| c.name).collect::<Vec<_>>(),
             "counts": { "points": points, "polylines": polylines, "texts": texts, "dimensions": dimensions },
@@ -774,8 +782,17 @@ impl Server {
             other => return Err(format!("format: unknown format '{other}'")),
         };
         std::fs::write(&path, &bytes).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+        let mut note = String::new();
+        // DXF carries no coordinate system GIS readers understand: a .prj beside it does.
+        if str_arg(args, "format") == Some("dxf")
+            && let Some(wkt) = self.doc().meta().coord_system.wkt()
+        {
+            let prj = path.with_extension("prj");
+            std::fs::write(&prj, wkt).map_err(|e| format!("Could not write {}: {e}", prj.display()))?;
+            note = format!(", and {} with the coordinate system", prj.display());
+        }
         Ok(ToolResult::text(format!(
-            "Wrote {} ({} bytes)",
+            "Wrote {} ({} bytes){note}",
             path.display(),
             bytes.len()
         )))
@@ -988,6 +1005,18 @@ fn layer_name(doc: &Document, id: LayerId) -> String {
     doc.layer(id).map(|l| l.name.clone()).unwrap_or_default()
 }
 
+/// The project's grid or ground setting.
+pub(super) fn ground_json(doc: &survey_model::Document) -> Value {
+    let g = doc.meta().ground;
+    json!({
+        "shown": g.distances.label(),
+        "ground_factor": match g.factor {
+            survey_model::GroundFactor::Projection => json!("projection"),
+            survey_model::GroundFactor::Fixed(k) => json!(k),
+        },
+    })
+}
+
 fn layer_row(l: &survey_model::Layer) -> Value {
     json!({
         "id": l.id.0,
@@ -1195,6 +1224,7 @@ mod cogo;
 mod compute;
 mod drawing;
 mod field;
+mod geodesy;
 mod settings;
 mod surfaces;
 #[cfg(test)]

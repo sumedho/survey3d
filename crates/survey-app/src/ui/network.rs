@@ -235,7 +235,7 @@ impl NetworkWindow {
                                 .collect();
                             let factor = (!pts.is_empty())
                                 .then(|| pts.iter().sum::<DVec3>() / pts.len() as f64)
-                                .and_then(|c| doc.meta().coord_system.combined_factor(c.x, c.y, c.z));
+                                .and_then(|c| doc.combined_factor_at(c));
                             if ui
                                 .add_enabled(factor.is_some(), egui::Button::new("From project"))
                                 .on_hover_text("Combined factor at the centre of the known stations")

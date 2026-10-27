@@ -356,7 +356,7 @@ impl Session {
             self.log.warn("There are no surfaces to export");
             return None;
         }
-        let xml = survey_io::landxml::write_surfaces(&doc.meta().name, &chosen);
+        let xml = survey_io::landxml::write_surfaces(&doc.meta().name, crs_info(doc).as_ref(), &chosen);
         let stem = if chosen.len() == 1 {
             chosen[0].0.to_string()
         } else {
@@ -391,7 +391,11 @@ impl Session {
                 bulges: &l.bulges,
             })
             .collect();
-        Some(survey_io::landxml::write_parcels(&doc.meta().name, &parcels))
+        Some(survey_io::landxml::write_parcels(
+            &doc.meta().name,
+            crs_info(doc).as_ref(),
+            &parcels,
+        ))
     }
 
     /// Every point as delimited text laid out as `layout`.
@@ -612,4 +616,19 @@ impl Session {
         let text = survey_io::dxf::write_dxf(&dxf_export(&self.project.doc, &opts));
         (text, opts)
     }
+}
+
+/// The project's coordinate system for LandXML, unless it is unspecified.
+fn crs_info(doc: &survey_model::Document) -> Option<survey_io::landxml::CrsInfo> {
+    let crs = &doc.meta().coord_system;
+    if matches!(crs, survey_model::CoordinateSystem::Unspecified) {
+        return None;
+    }
+    Some(survey_io::landxml::CrsInfo {
+        name: crs.display_name(),
+        epsg: crs.epsg(),
+        wkt: crs.wkt(),
+        ellipsoid: crs.projection().map(|tm| tm.ellipsoid.name.to_string()),
+        geoid: crs.geoid_model().map(str::to_string),
+    })
 }

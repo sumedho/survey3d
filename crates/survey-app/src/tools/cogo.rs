@@ -99,7 +99,10 @@ impl RadiateTool {
             }
         };
         let bearing = Bearing::new(Angle::from_radians(bs.radians() + angle.radians()).normalized());
-        let plan = station.position.truncate() + bearing.unit_vector() * dist;
+        // A ground distance goes onto the grid × the line's combined factor.
+        let rough = station.position + (bearing.unit_vector() * dist).extend(0.0);
+        let k = ctx.doc.typed_to_grid(station.position, Some(rough));
+        let plan = station.position.truncate() + bearing.unit_vector() * dist * k;
         let height_known = station.height_known && dz.is_some();
         let z = station.position.z + dz.unwrap_or(0.0);
         let name = ctx.doc.next_point_name();

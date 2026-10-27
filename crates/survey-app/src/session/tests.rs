@@ -700,3 +700,140 @@ fn apparent_intersection_trim_and_extend() {
     };
     assert_eq!(l.vertices.last().map(|v| v.x), Some(20.0), "{:?}", log_text(&s));
 }
+
+/// A VDatum GTX geoid grid of constant `n` around Flinders Peak (MGA zone 55).
+fn flat_geoid(dir: &std::path::Path, name: &str, n: f32) {
+    let mut gtx = Vec::new();
+    for v in [-39.0f64, 143.0, 1.0, 1.0] {
+        gtx.extend_from_slice(&v.to_be_bytes());
+    }
+    gtx.extend_from_slice(&3i32.to_be_bytes());
+    gtx.extend_from_slice(&3i32.to_be_bytes());
+    for _ in 0..9 {
+        gtx.extend_from_slice(&n.to_be_bytes());
+    }
+    std::fs::write(dir.join(name), gtx).expect("write geoid");
+}
+
+fn set_mga55(s: &mut Session, geoid: Option<&str>, ground: survey_model::GroundSettings) {
+    use survey_core::projection::{Ellipsoid, TransverseMercator};
+    let mut meta = s.project.doc.meta().clone();
+    meta.coord_system = survey_model::CoordinateSystem::Projected {
+        name: "MGA2020 zone 55".into(),
+        epsg: Some(7855),
+        zone: Some(55),
+        projection: Some(TransverseMercator::utm(55, true, Ellipsoid::GRS80)),
+        geoid_separation: 0.0,
+        geoid: geoid.map(str::to_string),
+    };
+    meta.ground = ground;
+    s.execute(Box::new(survey_model::ChangeSet::new("crs").set_meta(meta)));
+}
+
+/// The project's geoid model is read from the geoid folder by name, used for
+/// the separation at each point, and converts GNSS heights.
+#[test]
+fn geoid_models_from_the_geoid_folder() {
+    let dir = std::env::temp_dir().join(format!("survey3d-geoid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    flat_geoid(&dir, "flat.gtx", 5.25);
+    std::fs::write(dir.join("broken.gtx"), b"not a grid").expect("write");
+    assert_eq!(geoid_files(&dir), ["broken.gtx", "flat.gtx"]);
+
+    let mut s = session();
+    set_mga55(&mut s, Some("flat.gtx"), Default::default());
+    // No folder yet: not loaded, and the status says why.
+    assert!(s.project.doc.geoid().is_none());
+    assert!(
+        s.geoid_status().contains("set the geoid folder"),
+        "{}",
+        s.geoid_status()
+    );
+    s.set_geoid_dir(Some(dir.clone()));
+    assert_eq!(s.project.doc.geoid().map(|g| g.name.as_str()), Some("flat.gtx"));
+    assert!(
+        log_text(&s)
+            .iter()
+            .any(|l| l.contains("Geoid model flat.gtx loaded"))
+    );
+
+    // A GNSS point at Flinders Peak, 105.25 m above the ellipsoid.
+    for line in ["pt", "273741.297,5796489.777,105.25", ""] {
+        s.run(line);
+    }
+    let id = s.project.doc.find_point_by_name("1").expect("point").0;
+    s.project.selection.set([id]);
+    s.run("geoid ortho");
+    let p = s.project.doc.find_point_by_name("1").expect("point").1;
+    assert!((p.position.z - 100.0).abs() < 1e-6, "{}", p.position.z);
+    s.run("geoid ellip");
+    assert!((s.project.doc.find_point_by_name("1").expect("value").1.position.z - 105.25).abs() < 1e-6);
+    s.undo();
+    s.undo();
+    assert!((s.project.doc.find_point_by_name("1").expect("value").1.position.z - 105.25).abs() < 1e-6);
+
+    // A model that does not read is reported once and the constant is used.
+    set_mga55(&mut s, Some("broken.gtx"), Default::default());
+    assert!(s.project.doc.geoid().is_none());
+    assert!(
+        log_text(&s)
+            .iter()
+            .any(|l| l.contains("broken.gtx could not be read"))
+    );
+    assert_eq!(s.project.doc.separation_at(273_741.297, 5_796_489.777).n, 0.0);
+    // Undoing the change brings the loaded model back without reading it again.
+    s.undo();
+    assert!(s.project.doc.geoid().is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// With ground distances, bd and radiate take typed distances as ground and
+/// inverse and list show ground; coordinates stay on the grid.
+#[test]
+fn ground_distances_in_bd_inverse_and_listings() {
+    let mut s = session();
+    set_mga55(
+        &mut s,
+        None,
+        survey_model::GroundSettings {
+            distances: survey_model::DistanceKind::Ground,
+            factor: survey_model::GroundFactor::Fixed(0.9996),
+        },
+    );
+    for line in ["bd", "1000,1000", "90 100", "180 50", ""] {
+        s.run(line);
+    }
+    // 100 m and 50 m at ground are 99.96 m and 49.98 m on the grid.
+    assert!(has_point_at(&s, 1099.96, 1000.0), "{:?}", point_positions(&s));
+    assert!(has_point_at(&s, 1099.96, 950.02), "{:?}", point_positions(&s));
+    for line in ["inv", "1000,1000", "1099.96,1000", ""] {
+        s.run(line);
+    }
+    assert!(
+        log_text(&s)
+            .iter()
+            .any(|l| l.contains("Ground 100.000") && l.contains("grid 99.960")),
+        "{:?}",
+        log_text(&s)
+    );
+    for line in ["rad", "1000,1000", "0", "90 10"] {
+        s.run(line);
+    }
+    assert!(has_point_at(&s, 1009.996, 1000.0), "{:?}", point_positions(&s));
+    // The bd linework lists its legs at ground.
+    let line = s
+        .project
+        .doc
+        .entities()
+        .find_map(|(_, e)| match e {
+            Entity::Polyline(l) => Some(l.clone()),
+            _ => None,
+        })
+        .expect("bd linework");
+    let text = crate::listing::polyline_listing(&line, &s.project.doc);
+    assert!(
+        text.contains("100.000") && text.contains("150.000 m (ground)"),
+        "{text}"
+    );
+}

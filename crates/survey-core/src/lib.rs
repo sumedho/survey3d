@@ -17,6 +17,7 @@ pub mod contour;
 pub mod conventions;
 pub mod error;
 pub mod field_to_finish;
+pub mod geoid;
 pub mod geom;
 pub mod network;
 pub mod offset;

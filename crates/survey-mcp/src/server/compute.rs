@@ -241,9 +241,7 @@ impl Server {
                     .collect();
                 let centre = known.iter().sum::<DVec3>() / known.len().max(1) as f64;
                 options.scale_factor = doc
-                    .meta()
-                    .coord_system
-                    .combined_factor(centre.x, centre.y, centre.z)
+                    .combined_factor_at(centre)
                     .ok_or("scale_factor 'project' needs a projected coordinate system (set_project)")?;
             }
             Some(v) => {

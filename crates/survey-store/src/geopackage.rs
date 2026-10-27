@@ -3,7 +3,6 @@
 
 use glam::DVec3;
 use rusqlite::{Connection, params};
-use survey_core::projection::TransverseMercator;
 use survey_model::{CoordinateSystem, Document, Entity};
 
 use crate::Result;
@@ -11,34 +10,12 @@ use crate::Result;
 /// Plan chord tolerance for arcs (metres).
 const ARC_TOLERANCE: f64 = 0.005;
 
-/// WKT (OGC 1) for a Transverse Mercator projection.
-fn tm_wkt(name: &str, tm: &TransverseMercator) -> String {
-    let e = tm.ellipsoid;
-    format!(
-        "PROJCS[\"{name}\",GEOGCS[\"{0}\",DATUM[\"{0}\",SPHEROID[\"{0}\",{1},{2}]],PRIMEM[\"Greenwich\",0],\
-         UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],\
-         PARAMETER[\"latitude_of_origin\",{3}],PARAMETER[\"central_meridian\",{4}],\
-         PARAMETER[\"scale_factor\",{5}],PARAMETER[\"false_easting\",{6}],PARAMETER[\"false_northing\",{7}],\
-         UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
-        e.name,
-        e.a,
-        e.inv_f,
-        tm.latitude_of_origin,
-        tm.central_meridian,
-        tm.scale,
-        tm.false_easting,
-        tm.false_northing
-    )
-}
-
 /// The spatial reference row for the project: (srs_id, name, organisation, code, definition).
 fn project_srs(cs: &CoordinateSystem) -> (i32, String, String, i32, String) {
     match cs {
-        CoordinateSystem::Projected { epsg, projection, .. } => {
+        CoordinateSystem::Projected { epsg, .. } => {
             let name = cs.display_name();
-            let definition = projection
-                .as_ref()
-                .map_or_else(|| "undefined".to_string(), |tm| tm_wkt(&name, tm));
+            let definition = cs.wkt().unwrap_or_else(|| "undefined".to_string());
             match epsg {
                 Some(code) => (*code as i32, name, "EPSG".into(), *code as i32, definition),
                 None => (100_000, name, "NONE".into(), 100_000, definition),
@@ -302,7 +279,7 @@ pub fn export_geopackage(doc: &Document) -> Result<(Vec<u8>, GpkgSummary)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use survey_core::projection::Ellipsoid;
+    use survey_core::projection::{Ellipsoid, TransverseMercator};
     use survey_model::{ChangeSet, Command, Polyline, SurveyPoint};
 
     #[test]
@@ -317,6 +294,7 @@ mod tests {
             zone: Some(56),
             projection: Some(TransverseMercator::utm(56, true, Ellipsoid::GRS80)),
             geoid_separation: 0.0,
+            geoid: None,
         };
         let square = Polyline {
             name: "Lot".into(),

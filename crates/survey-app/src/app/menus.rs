@@ -135,6 +135,7 @@ const SURVEY_MENU: &[MenuEntry] = &[
     Item("Reduce raw data", "reduce"),
     Item("Network adjustment…", "netadj"),
     Item("Projection calculator…", "projcalc"),
+    Item("Geoid separation at selection", "geoid"),
     Item("Site calibration…", "sitecal"),
     Separator,
     Item("Feature codes…", "codes"),
