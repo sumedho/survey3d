@@ -112,6 +112,9 @@ impl SurveyApp {
         if let Some(cmd) = self.settings_window.show(ctx, &mut self.settings, &self.session) {
             self.session.execute(cmd);
         }
+        if std::mem::take(&mut self.settings_window.retry_geoid) {
+            self.session.retry_geoid();
+        }
         self.audit_window.show(ctx, &self.session.project);
         match self.traverse_window.show(ctx, &self.session.project.doc) {
             Some(TraverseAction::Create(cmd, summary)) => self.session.apply_with_toast(cmd, summary),
@@ -171,6 +174,11 @@ impl SurveyApp {
             }
             Some(AlignmentsAction::Report(title, text)) => self.reports.add(title, text),
             Some(AlignmentsAction::SetOut(id, pts, code)) => self.session.create_setout(id, pts, code),
+            Some(AlignmentsAction::DrawCentreline(id)) => {
+                if let Err(e) = self.session.draw_centreline(id) {
+                    self.session.log.error(e);
+                }
+            }
             Some(AlignmentsAction::Select(_)) | None => {}
         }
         let targets: Vec<EntityId> = if self.stakeout_window.open {

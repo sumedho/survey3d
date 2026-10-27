@@ -16,6 +16,8 @@ pub struct AlignmentRecord {
     pub tick_interval: f64,
     /// Draw chainage ticks and labels.
     pub show_chainages: bool,
+    /// Clothoid spirals into and out of the centreline's arcs.
+    pub transitions: Vec<survey_core::alignment::Transition>,
 }
 
 impl Default for AlignmentRecord {
@@ -26,6 +28,7 @@ impl Default for AlignmentRecord {
             start_chainage: 0.0,
             tick_interval: 20.0,
             show_chainages: true,
+            transitions: Vec::new(),
         }
     }
 }

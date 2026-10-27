@@ -1,101 +1,14 @@
 //! Construction alignments: list, element tables and set-out.
 
-use std::fmt::Write as _;
-
 use egui::RichText;
 use egui_cad::chrome::{IconButton, switch_row};
 use egui_cad::{CadTheme, fonts, icons};
-use survey_core::Conventions;
-use survey_core::alignment::{ElementKind, SetoutPoint, elements, setout};
-use survey_model::{AlignmentRecord, Document, Entity, EntityId, Polyline, RecordId};
+use survey_core::alignment::{SetoutPoint, Transition};
+use survey_model::{AlignmentRecord, Document, EntityId, RecordId};
 
-/// An alignment's centreline, if it still exists.
-pub fn centreline<'a>(doc: &'a Document, a: &AlignmentRecord) -> Option<&'a Polyline> {
-    match doc.entity(a.polyline) {
-        Some(Entity::Polyline(l)) => Some(l),
-        _ => None,
-    }
-}
-
-/// The element table as text.
-pub fn element_report(doc: &Document, a: &AlignmentRecord) -> Option<String> {
-    let l = centreline(doc, a)?;
-    let conv = doc.conventions();
-    let len = |v: f64| conv.format_length(v);
-    let mut s = String::new();
-    let _ = writeln!(s, "ALIGNMENT  {}", a.name);
-    let _ = writeln!(s);
-    let _ = writeln!(
-        s,
-        "{:<9} {:>12} {:>12} {:>10}  {:<28} Start",
-        "Element", "Start ch", "End ch", "Length", "Bearing / radius"
-    );
-    for e in elements(&l.vertices, &l.bulges, l.closed, a.start_chainage) {
-        let (kind, detail) = match e.kind {
-            ElementKind::Straight { bearing } => ("Straight", conv.format_bearing(bearing)),
-            ElementKind::Arc {
-                radius, right, delta, ..
-            } => (
-                "Arc",
-                format!(
-                    "R {} {} Δ {}",
-                    len(radius),
-                    if right { "right" } else { "left" },
-                    conv.format_angle(survey_core::Angle::from_radians(delta))
-                ),
-            ),
-        };
-        let _ = writeln!(
-            s,
-            "{:<9} {:>12} {:>12} {:>10}  {:<28} {}",
-            kind,
-            conv.format_chainage(e.start_chainage),
-            conv.format_chainage(e.end_chainage()),
-            len(e.length),
-            detail,
-            conv.format_coord(e.start, false)
-        );
-    }
-    Some(s)
-}
-
-/// A set-out table as text.
-pub fn setout_report(conv: &Conventions, name: &str, pts: &[SetoutPoint], names: &[String]) -> String {
-    let mut s = String::new();
-    let _ = writeln!(s, "SET-OUT  {name}");
-    let (ea, nb) = conv.horizontal_labels();
-    let _ = writeln!(s);
-    let _ = writeln!(
-        s,
-        "{:<8} {:>12} {:>10}  {:>14} {:>14}  Note",
-        "Point", "Chainage", "Offset", ea, nb
-    );
-    for (p, n) in pts.iter().zip(names) {
-        let (a, b) = conv.horizontal_values(p.position);
-        let _ = writeln!(
-            s,
-            "{:<8} {:>12} {:>10}  {:>14} {:>14}  {}",
-            n,
-            conv.format_chainage(p.chainage),
-            conv.format_length(p.offset),
-            conv.format_length(a),
-            conv.format_length(b),
-            if p.key_point { "TP" } else { "" }
-        );
-    }
-    s
-}
-
-/// "L5.000" / "R5.000" / "CL" for an offset.
-pub fn offset_label(conv: &Conventions, offset: f64) -> String {
-    if offset.abs() < 1e-9 {
-        "CL".into()
-    } else if offset < 0.0 {
-        format!("L{}", conv.format_length(-offset))
-    } else {
-        format!("R{}", conv.format_length(offset))
-    }
-}
+pub use crate::compute::alignment::{
+    arcs, centreline, element_report, geometry, offset_label, setout_report,
+};
 
 pub enum AlignmentsAction {
     Create,
@@ -105,6 +18,8 @@ pub enum AlignmentsAction {
     Report(String, String),
     /// Create set-out points: alignment, points, code.
     SetOut(RecordId, Vec<SetoutPoint>, String),
+    /// Draw the centreline with its transitions as a new polyline.
+    DrawCentreline(RecordId),
 }
 
 pub struct AlignmentsWindow {
@@ -191,12 +106,12 @@ impl AlignmentsWindow {
                         if ui.add(egui::DragValue::new(&mut start).speed(1.0).max_decimals(3)).changed() {
                             action = Some(AlignmentsAction::Update(i, AlignmentRecord { start_chainage: start, ..a.record.clone() }));
                         }
-                        let length = centreline(doc, a)
-                            .map(|l| survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, l.closed).0);
-                        ui.label(
-                            RichText::new(length.map_or("missing".into(), |v| conv.format_length_with_unit(v)))
-                                .font(fonts::mono(12.0)),
-                        );
+                        let length = match geometry(doc, a) {
+                            None => "missing".to_string(),
+                            Some(Ok(g)) => conv.format_length_with_unit(g.length()),
+                            Some(Err(_)) => "transition error".to_string(),
+                        };
+                        ui.label(RichText::new(length).font(fonts::mono(12.0)));
                         let mut tick = a.tick_interval;
                         if ui
                             .add(egui::DragValue::new(&mut tick).range(0.1..=10_000.0).speed(0.5).suffix(" m"))
@@ -238,6 +153,58 @@ impl AlignmentsWindow {
                 };
                 ui.add_space(6.0);
                 ui.separator();
+                let curves = arcs(l);
+                if !curves.is_empty() {
+                    ui.label(RichText::new(format!("TRANSITIONS — {}", a.name)).font(fonts::medium(11.0)).color(theme.text_secondary));
+                    ui.label(
+                        RichText::new("Clothoid spirals into and out of each arc (0 for none). The arc keeps its radius and moves inwards; its tangent points move back along the straights.")
+                            .small()
+                            .color(theme.text_secondary),
+                    );
+                    egui::Grid::new("transitions").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
+                        for h in ["Arc", "Radius", "Spiral in", "Spiral out"] {
+                            ui.label(RichText::new(h).small().color(theme.text_secondary));
+                        }
+                        ui.end_row();
+                        for (seg, radius, right) in &curves {
+                            let current = a.transitions.iter().find(|t| t.segment == *seg).copied().unwrap_or(Transition {
+                                segment: *seg,
+                                ..Default::default()
+                            });
+                            ui.label(format!("Segment {} ({})", seg + 1, if *right { "right" } else { "left" }));
+                            ui.label(RichText::new(conv.format_length(*radius)).font(fonts::mono(12.0)));
+                            let mut t = current;
+                            let changed = ui.add(egui::DragValue::new(&mut t.entry).range(0.0..=10_000.0).speed(0.5).suffix(" m")).changed()
+                                | ui.add(egui::DragValue::new(&mut t.exit).range(0.0..=10_000.0).speed(0.5).suffix(" m")).changed();
+                            if changed {
+                                let mut record = a.record.clone();
+                                record.transitions.retain(|x| x.segment != *seg);
+                                if t.entry > 0.0 || t.exit > 0.0 {
+                                    record.transitions.push(t);
+                                    record.transitions.sort_by_key(|x| x.segment);
+                                }
+                                action = Some(AlignmentsAction::Update(i, record));
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    match geometry(doc, a) {
+                        Some(Err(e)) => {
+                            ui.label(RichText::new(e).color(theme.error));
+                        }
+                        Some(Ok(_))
+                            if !a.transitions.is_empty()
+                                && ui
+                                    .button("Draw centreline with transitions")
+                                    .on_hover_text("A new polyline following the spirals, for plans and DXF (the alignment keeps its own)")
+                                    .clicked() =>
+                        {
+                            action = Some(AlignmentsAction::DrawCentreline(i));
+                        }
+                        _ => {}
+                    }
+                    ui.separator();
+                }
                 ui.label(RichText::new(format!("SET OUT — {}", a.name)).font(fonts::medium(11.0)).color(theme.text_secondary));
                 ui.horizontal(|ui| {
                     ui.label("Every");
@@ -253,7 +220,7 @@ impl AlignmentsWindow {
                     ui.label("Code");
                     ui.add_sized([50.0, 22.0], egui::TextEdit::singleline(&mut self.code).font(fonts::mono(12.0)));
                 });
-                switch_row(ui, &mut self.key_points, "Include tangent points (element ends)");
+                switch_row(ui, &mut self.key_points, "Include tangent points (TP, TS, SC, CS, ST)");
                 let offsets: Result<Vec<f64>, String> = self
                     .offsets
                     .split([',', ' '])
@@ -263,7 +230,10 @@ impl AlignmentsWindow {
                     .collect();
                 match offsets {
                     Ok(offsets) if !offsets.is_empty() => {
-                        let pts = setout(&l.vertices, &l.bulges, l.closed, a.start_chainage, self.interval, &offsets, self.key_points);
+                        let Some(Ok(g)) = geometry(doc, a) else {
+                            return;
+                        };
+                        let pts = g.setout(self.interval, &offsets, self.key_points);
                         ui.label(RichText::new(format!("{} points", pts.len())).color(theme.text_secondary));
                         ui.horizontal(|ui| {
                             if ui.add_enabled(!pts.is_empty(), egui::Button::new("Create points")).clicked() {

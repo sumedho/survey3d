@@ -35,6 +35,8 @@ pub struct SettingsWindow {
     tolerances: Option<Tolerances>,
     /// Geoid files found in the geoid folder (rescanned when it changes).
     geoid_files: Option<(Option<std::path::PathBuf>, Vec<String>)>,
+    /// Rescan asked to read the project's geoid model again.
+    pub retry_geoid: bool,
 }
 
 impl SettingsWindow {
@@ -158,7 +160,13 @@ impl SettingsWindow {
                             .get_or_insert_with(|| doc.meta().coord_system.clone());
                         coord_system_editor(ui, draft, &files);
                         if matches!(draft, CoordinateSystem::Projected { .. }) {
-                            geoid_folder(ui, settings, &mut self.geoid_files, &session.geoid_status());
+                            geoid_folder(
+                                ui,
+                                settings,
+                                &mut self.geoid_files,
+                                &mut self.retry_geoid,
+                                &session.geoid_status(),
+                            );
                         }
                         let ground = self.ground.get_or_insert(doc.meta().ground);
                         ground_editor(ui, ground, draft.projection().is_some());
@@ -474,6 +482,7 @@ fn geoid_folder(
     ui: &mut egui::Ui,
     settings: &mut AppSettings,
     files: &mut Option<(Option<std::path::PathBuf>, Vec<String>)>,
+    retry: &mut bool,
     status: &str,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
@@ -492,13 +501,18 @@ fn geoid_folder(
         {
             settings.geoid_dir = Some(dir);
         }
-        if ui.small_button("Rescan").clicked() {
+        if ui
+            .small_button("Rescan")
+            .on_hover_text("Look for new files, and read the project's model again")
+            .clicked()
+        {
             *files = None;
+            *retry = true;
         }
     });
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (settings, files);
+        let _ = (settings, files, retry);
         ui.label(RichText::new("Geoid models are available in the desktop app.").small());
     }
     ui.label(RichText::new(status).small());

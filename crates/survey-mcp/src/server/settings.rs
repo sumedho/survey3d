@@ -213,15 +213,24 @@ impl Server {
             }
         }
         if let Some(dir) = args.get("geoid_dir") {
-            self.session.set_geoid_dir(
-                dir.as_str()
-                    .filter(|d| !d.trim().is_empty())
-                    .map(std::path::PathBuf::from),
-            );
+            let dir = dir
+                .as_str()
+                .filter(|d| !d.trim().is_empty())
+                .map(std::path::PathBuf::from);
+            if let Some(d) = &dir
+                && !d.is_dir()
+            {
+                return Err(format!("geoid_dir: {} is not a folder", d.display()));
+            }
+            self.session.set_geoid_dir(dir);
         }
         if &meta != self.doc().meta() {
             self.session
                 .execute(Box::new(ChangeSet::new("Project settings").set_meta(meta)));
+        }
+        // Naming the model or folder again reads it again (it may have just been downloaded).
+        if (args.get("geoid").is_some() || args.get("geoid_dir").is_some()) && self.doc().geoid().is_none() {
+            self.session.retry_geoid();
         }
         let meta = self.doc().meta();
         Ok(ToolResult::json(&json!({

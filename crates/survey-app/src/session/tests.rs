@@ -837,3 +837,40 @@ fn ground_distances_in_bd_inverse_and_listings() {
         "{text}"
     );
 }
+
+/// A building keyed by right-angle legs closes back on its first corner.
+#[test]
+fn building_by_right_angles() {
+    let mut s = session();
+    // First wall east 10 m; then 6 right (south), 4 right (west), 2 left
+    // (south), 6 right (west), 8 right (north): a closed L shape.
+    for line in ["bldg", "100,200,5", "110,200", "6", "4", "l 2", "6", "r 8", "c"] {
+        s.run(line);
+    }
+    let lines = polylines(&s);
+    assert_eq!(lines.len(), 1, "{:?}", log_text(&s));
+    let l = &lines[0];
+    assert!(l.closed && l.heights_known && l.vertices.len() == 6, "{l:?}");
+    assert!(l.vertices.iter().all(|v| v.z == 5.0));
+    assert!(
+        (l.vertices[5] - DVec3::new(100.0, 192.0, 5.0)).length() < 1e-9,
+        "{:?}",
+        l.vertices
+    );
+    let text = log_text(&s).join("\n");
+    // The L is 10 × 8 less the 4 × 2 notch.
+    assert!(
+        text.contains("misclose 0.000") && text.contains("area 72.000"),
+        "{text}"
+    );
+
+    // A taped error shows as a misclosure along the last wall.
+    for line in ["bldg", "0,0", "10,0", "5", "10", "5.02", "c"] {
+        s.run(line);
+    }
+    let text = log_text(&s).join("\n");
+    assert!(
+        text.contains("misclose 0.020 (along the last wall -0.020"),
+        "{text}"
+    );
+}

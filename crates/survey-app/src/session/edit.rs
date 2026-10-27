@@ -455,6 +455,40 @@ impl Session {
         self.log.result(format!("Alignment {name} created"));
     }
 
+    /// Draws an alignment's centreline, transitions and all, as a new
+    /// polyline (spirals as short chords within a millimetre).
+    pub fn draw_centreline(&mut self, alignment: RecordId) -> Result<String, String> {
+        let doc = &self.project.doc;
+        let a = doc
+            .record::<AlignmentRecord>(alignment)
+            .ok_or("No such alignment")?;
+        let line = crate::ui::alignments::centreline(doc, a).ok_or("The alignment's centreline has gone")?;
+        let g = crate::ui::alignments::geometry(doc, a).ok_or("The alignment's centreline has gone")??;
+        let vertices = g.tessellate(0.001);
+        let name = format!("{} CL", a.name);
+        let summary = format!(
+            "Drew {name}: {} with transitions, {} vertices",
+            doc.conventions().format_length_with_unit(g.length()),
+            vertices.len()
+        );
+        let polyline = survey_model::Polyline {
+            name: name.clone(),
+            vertices,
+            bulges: Vec::new(),
+            closed: false,
+            code: line.code.clone(),
+            layer: line.layer,
+            heights_known: line.heights_known,
+        };
+        self.apply(
+            Box::new(
+                ChangeSet::new(format!("Draw centreline {name}")).insert_entity(Entity::Polyline(polyline)),
+            ),
+            summary.clone(),
+        );
+        Ok(summary)
+    }
+
     /// Adds set-out points along an alignment, with their table as a report.
     pub fn create_setout(
         &mut self,
@@ -486,10 +520,15 @@ impl Session {
                 height_known: heights,
                 code: code.clone(),
                 description: format!(
-                    "{} Ch {} {}",
+                    "{} Ch {} {}{}",
                     a.name,
                     conv.format_chainage(p.chainage),
-                    crate::ui::alignments::offset_label(conv, p.offset)
+                    crate::ui::alignments::offset_label(conv, p.offset),
+                    if p.key.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}", p.key)
+                    }
                 ),
                 layer: doc.current_layer(),
             }));

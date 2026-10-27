@@ -419,11 +419,22 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "solve_curve",
-            "title": "Solve a circular curve",
-            "description": "Completes a circular curve from any two of its elements: radius, delta (central angle: degrees as a number, or text in the project's angle format), arc (length), chord, tangent, external, mid_ordinate. Lengths are in the project's units (numbers, or text with a unit suffix). Some pairs (radius and chord, for example) have two solutions, the minor and major arc; both are returned. Nothing is drawn. To draw a curved boundary leg, use bd with a curve line (see run_commands). The same is the 'curve' command (r=20 a=15.71).",
+            "title": "Solve a curve",
+            "description": "Completes a curve; nothing is drawn. Angles are degrees as numbers, or text in the project's angle format; lengths are in the project's units (numbers, or text with a unit suffix). type circular (default): any two of radius, delta (central angle), arc (length), chord, tangent, external, mid_ordinate; some pairs (radius and chord) give two solutions, the minor and major arc. type spiral: a circular curve with equal clothoid spirals each side — radius and spiral_length, and one of delta (total deflection), tangent (PI to TS) or total_length; returns θs, Δc, the arc and total lengths, Ts, Es, the shift p, k, the SC's x and y from the TS, the long and short tangents, the long chord and A. type compound: two arcs turning the same way — r1 and r2, and two of delta1, delta2, delta (total), t1 (PC to PI), t2 (PI to PT), at least one an angle. type reverse: two arcs turning opposite ways between parallel tangents — radius (both) or r1 and r2, and one of delta (each arc), offset (between the tangents) or along (PC to PT along them); or offset and along. Each result has a text report. To draw curved legs use bd (run_commands); spirals on a road centreline are set on its alignment (set_record transitions, then the alignment tool). The same is the 'curve' command (r=20 a=15.71; r=300 ls=60 d=40; compound r1=200 r2=100 d1=30 d2=20; reverse r=100 p=10).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "type": { "type": "string", "enum": ["circular", "spiral", "compound", "reverse"], "default": "circular" },
+                    "spiral_length": { "type": ["number", "string"] },
+                    "total_length": { "type": ["number", "string"] },
+                    "r1": { "type": ["number", "string"] },
+                    "r2": { "type": ["number", "string"] },
+                    "delta1": { "type": ["number", "string"] },
+                    "delta2": { "type": ["number", "string"] },
+                    "t1": { "type": ["number", "string"] },
+                    "t2": { "type": ["number", "string"] },
+                    "offset": { "type": ["number", "string"] },
+                    "along": { "type": ["number", "string"] },
                     "radius": { "type": ["number", "string"] },
                     "delta": { "type": ["number", "string"] },
                     "arc": { "type": ["number", "string"] },
@@ -434,6 +445,27 @@ pub fn definitions() -> Vec<Value> {
                 },
                 "additionalProperties": false
             }
+        }),
+        json!({
+            "name": "alignment",
+            "title": "Road alignment",
+            "description": "Works with an alignment (a centreline polyline with a start chainage: make one with select and run_commands 'mkalign'; alignment is its name or id, optional when there is one). Spiral transitions: set_record kind alignment with record.transitions [{segment, entry, exit}] — segment is the arc's polyline segment (from 0; the arc needs straights either side), entry/exit the clothoid lengths; the arc keeps its radius and moves inwards and its tangent points move back along the straights. action elements (default): the element table (straight, spiral_in, arc, spiral_out with bearing, radius, turn, A, θs, shift), key points (Start, TP, TS, SC, CS, ST, End) with coordinates, and the report. at: stations [[chainage, offset], …] (offset positive right, negative left) to coordinates and bearings; create: true adds points (code, default SO). station: points (names or [e, n]) to chainage and offset. setout: every interval (default 10) at offsets (default [0]) with key_points (default true); create: true adds the points and a set-out table report. draw_centreline: a new polyline following the transitions (for plans and DXF). Distances on the alignment are grid.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alignment": { "type": ["integer", "string"] },
+                    "action": { "type": "string", "enum": ["elements", "at", "station", "setout", "draw_centreline"], "default": "elements" },
+                    "stations": { "type": "array" },
+                    "points": { "type": "array" },
+                    "interval": { "type": ["number", "string"] },
+                    "offsets": { "type": "array" },
+                    "key_points": { "type": "boolean", "default": true },
+                    "code": { "type": "string" },
+                    "create": { "type": "boolean", "default": false }
+                },
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": false }
         }),
         json!({
             "name": "trim_extend",

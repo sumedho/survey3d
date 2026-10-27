@@ -97,6 +97,7 @@ const COGO_MENU: &[MenuEntry] = &[
     Separator,
     Item("Radiation", "radiate"),
     Item("Bearing & distance (traverse / lot)", "bd"),
+    Item("Building by right angles", "bldg"),
     Submenu(
         "Intersection",
         &[
@@ -109,7 +110,7 @@ const COGO_MENU: &[MenuEntry] = &[
     Item("Chainage & offset", "chainage"),
     Item("Average points", "average"),
     Separator,
-    Item("Curve solver", "curve"),
+    Item("Curve solver (spiral, compound, reverse)", "curve"),
     Item("COGO calculator…", "calc"),
 ];
 

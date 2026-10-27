@@ -1504,7 +1504,23 @@ fn coordinates_geoid_and_setout() {
     for _ in 0..9 {
         gtx.extend_from_slice(&5.0f32.to_be_bytes());
     }
+    // Naming the model before it is downloaded says why it is not loaded, and
+    // naming it again once it is there reads it.
+    let early = ok_json(
+        &mut s,
+        "set_project",
+        json!({ "coordinate_system": { "name": "MGA2020 zone 55" }, "geoid_dir": dir, "geoid": "flat.gtx" }),
+    );
+    assert!(
+        early["geoid"]
+            .as_str()
+            .expect("status")
+            .contains("could not be read"),
+        "{early}"
+    );
     std::fs::write(dir.join("flat.gtx"), gtx).expect("geoid");
+    let (text, error) = call(&mut s, "set_project", json!({ "geoid_dir": "/no/such/folder" }));
+    assert!(error && text.contains("is not a folder"), "{text}");
     let set = ok_json(
         &mut s,
         "set_project",
@@ -1638,4 +1654,193 @@ fn coordinates_geoid_and_setout() {
     );
     assert!(error && text.contains("orthometric"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn alignments_with_spirals_curves_and_buildings() {
+    let mut s = Server::new_for_tests();
+    // East 300 m, a 200 m radius turning left 60°, then 300 m on.
+    let (r, delta) = (200.0f64, 60f64.to_radians());
+    let centre = (300.0, r);
+    let ct = (
+        centre.0 + r * (delta - std::f64::consts::FRAC_PI_2).cos(),
+        centre.1 + r * (delta - std::f64::consts::FRAC_PI_2).sin(),
+    );
+    let end = (ct.0 + 300.0 * delta.cos(), ct.1 + 300.0 * delta.sin());
+    let line = ok_json(
+        &mut s,
+        "add_polyline",
+        json!({ "name": "MC01", "vertices": [[0, 0], [300, 0], [ct.0, ct.1], [end.0, end.1]], "bulges": [0, (delta / 4.0).tan(), 0] }),
+    );
+    let id = line["added"][0]["id"].as_i64().expect("id");
+    ok(
+        &mut s,
+        "select",
+        json!({ "kind": "polylines", "filter": { "ids": [id] } }),
+    );
+    ok(&mut s, "run_commands", json!({ "lines": ["mkalign"] }));
+    let rec = ok_json(&mut s, "query", json!({ "kind": "alignment" }));
+    let aid = rec["rows"][0]["id"].as_i64().expect("alignment id");
+    ok(
+        &mut s,
+        "set_record",
+        json!({ "kind": "alignment", "id": aid, "record": { "start_chainage": 1000.0, "transitions": [{ "segment": 1, "entry": 50.0, "exit": 50.0 }] } }),
+    );
+    let el = ok_json(&mut s, "alignment", json!({}));
+    let kinds: Vec<&str> = el["elements"]
+        .as_array()
+        .expect("elements")
+        .iter()
+        .map(|e| e["kind"].as_str().expect("kind"))
+        .collect();
+    assert_eq!(
+        kinds,
+        ["straight", "spiral_in", "arc", "spiral_out", "straight"],
+        "{el}"
+    );
+    let names: Vec<&str> = el["key_points"]
+        .as_array()
+        .expect("keys")
+        .iter()
+        .map(|k| k["name"].as_str().expect("name"))
+        .collect();
+    assert_eq!(names, ["Start", "TS", "SC", "CS", "ST", "End"]);
+    assert!(el["report"].as_str().expect("report").contains("Spiral"), "{el}");
+    // The PI is R·tan 30° on from the plain curve's tangent point (300, 0), and
+    // the TS is Ts = (R + p)·tan 30° + k back from it.
+    let sp = survey_core::spiral::Spiral::new(200.0, 50.0);
+    let tan30 = 30f64.to_radians().tan();
+    let want = 300.0 + 200.0 * tan30 - ((200.0 + sp.p) * tan30 + sp.k);
+    let ts_e = el["key_points"][1]["e"].as_f64().expect("e");
+    assert!((ts_e - want).abs() < 1e-3, "{ts_e} vs {want}");
+
+    // A point 5 m left on the entry spiral, and back again.
+    let ch = el["elements"][1]["start_chainage"].as_f64().expect("ch") + 25.0;
+    let at = ok_json(
+        &mut s,
+        "alignment",
+        json!({ "action": "at", "stations": [[ch, -5.0]] }),
+    );
+    let p = &at["positions"][0];
+    let back = ok_json(
+        &mut s,
+        "alignment",
+        json!({ "action": "station", "points": [[p["e"], p["n"]]] }),
+    );
+    let st = &back["stations"][0];
+    assert!(
+        (st["chainage"].as_f64().expect("ch") - ch).abs() < 1e-3
+            && (st["offset"].as_f64().expect("off") + 5.0).abs() < 1e-3,
+        "{back}"
+    );
+    // Points made from chainages keep the centreline's heights (none here).
+    let made = ok_json(
+        &mut s,
+        "alignment",
+        json!({ "action": "at", "stations": [[ch, 0]], "create": true }),
+    );
+    assert_eq!(made["created"][0]["z"], Value::Null, "{made}");
+    // A point before the start is reported as beyond it.
+    let off = ok_json(
+        &mut s,
+        "alignment",
+        json!({ "action": "station", "points": [[-10, 3]] }),
+    );
+    assert_eq!(off["stations"][0]["beyond"], "start", "{off}");
+    assert!(
+        (off["stations"][0]["distance_beyond"].as_f64().expect("gap") - 10.0).abs() < 1e-3,
+        "{off}"
+    );
+    // Key points are named in the set-out.
+    let list = ok_json(&mut s, "alignment", json!({ "action": "setout", "interval": 0 }));
+    let keys: Vec<&str> = list["points"]
+        .as_array()
+        .expect("points")
+        .iter()
+        .filter_map(|p| p["key"].as_str())
+        .collect();
+    assert_eq!(keys, ["Start", "TS", "SC", "CS", "ST", "End"], "{list}");
+    // Set-out every 50 m on the centreline, and the centreline drawn with its spirals.
+    let so = ok_json(
+        &mut s,
+        "alignment",
+        json!({ "action": "setout", "interval": 50, "create": true }),
+    );
+    assert!(so["created"].as_array().expect("created").len() > 10, "{so}");
+    let cl = ok_json(&mut s, "alignment", json!({ "action": "draw_centreline" }));
+    assert_eq!(cl["created"][0]["name"], "MC01 CL");
+    assert!(cl["created"][0].get("vertices").is_none(), "only a summary: {cl}");
+    // A transition that does not fit is explained.
+    ok(
+        &mut s,
+        "set_record",
+        json!({ "kind": "alignment", "id": aid, "record": { "transitions": [{ "segment": 1, "entry": 300.0, "exit": 300.0 }] } }),
+    );
+    let (text, error) = call(&mut s, "alignment", json!({}));
+    assert!(
+        error && text.contains("Transition on segment 1 (the polyline's segment 2"),
+        "{text}"
+    );
+
+    // Curve types.
+    let c = ok_json(
+        &mut s,
+        "solve_curve",
+        json!({ "type": "spiral", "radius": 300, "spiral_length": 60, "delta": 40 }),
+    );
+    assert!(
+        (c["theta_s"]["degrees"].as_f64().expect("θs") - 0.1f64.to_degrees()).abs() < 1e-6,
+        "{c}"
+    );
+    let c = ok_json(
+        &mut s,
+        "solve_curve",
+        json!({ "type": "compound", "r1": 200, "r2": 100, "delta1": 30, "delta2": 20 }),
+    );
+    assert!(
+        (c["solutions"][0]["delta"]["degrees"].as_f64().expect("Δ") - 50.0).abs() < 1e-9,
+        "{c}"
+    );
+    let c = ok_json(
+        &mut s,
+        "solve_curve",
+        json!({ "type": "reverse", "radius": 100, "offset": 10 }),
+    );
+    assert!((c["offset"].as_f64().expect("p") - 10.0).abs() < 1e-9, "{c}");
+    let (text, error) = call(
+        &mut s,
+        "solve_curve",
+        json!({ "type": "compound", "r1": 200, "t1": 30, "t2": 40 }),
+    );
+    assert!(error, "{text}");
+    let (text, error) = call(
+        &mut s,
+        "solve_curve",
+        json!({ "type": "spiral", "radius": 100, "spiral_length": 80, "delta": 30 }),
+    );
+    assert!(error && text.contains("The spirals turn 45.8366°"), "{text}");
+
+    // A building from taped walls.
+    let out = ok(
+        &mut s,
+        "run_commands",
+        json!({ "lines": ["bldg", "500,500", "512,500", "8", "12", "8", "c"] }),
+    );
+    assert!(
+        out.contains("Building closed: 4 corners, misclose 0.000") && out.contains("area 96.000"),
+        "{out}"
+    );
+    // An outline that stops short is closed with a warning; one with no area is refused.
+    let out = ok(
+        &mut s,
+        "run_commands",
+        json!({ "lines": ["bldg", "600,500", "610,500", "5", "c"] }),
+    );
+    assert!(out.contains("a closing side was added"), "{out}");
+    let out = ok(
+        &mut s,
+        "run_commands",
+        json!({ "lines": ["bldg", "700,500", "710,500", "s 3", "c", ""] }),
+    );
+    assert!(out.contains("enclose no area"), "{out}");
 }

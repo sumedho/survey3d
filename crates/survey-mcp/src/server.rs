@@ -152,6 +152,7 @@ impl Server {
             "convert_coordinates" => self.convert_coordinates(args),
             "convert_heights" => self.convert_heights(args),
             "setout" => self.setout(args),
+            "alignment" => self.alignment(args),
             "edit_entities" => self.edit_entities(args),
             "create_surface" => self.create_surface(args),
             "set_surface" => self.set_surface(args),
@@ -1219,6 +1220,7 @@ impl Filter {
     }
 }
 
+mod alignment;
 mod calibration;
 mod cogo;
 mod compute;

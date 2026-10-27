@@ -1,5 +1,6 @@
-//! COGO calculator: circular curve and triangle solutions from any sufficient
-//! subset of their elements. Pure calculation; nothing is added to the drawing.
+//! COGO calculator: circular curve (plain, with spirals, compound and
+//! reverse) and triangle solutions from any sufficient subset of their
+//! elements. Pure calculation; nothing is added to the drawing.
 
 use std::fmt::Write as _;
 
@@ -8,13 +9,23 @@ use egui_cad::chrome::segmented;
 use egui_cad::{CadTheme, fonts};
 use survey_core::solvers::{CurveInput, Triangle, TriangleInput, solve_curve, solve_triangle};
 
-use crate::curves::curve_text;
+use crate::curves::{CurveRequest, curve_text, solve_request};
+use survey_core::curve_sets::{CompoundInput, ReverseInput, SpiralCurveInput};
 use survey_core::{Angle, Conventions};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CalcTab {
     Curve,
     Triangle,
+}
+
+/// Which curve problem the curve tab solves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CurveKind {
+    Simple,
+    Spiral,
+    Compound,
+    Reverse,
 }
 
 pub struct CalculatorWindow {
@@ -25,6 +36,13 @@ pub struct CalculatorWindow {
     /// a, b, c, α, β, γ.
     triangle: [String; 6],
     solution: usize,
+    kind: CurveKind,
+    /// Radius, spiral length, Δ, tangent, total length.
+    spiral: [String; 5],
+    /// R1, R2, Δ1, Δ2, Δ, T1, T2.
+    compound: [String; 7],
+    /// Equal radius, R1, R2, Δ, offset, along.
+    reverse: [String; 6],
 }
 
 impl Default for CalculatorWindow {
@@ -35,6 +53,10 @@ impl Default for CalculatorWindow {
             curve: Default::default(),
             triangle: Default::default(),
             solution: 0,
+            kind: CurveKind::Simple,
+            spiral: Default::default(),
+            compound: Default::default(),
+            reverse: Default::default(),
         }
     }
 }
@@ -92,6 +114,9 @@ impl CalculatorWindow {
                     if ui.button("Clear").clicked() {
                         self.curve = Default::default();
                         self.triangle = Default::default();
+                        self.spiral = Default::default();
+                        self.compound = Default::default();
+                        self.reverse = Default::default();
                         self.solution = 0;
                     }
                 });
@@ -126,9 +151,12 @@ impl CalculatorWindow {
     fn pick_solution(&mut self, ui: &mut egui::Ui, theme: &CadTheme, count: usize) -> usize {
         if count > 1 {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Two solutions").color(theme.text_secondary));
+                ui.label(RichText::new(format!("{count} solutions")).color(theme.text_secondary));
                 self.solution = self.solution.min(count - 1);
-                segmented(ui, &mut self.solution, &[(0, "1"), (1, "2")]);
+                let labels: Vec<String> = (1..=count).map(|i| i.to_string()).collect();
+                let options: Vec<(usize, &str)> =
+                    labels.iter().enumerate().map(|(i, l)| (i, l.as_str())).collect();
+                segmented(ui, &mut self.solution, &options);
             });
         }
         self.solution.min(count - 1)
@@ -140,6 +168,22 @@ impl CalculatorWindow {
         theme: &CadTheme,
         conv: &Conventions,
     ) -> Option<(String, String)> {
+        if segmented(
+            ui,
+            &mut self.kind,
+            &[
+                (CurveKind::Simple, "Circular"),
+                (CurveKind::Spiral, "With spirals"),
+                (CurveKind::Compound, "Compound"),
+                (CurveKind::Reverse, "Reverse"),
+            ],
+        ) {
+            self.solution = 0;
+        }
+        ui.add_space(4.0);
+        if self.kind != CurveKind::Simple {
+            return self.curve_set_ui(ui, theme, conv);
+        }
         ui.label(
             RichText::new("Enter any two elements.")
                 .small()
@@ -169,6 +213,104 @@ impl CalculatorWindow {
             Ok(sol) => {
                 let c = sol[self.pick_solution(ui, theme, sol.len())];
                 let text = curve_text(conv, &c);
+                ui.label(RichText::new(&text).font(fonts::mono(12.0)));
+                if ui.button("Add to reports").clicked() {
+                    return Some(("Curve solution".into(), text));
+                }
+            }
+            Err(e) => {
+                ui.label(RichText::new(e).color(theme.text_secondary));
+            }
+        }
+        None
+    }
+
+    /// Spiral, compound and reverse curves.
+    fn curve_set_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &CadTheme,
+        conv: &Conventions,
+    ) -> Option<(String, String)> {
+        let (help, labels, angles, values): (&str, &[&str], &[usize], &mut [String]) = match self.kind {
+            CurveKind::Spiral => (
+                "Equal spirals each side: the radius and spiral length, and one of Δ, the tangent (PI to TS) or the total length.",
+                &[
+                    "Radius",
+                    "Spiral length Ls",
+                    "Delta (total)",
+                    "Tangent Ts",
+                    "Total length",
+                ],
+                &[2],
+                &mut self.spiral,
+            ),
+            CurveKind::Compound => (
+                "Two arcs turning the same way: both radii, and two of Δ1, Δ2, Δ, T1 (PC to PI) and T2 (PI to PT), one of them an angle.",
+                &[
+                    "Radius R1",
+                    "Radius R2",
+                    "Delta 1",
+                    "Delta 2",
+                    "Delta (total)",
+                    "T1 (PC–PI)",
+                    "T2 (PI–PT)",
+                ],
+                &[2, 3, 4],
+                &mut self.compound,
+            ),
+            _ => (
+                "Two arcs turning opposite ways between parallel tangents: the radius (or R1 and R2) and Δ, the offset or the distance along; or the offset and the distance along.",
+                &[
+                    "Radius (both)",
+                    "Radius R1",
+                    "Radius R2",
+                    "Delta (each)",
+                    "Offset",
+                    "Along",
+                ],
+                &[3],
+                &mut self.reverse,
+            ),
+        };
+        ui.label(RichText::new(help).small().color(theme.text_secondary));
+        Self::inputs(ui, "calc_curve_set", labels, values, "");
+        ui.separator();
+        let v: Result<Vec<Option<f64>>, String> = values
+            .iter()
+            .zip(labels)
+            .enumerate()
+            .map(|(i, (t, l))| parse(conv, l, t, angles.contains(&i)))
+            .collect();
+        let request = v.map(|v| match self.kind {
+            CurveKind::Spiral => CurveRequest::Spiral(SpiralCurveInput {
+                radius: v[0],
+                spiral_length: v[1],
+                delta: v[2],
+                tangent: v[3],
+                total_length: v[4],
+            }),
+            CurveKind::Compound => CurveRequest::Compound(CompoundInput {
+                r1: v[0],
+                r2: v[1],
+                delta1: v[2],
+                delta2: v[3],
+                delta: v[4],
+                t1: v[5],
+                t2: v[6],
+            }),
+            _ => CurveRequest::Reverse(ReverseInput {
+                radius: v[0],
+                r1: v[1],
+                r2: v[2],
+                delta: v[3],
+                offset: v[4],
+                along: v[5],
+            }),
+        });
+        match request.and_then(|r| solve_request(conv, r)) {
+            Ok(sol) => {
+                let text = sol[self.pick_solution(ui, theme, sol.len())].clone();
                 ui.label(RichText::new(&text).font(fonts::mono(12.0)));
                 if ui.button("Add to reports").clicked() {
                     return Some(("Curve solution".into(), text));

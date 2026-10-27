@@ -135,9 +135,18 @@ From a check of everyday COGO against Carlson and MicroSurvey (2026-10-27).
   current point, with `bs` setting a backsight for the first leg.
 - [x] **Point tools:** `renumber` (selection, shift or range, with clash checks; points from raw data are
   renamed through their shots), `raise` for heights, and `scale` by a factor or measured and true lengths.
-- [ ] **Spiral (clothoid) curves** in alignments and the curve solver, for road set-out.
-- [ ] **Compound and reverse curves** in the curve solver.
-- [ ] **Building dimensions by right-angle legs** for detail surveys.
+- [x] **Spiral (clothoid) curves** in alignments and the curve solver, for road set-out. Done: transitions on an
+  alignment's arcs (entry and exit lengths, unequal allowed) fit a spiral–arc–spiral between the straights
+  either side; the element table, TS/SC/CS/ST key points, set-out, chainage ticks and the chainage tool follow
+  it, and "Draw centreline with transitions" makes a polyline for plans and DXF. The curve solver solves a
+  curve with equal spirals from R, Ls and one of Δ, Ts or the total length. MCP: `alignment`,
+  `solve_curve type: spiral`.
+- [x] **Compound and reverse curves** in the curve solver. Done: compound from both radii and two of Δ1, Δ2,
+  Δ, T1, T2 (one an angle); reverse between parallel tangents from the radii and Δ, the offset or the
+  distance along (or the offset and distance). In the `curve` command, the calculator and `solve_curve`.
+- [x] **Building dimensions by right-angle legs** for detail surveys. Done: `bldg` — two corners along the
+  first wall, then taped lengths turning right, left or straight on; closes and reports the misclosure along
+  and square to the last wall.
 
 ## Agent coverage
 

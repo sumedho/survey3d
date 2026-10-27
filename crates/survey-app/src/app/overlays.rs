@@ -394,7 +394,15 @@ impl SurveyApp {
             if !doc.is_layer_visible(l.layer) {
                 continue;
             }
-            let (length, _, _) = survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, l.closed);
+            let Some(Ok(g)) = crate::ui::alignments::geometry(doc, a) else {
+                continue;
+            };
+            let length = g.length();
+            // With transitions the alignment leaves its polyline: show where it runs.
+            if !a.transitions.is_empty() {
+                let path: Vec<egui::Pos2> = g.tessellate(0.01).into_iter().filter_map(screen).collect();
+                painter.add(egui::Shape::line(path, egui::Stroke::new(1.5, theme.accent)));
+            }
             let step = a.tick_interval.max(0.01);
             // Pixels per tick decide how often to label.
             let px_per_m = 1.0 / cam.world_per_pixel().max(1e-9);
@@ -410,11 +418,7 @@ impl SurveyApp {
             ticks.push((a.start_chainage, true));
             ticks.push((a.start_chainage + length, true));
             for (ch, label) in ticks {
-                let along = ch - a.start_chainage;
-                let (Some(p), Some(q)) = (
-                    survey_core::cogo::point_at_station(&l.vertices, &l.bulges, l.closed, along, 0.0),
-                    survey_core::cogo::point_at_station(&l.vertices, &l.bulges, l.closed, along, 1.0),
-                ) else {
+                let (Some((p, _)), Some((q, _))) = (g.point_at(ch, 0.0), g.point_at(ch, 1.0)) else {
                     continue;
                 };
                 let (Some(sp), Some(sq)) = (screen(p), screen(q)) else {

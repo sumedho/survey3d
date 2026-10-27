@@ -61,6 +61,9 @@ pub struct BdTool {
     closed: Option<Closed>,
     /// Bearing from the start to its backsight, for angles on the first leg.
     backsight: Option<Bearing>,
+    /// Grid to shown (ground) scale of the line from the start to the
+    /// current point, for the prompt; `None` on the grid.
+    shown_scale: Option<f64>,
 }
 
 /// How a leg's direction is given.
@@ -425,6 +428,12 @@ impl BdTool {
             },
             conv.format_coord(position, height_known)
         ));
+        if let Some(start) = self.start {
+            self.shown_scale = ctx
+                .doc
+                .ground_distances()
+                .then(|| ctx.doc.shown_length(1.0, start.position, position));
+        }
         self.legs.push(Leg {
             name,
             position,
@@ -695,7 +704,8 @@ impl Tool for BdTool {
         let legs = self.traverse().count();
         let status = match self.current() {
             Some(cur) if legs > 0 => {
-                let back = (cur.position - start.position).truncate().length();
+                let back =
+                    (cur.position - start.position).truncate().length() * self.shown_scale.unwrap_or(1.0);
                 format!(
                     " [{legs} legs, {}; {} from start]",
                     conv.format_length(self.traverse_length()),

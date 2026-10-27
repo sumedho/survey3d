@@ -17,6 +17,12 @@ pub enum SolveError {
     AnglesTooLarge,
     #[error("No curve or triangle has these values")]
     NoSolution,
+    #[error("Give at least one angle (Δ, Δ1 or Δ2) with the tangents")]
+    NeedsAngle,
+    #[error(
+        "The spirals turn {spirals:.4}° (2θs) but the curve only {delta:.4}°: shorten them or increase the radius"
+    )]
+    SpiralsTooLong { spirals: f64, delta: f64 },
 }
 
 // ---------------------------------------------------------------- curves

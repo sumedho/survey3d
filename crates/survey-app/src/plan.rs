@@ -945,7 +945,10 @@ impl<'a> Builder<'a> {
             if !doc.is_layer_visible(l.layer) {
                 continue;
             }
-            let (length, _, _) = survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, l.closed);
+            let Some(Ok(g)) = crate::ui::alignments::geometry(doc, a) else {
+                continue;
+            };
+            let length = g.length();
             let step = a.tick_interval.max(0.01);
             // Label often enough that labels sit about 12 mm apart.
             let every = (12.0 / (step * self.t.k)).ceil().max(1.0) as i64;
@@ -960,11 +963,7 @@ impl<'a> Builder<'a> {
             ticks.push((a.start_chainage, true));
             ticks.push((a.start_chainage + length, true));
             for (ch, label) in ticks {
-                let along = ch - a.start_chainage;
-                let (Some(p), Some(q)) = (
-                    survey_core::cogo::point_at_station(&l.vertices, &l.bulges, l.closed, along, 0.0),
-                    survey_core::cogo::point_at_station(&l.vertices, &l.bulges, l.closed, along, 1.0),
-                ) else {
+                let (Some((p, _)), Some((q, _))) = (g.point_at(ch, 0.0), g.point_at(ch, 1.0)) else {
                     continue;
                 };
                 let sp = self.t.to_paper(p.truncate());

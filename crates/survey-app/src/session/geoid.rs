@@ -16,7 +16,8 @@ use super::points::{from_raw_data, some_names};
 #[derive(Default)]
 pub(super) struct GeoidState {
     loaded: Option<(PathBuf, Arc<GeoidModel>)>,
-    failed: Option<PathBuf>,
+    /// The file and why it could not be read.
+    failed: Option<(PathBuf, String)>,
 }
 
 pub const GEOID_HELP: &str = "geoid — the separation N at the selected points; geoid ortho — their heights from \
@@ -50,6 +51,14 @@ impl Session {
         }
     }
 
+    /// Tries again to load a geoid model that could not be read (after the
+    /// file was downloaded or replaced).
+    pub fn retry_geoid(&mut self) {
+        self.geoid.failed = None;
+        self.geoid.loaded = None;
+        self.sync_geoid();
+    }
+
     /// The file the project's geoid model would be read from.
     fn geoid_path(&self) -> Option<PathBuf> {
         let name = self.project.doc.meta().coord_system.geoid_model()?;
@@ -77,7 +86,7 @@ impl Session {
         if self.project.doc.geoid().is_some() {
             self.project.doc.set_geoid(None);
         }
-        if self.geoid.failed.as_ref() == Some(&path) {
+        if self.geoid.failed.as_ref().is_some_and(|(p, _)| *p == path) {
             return;
         }
         let name = path
@@ -108,7 +117,7 @@ impl Session {
                     "Geoid model {name} could not be read from {}: {e}. Heights use the project's constant separation",
                     path.parent().map(|p| p.display().to_string()).unwrap_or_default()
                 ));
-                self.geoid.failed = Some(path);
+                self.geoid.failed = Some((path, e));
             }
         }
     }
@@ -127,7 +136,10 @@ impl Session {
             (Some(name), None) if self.geoid_dir.is_none() => {
                 format!("{name} is not loaded: set the geoid folder. Using {constant}")
             }
-            (Some(name), None) => format!("{name} is not loaded (see the log). Using {constant}"),
+            (Some(name), None) => match &self.geoid.failed {
+                Some((_, why)) => format!("{name} could not be read ({why}). Using {constant}"),
+                None => format!("{name} is not loaded. Using {constant}"),
+            },
             (None, None) => format!("No geoid model: {constant}"),
         }
     }

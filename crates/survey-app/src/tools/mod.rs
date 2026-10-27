@@ -8,6 +8,7 @@
 mod arc;
 mod area;
 mod bd;
+mod building;
 mod circle;
 mod cogo;
 mod construct;
@@ -489,6 +490,16 @@ impl DomainModule for CoreModule {
             group: ToolGroup::Cogo,
             description: "Points at a distance (and offset) along a line between two points",
             create: || Box::<construct::AlongTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: building::ID,
+            name: "Building by right angles",
+            commands: &["bldg", "building"],
+            icon: icons::HOUSE,
+            palette: false,
+            group: ToolGroup::Cogo,
+            description: "Building outline from two corners and taped wall lengths turning at right angles",
+            create: || Box::<building::BuildingTool>::default(),
         });
         tools.register(ToolDescriptor {
             id: inverse::ID,

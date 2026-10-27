@@ -5,12 +5,11 @@
 
 use egui_cad::snap::Pick;
 use glam::{DVec2, DVec3};
-use survey_core::cogo::{
-    intersect_bearing_distance, intersect_bearings, intersect_distances, point_at_station, station_offset,
-};
+use survey_core::alignment::Geometry;
+use survey_core::cogo::{intersect_bearing_distance, intersect_bearings, intersect_distances};
 use survey_core::point_input::ResolvedPoint;
 use survey_core::{Angle, Bearing, Conventions};
-use survey_model::{ChangeSet, Entity, Polyline, SurveyPoint};
+use survey_model::{ChangeSet, Entity, SurveyPoint};
 
 use super::{Preview, Tool, ToolCtx, ToolEvent, ToolOutcome, resolved};
 
@@ -559,9 +558,9 @@ impl Tool for IntersectTool {
 /// point there. Offsets are positive to the right of the direction of travel.
 #[derive(Default)]
 pub struct ChainageTool {
-    line: Option<Polyline>,
-    /// Chainage at the polyline's start (from an alignment, else 0).
-    start: f64,
+    /// The picked polyline's alignment (an alignment's own, with its
+    /// transitions and start chainage, else the polyline from 0).
+    line: Option<Geometry>,
 }
 
 impl Tool for ChainageTool {
@@ -590,33 +589,54 @@ impl Tool for ChainageTool {
                 match &self.line {
                     None => match ctx.hovered.and_then(|id| ctx.doc.entity(id).map(|e| (id, e))) {
                         Some((id, Entity::Polyline(l))) => {
-                            self.line = Some(l.clone());
                             let alignment = ctx.doc.alignments().iter().find(|a| a.polyline == id);
-                            self.start = alignment.map_or(0.0, |a| a.start_chainage);
-                            if let Some(a) = alignment {
-                                ctx.log.info(format!("Alignment {}", a.name));
+                            let geometry = match alignment {
+                                Some(a) => {
+                                    ctx.log.info(format!("Alignment {}", a.name));
+                                    Geometry::new(
+                                        &l.vertices,
+                                        &l.bulges,
+                                        l.closed,
+                                        a.start_chainage,
+                                        &a.transitions,
+                                    )
+                                }
+                                None => Geometry::new(&l.vertices, &l.bulges, l.closed, 0.0, &[]),
+                            };
+                            match geometry {
+                                Ok(g) => {
+                                    let conv = ctx.conventions();
+                                    ctx.log.info(format!(
+                                        "Chainage {} to {}",
+                                        conv.format_chainage(g.start_chainage),
+                                        conv.format_chainage(g.end_chainage())
+                                    ));
+                                    self.line = Some(g);
+                                }
+                                Err(e) => ctx.log.error(e),
                             }
-                            let (len, _, _) =
-                                survey_core::arc::polyline_metrics(&l.vertices, &l.bulges, l.closed);
-                            let conv = ctx.conventions();
-                            ctx.log.info(format!(
-                                "Chainage {} to {}",
-                                conv.format_chainage(self.start),
-                                conv.format_chainage(self.start + len)
-                            ));
                         }
                         Some(_) => ctx.log.warn("Pick a polyline"),
                         None => {}
                     },
-                    Some(l) => {
-                        if let Some(so) =
-                            station_offset(&l.vertices, &l.bulges, l.closed, pick.point.truncate())
-                        {
+                    Some(g) => {
+                        if let Some((ch, off)) = g.station_offset(pick.point.truncate()) {
                             let conv = ctx.conventions();
+                            // Off the ends the nearest point is the start or end, not square to the line.
+                            let gap = g
+                                .point_at(ch, off)
+                                .map_or(0.0, |(q, _)| q.truncate().distance(pick.point.truncate()));
+                            let beyond = if gap <= 1e-3 {
+                                String::new()
+                            } else if ch - g.start_chainage < g.end_chainage() - ch {
+                                format!("  ({} before the start)", conv.format_length(gap))
+                            } else {
+                                format!("  ({} past the end)", conv.format_length(gap))
+                            };
                             ctx.log.result(format!(
-                                "Ch {}  Off {}",
-                                conv.format_chainage(self.start + so.chainage),
-                                conv.format_length(so.offset)
+                                "Ch {}  Off {}{beyond}",
+                                conv.format_chainage(ch),
+                                conv.format_length(off)
                             ));
                         }
                     }
@@ -624,7 +644,7 @@ impl Tool for ChainageTool {
                 ToolOutcome::Continue
             }
             ToolEvent::Text(text) => {
-                let Some(l) = &self.line else {
+                let Some(g) = &self.line else {
                     return ToolOutcome::Continue;
                 };
                 let conv = ctx.conventions();
@@ -635,25 +655,21 @@ impl Tool for ChainageTool {
                     Ok::<_, survey_core::ParseError>((ch, off.unwrap_or(0.0)))
                 })();
                 match parsed {
-                    Ok((ch, off)) => {
-                        match point_at_station(&l.vertices, &l.bulges, l.closed, ch - self.start, off) {
-                            Some(p) => {
-                                let name = ctx.doc.next_point_name();
-                                let conv = ctx.conventions();
-                                ctx.log.result(format!(
-                                    "Point {name}: Ch {}  Off {}  → {}",
-                                    conv.format_chainage(ch),
-                                    conv.format_length(off),
-                                    conv.format_coord(p, false)
-                                ));
-                                let point = new_point(ctx, name.clone(), p, false, "");
-                                ctx.execute(
-                                    ChangeSet::new(format!("Set out point {name}")).insert_entity(point),
-                                );
-                            }
-                            None => ctx.log.error("That chainage is beyond the ends of the polyline"),
+                    Ok((ch, off)) => match g.point_at(ch, off) {
+                        Some((p, _)) => {
+                            let name = ctx.doc.next_point_name();
+                            let conv = ctx.conventions();
+                            ctx.log.result(format!(
+                                "Point {name}: Ch {}  Off {}  → {}",
+                                conv.format_chainage(ch),
+                                conv.format_length(off),
+                                conv.format_coord(p, false)
+                            ));
+                            let point = new_point(ctx, name.clone(), p, false, "");
+                            ctx.execute(ChangeSet::new(format!("Set out point {name}")).insert_entity(point));
                         }
-                    }
+                        None => ctx.log.error("That chainage is beyond the ends of the polyline"),
+                    },
                     Err(e) => ctx.log.error(e.to_string()),
                 }
                 ToolOutcome::Continue
@@ -670,20 +686,19 @@ impl Tool for ChainageTool {
     }
 
     fn preview(&self, conv: &Conventions, cursor: Option<&Pick>, out: &mut Preview) {
-        let (Some(l), Some(c)) = (&self.line, cursor) else {
+        let (Some(g), Some(c)) = (&self.line, cursor) else {
             return;
         };
-        if let Some(so) = station_offset(&l.vertices, &l.bulges, l.closed, c.point.truncate()) {
-            out.rubber.push([so.foot, c.point]);
-            out.points.push(so.foot);
+        if let Some((ch, off)) = g.station_offset(c.point.truncate())
+            && let Some((foot, _)) = g.point_at(ch, 0.0)
+        {
+            let foot = foot.truncate().extend(c.point.z);
+            out.rubber.push([foot, c.point]);
+            out.points.push(foot);
             out.labels.push((
                 c.point,
                 DVec2::new(14.0, 14.0),
-                format!(
-                    "Ch {}  Off {}",
-                    conv.format_chainage(self.start + so.chainage),
-                    conv.format_length(so.offset)
-                ),
+                format!("Ch {}  Off {}", conv.format_chainage(ch), conv.format_length(off)),
             ));
         }
     }

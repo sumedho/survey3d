@@ -3,6 +3,7 @@
 //! returns the result with a plain-text report and, where it draws or moves
 //! things, the undoable change.
 
+pub mod alignment;
 pub mod closure;
 pub mod network;
 pub mod projection;
