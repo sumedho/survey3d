@@ -54,19 +54,7 @@ impl Server {
 
     /// The surface named by `surface`: its id or its name.
     pub(super) fn surface_id(&self, args: &Value) -> Result<SurfaceId, String> {
-        let doc = self.doc();
-        match args.get("surface") {
-            Some(Value::Number(n)) => n
-                .as_i64()
-                .map(SurfaceId)
-                .filter(|id| doc.surface(*id).is_some())
-                .ok_or_else(|| format!("No surface with id {n}")),
-            Some(Value::String(name)) => doc
-                .surface_by_name(name)
-                .map(|(id, _)| id)
-                .ok_or_else(|| format!("No surface called {name}")),
-            _ => Err("surface: its id or name".into()),
-        }
+        surface_arg(self.doc(), args.get("surface"), "surface")
     }
 
     fn surface_summary(&self, id: SurfaceId) -> Value {
@@ -193,4 +181,20 @@ pub(super) fn style_json(style: &SurfaceStyle) -> Value {
     let [r, g, b, _] = style.color.0;
     v["color"] = json!(format!("#{r:02x}{g:02x}{b:02x}"));
     v
+}
+
+/// A surface by id or name.
+pub(super) fn surface_arg(doc: &Document, v: Option<&Value>, key: &str) -> Result<SurfaceId, String> {
+    match v {
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .map(SurfaceId)
+            .filter(|id| doc.surface(*id).is_some())
+            .ok_or_else(|| format!("{key}: no surface with id {n}")),
+        Some(Value::String(name)) => doc
+            .surface_by_name(name)
+            .map(|(id, _)| id)
+            .ok_or_else(|| format!("{key}: no surface called {name}")),
+        _ => Err(format!("{key}: a surface's id or name")),
+    }
 }

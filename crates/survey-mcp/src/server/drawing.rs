@@ -28,7 +28,7 @@ const EDITABLE: &[(&str, &str)] = &[
 ];
 
 /// A position argument: a point name, or `[e, n]` / `[e, n, z]`.
-fn position(doc: &Document, value: Option<&Value>, what: &str) -> Result<DVec3, String> {
+pub(super) fn position(doc: &Document, value: Option<&Value>, what: &str) -> Result<DVec3, String> {
     match value {
         Some(Value::String(name)) => Ok(doc
             .find_point_by_name(name)
@@ -41,6 +41,22 @@ fn position(doc: &Document, value: Option<&Value>, what: &str) -> Result<DVec3, 
             _ => Err(format!("{what}: [e, n] or a point name")),
         },
         _ => Err(format!("{what}: [e, n] or a point name")),
+    }
+}
+
+/// A polyline by id or name.
+pub(super) fn polyline_arg(doc: &Document, v: &Value, key: &str) -> Result<EntityId, String> {
+    let found = match v {
+        Value::Number(n) => n.as_i64().map(EntityId).filter(|id| doc.entity(*id).is_some()),
+        Value::String(name) => doc
+            .entities()
+            .find(|(_, e)| matches!(e, Entity::Polyline(l) if l.name == *name))
+            .map(|(id, _)| id),
+        _ => None,
+    };
+    match found {
+        Some(id) if matches!(doc.entity(id), Some(Entity::Polyline(_))) => Ok(id),
+        _ => Err(format!("{key}: no polyline {v}")),
     }
 }
 
@@ -350,20 +366,7 @@ impl Server {
     /// Trims or extends a polyline to boundary polylines.
     pub(super) fn trim_extend(&mut self, args: &Value) -> Outcome {
         let doc = self.doc();
-        let polyline = |v: &Value, key: &str| -> Result<EntityId, String> {
-            let found = match v {
-                Value::Number(n) => n.as_i64().map(EntityId).filter(|id| doc.entity(*id).is_some()),
-                Value::String(name) => doc
-                    .entities()
-                    .find(|(_, e)| matches!(e, Entity::Polyline(l) if l.name == *name))
-                    .map(|(id, _)| id),
-                _ => None,
-            };
-            match found {
-                Some(id) if matches!(doc.entity(id), Some(Entity::Polyline(_))) => Ok(id),
-                _ => Err(format!("{key}: no polyline {v}")),
-            }
-        };
+        let polyline = |v: &Value, key: &str| polyline_arg(doc, v, key);
         let target = polyline(args.get("target").ok_or("target is required")?, "target")?;
         let boundaries: Vec<EntityId> = match args.get("boundaries") {
             Some(Value::Array(list)) => list

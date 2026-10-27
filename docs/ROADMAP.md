@@ -139,6 +139,24 @@ From a check of everyday COGO against Carlson and MicroSurvey (2026-10-27).
 - [ ] **Compound and reverse curves** in the curve solver.
 - [ ] **Building dimensions by right-angle legs** for detail surveys.
 
+## Agent coverage
+
+From a check of what an agent can do through MCP against common survey jobs (2026-10-27). The
+calculations behind these windows now live in `survey_app::compute`, shared by the windows and the server.
+
+- [x] **Volumes and stockpiles:** `compute_volumes` (surface to surface or level, boundary, tonnes, cut/fill
+  surface) and `stockpile_volume`.
+- [x] **Network adjustment:** `adjust_network` over saved traverses and raw data, with the χ² test,
+  standardised residuals and error ellipses. Points computed from the observations being adjusted are free
+  by default (also in the window).
+- [x] **Traverse adjustment and closure:** `adjust_traverse` (Bowditch, transit; save for the network) and
+  `figure_closure` (misclosure, or two missing values solved).
+- [x] **Resection:** `resection` from directions and/or distances to known points.
+- [x] **Sections:** `sections`, long or cross, as tables.
+- [x] **Subdivision:** `subdivide` by area, parallel to an edge or swung about a point.
+- [ ] **Grid and geographic conversion** (the projection calculator) as a tool.
+- [ ] **Set-out calculations** (bearing and distance from a station to each point) as a tool.
+
 ## Phase 11 — Coordinate systems (about 3 weeks)
 
 Nearly every GNSS job needs heights on a geoid model and coordinates tied to local control. survey3d's

@@ -7,9 +7,11 @@ use egui::RichText;
 use egui_cad::{CadTheme, fonts};
 use glam::DVec3;
 use survey_core::Angle;
-use survey_core::adjustment::{AdjustResult, adjust};
-use survey_core::network::{Known, Network, NetworkOptions, Setup, build, report, setups_from_traverse};
-use survey_model::{ChangeSet, Command, Document, Entity, SurveyPoint};
+use survey_core::adjustment::AdjustResult;
+use survey_core::network::{Network, NetworkOptions, Setup, report};
+use survey_model::{Command, Document};
+
+use crate::compute::network::{all_sources, apply, free_by_default, run, setups, updates};
 
 pub struct NetworkWindow {
     pub open: bool,
@@ -49,10 +51,7 @@ impl NetworkWindow {
     pub fn open_with(&mut self, doc: &Document) {
         self.open = true;
         if self.sources.is_empty() {
-            self.sources
-                .extend(doc.traverses().iter().map(|t| format!("t:{}", t.name)));
-            self.sources
-                .extend(doc.field_data().iter().map(|f| format!("f:{}", f.name)));
+            self.sources = all_sources(doc);
         }
     }
 
@@ -65,43 +64,24 @@ impl NetworkWindow {
     }
 
     fn setups(&self, doc: &Document) -> Vec<Setup> {
-        let mut out = Vec::new();
-        for t in doc.traverses() {
-            if self.sources.contains(&format!("t:{}", t.name)) {
-                out.extend(setups_from_traverse(t));
-            }
-        }
-        for f in doc.field_data() {
-            if self.sources.contains(&format!("f:{}", f.name)) {
-                out.extend(f.effective_setups());
-            }
-        }
-        out
-    }
-
-    fn known<'a>(&'a self, doc: &'a Document) -> impl Fn(&str) -> Option<Known> + 'a {
-        move |name: &str| {
-            doc.find_point_by_name(name).map(|(_, p)| Known {
-                position: p.position,
-                height_known: p.height_known,
-                fixed: !self.free.contains(name),
-            })
-        }
+        setups(doc, &self.sources)
     }
 
     fn run(&self, doc: &Document, options: &NetworkOptions) -> Result<(Network, AdjustResult), String> {
-        let setups = self.setups(doc);
-        let net = build(&setups, &self.known(doc), options).map_err(|e| e.to_string())?;
-        let r = adjust(&net.stations, &net.observations).map_err(|e| e.to_string())?;
-        Ok((net, r))
+        run(doc, &self.setups(doc), &self.free, options)
     }
 
     fn refresh_stations(&mut self, doc: &Document) {
         let mut seen = BTreeSet::new();
         self.stations.clear();
+        // Points the chosen raw data placed, or an earlier adjustment made, start free.
+        let free = free_by_default(doc, &self.sources);
         for s in self.setups(doc) {
             for name in std::iter::once(s.station).chain(s.observations.into_iter().map(|o| o.target)) {
                 if seen.insert(name.clone()) {
+                    if free.contains(&name) {
+                        self.free.insert(name.clone());
+                    }
                     let known = doc.find_point_by_name(&name).is_some();
                     self.stations.push((name, known));
                 }
@@ -370,12 +350,7 @@ impl NetworkWindow {
                                     report(net, r, &options, doc.conventions()),
                                 ));
                             }
-                            let updates = net
-                                .stations
-                                .iter()
-                                .enumerate()
-                                .filter(|(i, s)| !s.fixed_plan || r.sd[*i].z > 0.0)
-                                .count();
+                            let updates = updates(net, r);
                             if ui
                                 .add_enabled(
                                     updates > 0,
@@ -384,7 +359,8 @@ impl NetworkWindow {
                                 .on_hover_text("Create new stations and move adjusted ones (undoable)")
                                 .clicked()
                             {
-                                action = Some(apply(doc, net, r, &options));
+                                let (cs, summary) = apply(doc, net, r, &options);
+                                action = Some(NetworkAction::Apply(Box::new(cs), summary));
                                 // Points written by this adjustment stay free on the next run.
                                 for &i in &net.new_stations {
                                     self.free.insert(net.stations[i].name.clone());
@@ -407,54 +383,4 @@ impl NetworkWindow {
         self.open = open;
         action
     }
-}
-
-fn apply(doc: &Document, net: &Network, r: &AdjustResult, options: &NetworkOptions) -> NetworkAction {
-    let mut meta = doc.meta().clone();
-    meta.network_options = *options;
-    let mut cs = ChangeSet::new("Network adjustment").set_meta(meta);
-    let (mut created, mut moved) = (0, 0);
-    let heights = r.sd.iter().any(|s| s.z > 0.0) || net.stations.iter().any(|s| s.fixed_height);
-    for (i, s) in net.stations.iter().enumerate() {
-        let plan_adjusted = !s.fixed_plan;
-        let height_adjusted = r.sd[i].z > 0.0;
-        if !plan_adjusted && !height_adjusted {
-            continue;
-        }
-        let p = r.positions[i];
-        match doc.find_point_by_name(&s.name) {
-            Some((id, existing)) => {
-                let mut q = existing.clone();
-                if plan_adjusted {
-                    q.position.x = p.x;
-                    q.position.y = p.y;
-                }
-                if height_adjusted {
-                    q.position.z = p.z;
-                    q.height_known = true;
-                }
-                cs.push_update_entity(id, Entity::Point(q));
-                moved += 1;
-            }
-            None => {
-                cs.push_insert_entity(Entity::Point(SurveyPoint {
-                    name: s.name.clone(),
-                    position: if height_adjusted {
-                        p
-                    } else {
-                        p.truncate().extend(0.0)
-                    },
-                    height_known: heights && height_adjusted,
-                    code: String::new(),
-                    description: "Network adjustment".into(),
-                    layer: doc.current_layer(),
-                }));
-                created += 1;
-            }
-        }
-    }
-    NetworkAction::Apply(
-        Box::new(cs),
-        format!("Network adjustment: {created} points created, {moved} updated"),
-    )
 }

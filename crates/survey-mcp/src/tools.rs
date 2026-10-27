@@ -448,6 +448,217 @@ pub fn definitions() -> Vec<Value> {
             "annotations": { "destructiveHint": true }
         }),
         json!({
+            "name": "compute_volumes",
+            "title": "Volumes between surfaces",
+            "description": "Cut, fill and net volumes between a base and a top, each a surface (base / top: id or name) or a level (base_level / top_level: a height), computed exactly on the merged triangulations; within boundary (a closed polyline, id or name) or wherever both exist. Fill is where the top is above the base, cut where it is below. density (t/m³) adds tonnes. Returns volumes (m³), areas (m²) and the report; nothing changes unless create_surface: true, which adds the cut/fill (isopach) surface top − base. For a stockpile on its toe, use stockpile_volume.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "base": { "type": ["integer", "string"] },
+                    "base_level": { "type": ["number", "string"] },
+                    "top": { "type": ["integer", "string"] },
+                    "top_level": { "type": ["number", "string"] },
+                    "boundary": { "type": ["integer", "string"] },
+                    "density": { "type": "number", "exclusiveMinimum": 0 },
+                    "create_surface": { "type": "boolean", "default": false }
+                },
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": false }
+        }),
+        json!({
+            "name": "stockpile_volume",
+            "title": "Stockpile volume",
+            "description": "The volume of a stockpile: surface (its pickup, id or name) above a base inside toe (the closed toe polyline). base: toe (default; the base is triangulated from the surface heights along the toe), lowest_toe (flat at the toe's lowest height) or a level (a height). density (t/m³) adds tonnes. Returns the volume (m³), the parts above and below the base, the plan area, the toe's height range and the report. Nothing changes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "surface": { "type": ["integer", "string"] },
+                    "toe": { "type": ["integer", "string"] },
+                    "base": { "type": ["string", "number"], "description": "toe, lowest_toe, or a level" },
+                    "density": { "type": "number", "exclusiveMinimum": 0 },
+                    "name": { "type": "string" }
+                },
+                "required": ["surface", "toe"],
+                "additionalProperties": false
+            },
+            "annotations": { "readOnlyHint": true }
+        }),
+        json!({
+            "name": "adjust_network",
+            "title": "Least-squares network adjustment",
+            "description": "Adjusts saved traverses (adjust_traverse with save) and imported raw data (import_file) together by least squares. sources: their names (default all). Existing points are control, held fixed, except points placed by reducing the chosen raw data and points an earlier adjustment made (they are adjusted); free names more points to adjust, fixed holds points the default would free. A priori precision (defaults from the project): direction_sigma (seconds), distance_sigma_mm + distance_ppm, centring_mm, heights (adjust heights too) and height_sigma_mm; scale_factor: a ground-to-grid factor, or 'project' for the combined factor of the project's projection at the centre of the work. Returns σ₀, degrees of freedom, the χ² global test and a verdict, the largest standardised residuals (over 3 suggests a blunder: exclude that shot with raw_data edit and readjust), and each station's adjusted coordinates, standard deviations and 95% error ellipse; report: true adds the full report. Nothing changes until apply: true, which creates the new stations and moves the adjusted ones in one undoable step.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sources": { "type": "array", "items": { "type": "string" } },
+                    "free": { "type": "array", "items": { "type": "string" } },
+                    "fixed": { "type": "array", "items": { "type": "string" } },
+                    "direction_sigma": { "type": "number", "exclusiveMinimum": 0 },
+                    "distance_sigma_mm": { "type": "number", "exclusiveMinimum": 0 },
+                    "distance_ppm": { "type": "number", "minimum": 0 },
+                    "centring_mm": { "type": "number", "minimum": 0 },
+                    "heights": { "type": "boolean" },
+                    "height_sigma_mm": { "type": "number", "exclusiveMinimum": 0 },
+                    "scale_factor": { "type": ["number", "string"] },
+                    "report": { "type": "boolean", "default": false },
+                    "apply": { "type": "boolean", "default": false }
+                },
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": true }
+        }),
+        json!({
+            "name": "adjust_traverse",
+            "title": "Traverse reduction and adjustment",
+            "description": "Reduces a traverse and, when it closes on known control, adjusts it (bowditch, the default; transit; or none to report only), distributing the angular misclosure over the angles first (adjust_angles, default true). Either traverse (a saved traverse's name or id) or: start (a known point), backsight (a point name or bearing; needed for angles), legs [{to (station name, default T1, T2…), one of angle (clockwise from the backsight), angle_left, deflection ('12.3000 R' / 'L'), bearing — in the project's angle and bearing formats — distance (horizontal, or slope with zenith), dz, or zenith with hi and ht}], close_on (the known point the last leg ends on), closing_reference and closing_angle (an angle observed at the end to a known reference, for the angular check), scale_factor. Returns the angular, linear and vertical misclosures with the project's tolerances (pass/fail), precision, each station's adjusted coordinates and correction, and the report. Nothing changes unless apply: true (creates the stations, code TRAV, and with polyline (default true) a line through them; existing names are left alone) and/or save: '<name>' (keeps the traverse with the project, for adjust_network). One undoable step.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "traverse": { "type": ["integer", "string"] },
+                    "start": { "type": "string" },
+                    "backsight": { "type": "string" },
+                    "legs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "to": { "type": "string" },
+                                "angle": { "type": ["string", "number"] },
+                                "angle_left": { "type": ["string", "number"] },
+                                "deflection": { "type": ["string", "number"] },
+                                "bearing": { "type": ["string", "number"] },
+                                "distance": { "type": ["number", "string"] },
+                                "zenith": { "type": ["string", "number"] },
+                                "dz": { "type": ["number", "string"] },
+                                "hi": { "type": ["number", "string"] },
+                                "ht": { "type": ["number", "string"] }
+                            },
+                            "required": ["distance"],
+                            "additionalProperties": false
+                        }
+                    },
+                    "close_on": { "type": "string" },
+                    "closing_reference": { "type": "string" },
+                    "closing_angle": { "type": ["string", "number"] },
+                    "adjustment": { "type": "string", "enum": ["bowditch", "transit", "none"] },
+                    "adjust_angles": { "type": "boolean" },
+                    "scale_factor": { "type": "number" },
+                    "apply": { "type": "boolean", "default": false },
+                    "polyline": { "type": "boolean", "default": true },
+                    "save": { "type": "string" }
+                },
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": false }
+        }),
+        json!({
+            "name": "figure_closure",
+            "title": "Figure (lot) closure",
+            "description": "Checks a figure's closure — misclosure, its bearing, precision 1:N against the project's tolerance, perimeter and area — and solves missing values: leave out exactly two (a bearing and a distance, two distances or two bearings) and they are found so the figure closes (some pairs have two solutions: pass solution). Either courses [{bearing, distance — or for an arc radius with distance (the chord) or arc_length, and turn left/right}] in the project's formats, or polyline (an existing line, id or name, to check). draw: true adds the figure as a polyline from start (a point name or [e, n]; a polyline starts at its first vertex), closed when it closes (closed, default true). For entering a lot leg by leg, run_commands 'bd' does the same as it goes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "courses": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "bearing": { "type": ["string", "number"] },
+                                "distance": { "type": ["number", "string"] },
+                                "radius": { "type": ["number", "string"] },
+                                "arc_length": { "type": ["number", "string"] },
+                                "turn": { "type": "string", "enum": ["left", "right"] }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "polyline": { "type": ["integer", "string"] },
+                    "name": { "type": "string" },
+                    "solution": { "type": "integer", "minimum": 1 },
+                    "start": { "type": ["array", "string"], "items": { "type": "number" } },
+                    "draw": { "type": "boolean", "default": false },
+                    "closed": { "type": "boolean", "default": true }
+                },
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": false }
+        }),
+        json!({
+            "name": "resection",
+            "title": "Resection (free station)",
+            "description": "Fixes an instrument station's plan position from observations to known points: observations [{point (a known point's name), direction (the horizontal circle reading, in the project's angle format) and/or distance (horizontal)}]. Three directions, two distances or any mix fix it; more give residuals (direction_sigma seconds, default 5; distance_sigma_mm, default 5, weight them). Returns each solution (two when the geometry cannot tell them apart; pick with solution) with its orientation, standard deviations, σ₀ and residuals, and the report. Nothing changes until apply: true creates the station (station: its name, default the next number; height: its RL if known, else plan only).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "observations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "point": { "type": "string" },
+                                "direction": { "type": ["string", "number"] },
+                                "distance": { "type": ["number", "string"] }
+                            },
+                            "required": ["point"],
+                            "additionalProperties": false
+                        }
+                    },
+                    "direction_sigma": { "type": "number", "exclusiveMinimum": 0 },
+                    "distance_sigma_mm": { "type": "number", "exclusiveMinimum": 0 },
+                    "station": { "type": "string" },
+                    "height": { "type": ["number", "string"] },
+                    "solution": { "type": "integer", "minimum": 1 },
+                    "apply": { "type": "boolean", "default": false }
+                },
+                "required": ["observations"],
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": false }
+        }),
+        json!({
+            "name": "sections",
+            "title": "Long and cross sections",
+            "description": "Heights of the visible surfaces (or those named in surfaces) along line (a polyline: centreline, fence, pit crest; id or name). kind long (default): along the line, distance is chainage. kind cross: square to the line at chainages (a list) or every interval (default 20) from the start, from left to right of it (defaults 20 m), distance is the offset (negative left). sample (metres) gives a regular table of heights; without it, heights at every triangle edge crossed. report: true adds the text tables. Nothing changes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "line": { "type": ["integer", "string"] },
+                    "kind": { "type": "string", "enum": ["long", "cross"], "default": "long" },
+                    "surfaces": { "type": "array", "items": { "type": "string" } },
+                    "interval": { "type": "number", "exclusiveMinimum": 0 },
+                    "chainages": { "type": "array", "items": { "type": "number" } },
+                    "left": { "type": ["number", "string"] },
+                    "right": { "type": ["number", "string"] },
+                    "sample": { "type": "number", "exclusiveMinimum": 0 },
+                    "report": { "type": "boolean", "default": false }
+                },
+                "required": ["line"],
+                "additionalProperties": false
+            },
+            "annotations": { "readOnlyHint": true }
+        }),
+        json!({
+            "name": "subdivide",
+            "title": "Subdivide a parcel by area",
+            "description": "Cuts a given area off a parcel (parcel: a closed polyline, id or name; area in square project units). method parallel (default): the cut runs parallel to edge (the straight edge's segment number from 1; the result lists the edges); method swing: the cut swings about hinge (a corner number from 1, a point name or [e, n]), which can give several solutions (pick with solution). Returns the parcel's area and edges, each solution's cut-line bearing, length, coordinates and the two areas, and the report. draw: none (default), cut (the cut line) or parcels (the cut line and the two new parcels as closed polylines named '<parcel> A' for the part cut off and '<parcel> B'; select them and run_commands 'mkparcel' to make them lots). One undoable step.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "parcel": { "type": ["integer", "string"] },
+                    "area": { "type": "number", "exclusiveMinimum": 0 },
+                    "method": { "type": "string", "enum": ["parallel", "swing"], "default": "parallel" },
+                    "edge": { "type": "integer", "minimum": 1 },
+                    "hinge": { "type": ["integer", "string", "array"], "items": { "type": "number" } },
+                    "solution": { "type": "integer", "minimum": 1 },
+                    "draw": { "type": "string", "enum": ["none", "cut", "parcels"], "default": "none" }
+                },
+                "required": ["parcel", "area"],
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": false }
+        }),
+        json!({
             "name": "raw_data",
             "title": "Raw field data",
             "description": "Works with raw total station data imported with import_file (one record per file; file is its name, optional when there is one). Actions: show — the file's setups (station, instrument height, backsight, shot count, corrections); with setup (from 1), that setup's shots (target, code, target height, circle readings, distance, excluded). reduce — orients each setup on its backsight (else the first shot to a point with coordinates) and radiates its shots into points carrying their codes, setup by setup, so a traverse carries forward; both faces and repeated shots are averaged; shots to points that already have coordinates are checks (returned). Reducing again updates the points it made. edit — corrects a setup (setup with station, instrument_height, backsight; empty backsight orients on the first known point) or a shot (setup and shot with target, code, target_height, excluded); heights in metres; the recorded observations are kept, and a reduced file is re-reduced in the same undoable step, recorded in the audit trail. revert — drops the corrections to that setup or shot. report — the reduction report as text. After reducing, run_commands 'linework' strings the coded points into lines.",

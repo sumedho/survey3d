@@ -247,6 +247,29 @@ fn files_save_open_and_guards() {
     );
     assert_eq!(info["counts"]["points"], 3);
     assert_eq!(info["records"]["sheet"], json!([]));
+    // Reopening the file this server holds reverts to it as saved.
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": [{ "e": 3.0, "n": 4.0 }] }),
+    );
+    let info = ok_json(
+        &mut s,
+        "open_project",
+        json!({ "path": file, "discard_changes": true }),
+    );
+    assert_eq!(info["counts"]["points"], 3);
+
+    // A sheet given no centre or scale frames the drawing.
+    let sheet = ok_json(
+        &mut s,
+        "set_record",
+        json!({ "kind": "sheet", "record": { "title": { "title": "Job" } } }),
+    );
+    let centre = &sheet["centre"];
+    assert!((centre[0].as_f64().expect("e") - 255.5).abs() < 1.0, "{sheet}");
+    assert_eq!(sheet["title"]["title"], "Job");
+    assert_eq!(sheet["name"], "Sheet 1");
 
     let mut read_only = Server::new(Options {
         project: Some(file.clone()),
@@ -1269,4 +1292,199 @@ fn cogo_angles_intersections_trim_and_point_tools() {
         json!({ "kind": "points", "filter": { "names": ["501", "502"] } }),
     );
     assert_eq!(q["total"], 2, "{q}");
+}
+
+#[test]
+fn survey_computations_end_to_end() {
+    let mut s = Server::new_for_tests();
+    let close = |v: &Value, want: f64| (v.as_f64().unwrap_or(f64::NAN) - want).abs() < 1e-3;
+    // Two flat surfaces 2 m apart, and a pyramid stockpile on a 20 m square toe.
+    let mut points = Vec::new();
+    for (code, x0, z) in [("EG", 0.0, 10.0), ("DS", 0.0, 12.0), ("SP", 100.0, 10.0)] {
+        for (dx, dy) in [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)] {
+            points.push(json!({ "e": x0 + dx, "n": dy, "z": z, "code": code }));
+        }
+    }
+    points.push(json!({ "e": 110.0, "n": 10.0, "z": 15.0, "code": "SP" }));
+    ok(&mut s, "add_points", json!({ "points": points }));
+    for name in ["EG", "DS"] {
+        ok(
+            &mut s,
+            "create_surface",
+            json!({ "name": name, "point_codes": [name] }),
+        );
+    }
+    ok(
+        &mut s,
+        "create_surface",
+        json!({ "name": "PILE", "point_codes": ["SP"] }),
+    );
+    ok(
+        &mut s,
+        "add_polyline",
+        json!({ "name": "BND", "vertices": [[5, 5], [15, 5], [15, 15], [5, 15]], "closed": true }),
+    );
+    ok(
+        &mut s,
+        "add_polyline",
+        json!({ "name": "TOE", "vertices": [[100, 0], [120, 0], [120, 20], [100, 20]], "closed": true }),
+    );
+
+    let v = ok_json(
+        &mut s,
+        "compute_volumes",
+        json!({ "base": "EG", "top": "DS", "density": 2.0 }),
+    );
+    assert!(close(&v["fill"], 800.0) && close(&v["cut"], 0.0), "{v}");
+    assert!(close(&v["tonnes"]["net"], 1600.0), "{v}");
+    let v = ok_json(
+        &mut s,
+        "compute_volumes",
+        json!({ "base_level": 9, "top": "EG", "boundary": "BND" }),
+    );
+    assert!(close(&v["fill"], 100.0), "{v}");
+    let v = ok_json(
+        &mut s,
+        "compute_volumes",
+        json!({ "base": "DS", "top": "EG", "create_surface": true }),
+    );
+    assert!(
+        close(&v["net"], -800.0) && v["created_surface"]["name"] == "EG − DS",
+        "{v}"
+    );
+    let (text, error) = call(
+        &mut s,
+        "compute_volumes",
+        json!({ "base": "EG", "base_level": 3, "top": "DS" }),
+    );
+    assert!(error && text.contains("not both"), "{text}");
+    let p = ok_json(
+        &mut s,
+        "stockpile_volume",
+        json!({ "surface": "PILE", "toe": "TOE", "density": 1.6 }),
+    );
+    assert!(close(&p["volume"], 2000.0 / 3.0), "{p}");
+
+    // Sections: a regular table, and cross sections square to the line.
+    ok(
+        &mut s,
+        "add_polyline",
+        json!({ "name": "CL", "vertices": [[0, 10], [20, 10]] }),
+    );
+    let sec = ok_json(
+        &mut s,
+        "sections",
+        json!({ "line": "CL", "sample": 10, "surfaces": ["EG", "DS"] }),
+    );
+    assert_eq!(sec["section"].as_array().map(Vec::len), Some(3), "{sec}");
+    assert!(close(&sec["section"][1]["DS"], 12.0), "{sec}");
+    let sec = ok_json(
+        &mut s,
+        "sections",
+        json!({ "line": "CL", "kind": "cross", "interval": 10, "left": 5, "right": 5, "sample": 5 }),
+    );
+    assert_eq!(sec["sections"].as_array().map(Vec::len), Some(3), "{sec}");
+    assert!(close(&sec["sections"][0]["section"][0]["at"], -5.0), "{sec}");
+
+    // A closed loop with a 20 mm distance blunder and 10" of angular error.
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": [
+        { "name": "A", "e": 1000.0, "n": 1000.0, "z": 50.0 },
+        { "name": "B", "e": 1000.0, "n": 1100.0, "z": 50.0 },
+        { "name": "C", "e": 1100.0, "n": 1000.0, "z": 50.0 }
+    ] }),
+    );
+    let loop_args = json!({ "start": "A", "backsight": "B", "legs": [
+        { "to": "T1", "angle": "90", "distance": 100 },
+        { "to": "T2", "angle": "270", "distance": 100.02 },
+        { "to": "T3", "angle": "270.0010", "distance": 100 },
+        { "to": "A", "angle": "270", "distance": 99.99 }
+    ], "close_on": "A", "closing_reference": "B", "closing_angle": "180", "save": "Loop", "apply": true });
+    let t = ok_json(&mut s, "adjust_traverse", loop_args);
+    assert!(close(&t["angular"]["seconds"], 10.0), "{t}");
+    assert_eq!(t["linear"]["precision"], "1:14681", "{t}");
+    let line = t["added"].as_array().and_then(|a| a.last()).expect("polyline");
+    assert_eq!(line["heights_known"], false, "plan-only stations: {line}");
+    let n = ok_json(&mut s, "adjust_network", json!({ "sources": ["Loop"] }));
+    assert_eq!(
+        n["free"],
+        json!(["T1", "T2", "T3"]),
+        "the loop's own stations are adjusted: {n}"
+    );
+    assert_eq!(n["chi_square"]["pass"], false, "{n}");
+    assert_eq!(
+        n["largest_residuals"][0]["observation"], "T1 → T2 distance",
+        "the blunder: {n}"
+    );
+    assert!(n["next"].as_str().is_some_and(|t| t.contains("apply")), "{n}");
+    let n = ok_json(&mut s, "adjust_network", json!({ "apply": true }));
+    assert!(
+        n["applied"].as_str().is_some_and(|t| t.contains("3 updated")),
+        "{n}"
+    );
+
+    // Resection from three distances, then directions and a distance.
+    let r = ok_json(
+        &mut s,
+        "resection",
+        json!({ "observations": [
+        { "point": "A", "distance": 50 }, { "point": "B", "distance": 80.6226 }, { "point": "C", "distance": 67.0820 }
+    ] }),
+    );
+    assert!(
+        close(&r["solutions"][0]["e"], 1040.0) && close(&r["solutions"][0]["n"], 1030.0),
+        "{r}"
+    );
+    let r = ok_json(
+        &mut s,
+        "resection",
+        json!({ "observations": [
+        { "point": "A", "direction": "233.0748", "distance": 50 },
+        { "point": "B", "direction": "330.1520" },
+        { "point": "C", "direction": "116.3354" }
+    ], "station": "STN1", "height": 51.2, "apply": true }),
+    );
+    assert_eq!(r["added"][0]["name"], "STN1", "{r}");
+    assert!(close(&r["added"][0]["z"], 51.2), "{r}");
+
+    // A lot with its last course missing, solved and drawn, then subdivided.
+    let c = ok_json(
+        &mut s,
+        "figure_closure",
+        json!({ "courses": [
+        { "bearing": "90", "distance": 40 }, { "bearing": "180", "distance": 30 }, { "bearing": "270", "distance": 40 }, {}
+    ], "start": "A", "name": "Lot 9", "draw": true }),
+    );
+    assert!(
+        close(&c["solved"][1]["distance"], 30.0) && close(&c["area"], 1200.0),
+        "{c}"
+    );
+    let c = ok_json(&mut s, "figure_closure", json!({ "polyline": "Lot 9" }));
+    assert!(close(&c["misclosure"], 0.0), "{c}");
+    let d = ok_json(
+        &mut s,
+        "subdivide",
+        json!({ "parcel": "Lot 9", "area": 300, "edge": 1 }),
+    );
+    assert!(close(&d["solutions"][0]["cut_line"][0][0][1], 992.5), "{d}");
+    let d = ok_json(
+        &mut s,
+        "subdivide",
+        json!({ "parcel": "Lot 9", "area": 200, "method": "swing", "hinge": 1 }),
+    );
+    assert_eq!(d["solutions"].as_array().map(Vec::len), Some(2), "{d}");
+    let d = ok_json(
+        &mut s,
+        "subdivide",
+        json!({ "parcel": "Lot 9", "area": 300, "edge": 4, "draw": "parcels" }),
+    );
+    assert_eq!(d["added"].as_array().map(Vec::len), Some(3), "{d}");
+    let (text, error) = call(
+        &mut s,
+        "subdivide",
+        json!({ "parcel": "Lot 9", "area": 300, "edge": 9 }),
+    );
+    assert!(error && text.contains("not a straight edge"), "{text}");
 }

@@ -5,31 +5,16 @@ use egui::RichText;
 use egui_cad::chrome::segmented;
 use egui_cad::{CadTheme, fonts, icons};
 use glam::{DVec2, DVec3};
-use survey_core::arc::Arc;
-use survey_core::subdivide::{Cut, parallel, swing};
-use survey_core::{Bearing, Conventions};
-use survey_model::{ChangeSet, Command, Document, Entity, EntityId, LayerId, Polyline};
+use survey_core::Bearing;
+use survey_core::subdivide::Cut;
+use survey_model::{Command, Document, Entity, EntityId, Polyline};
 
-/// Arc tessellation tolerance for parcels (metres).
-const ARC_TOLERANCE: f64 = 0.0005;
+use crate::compute::subdivide::{Method as Cutting, Parcel, cut_line, cuts, draw, report};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Method {
     Parallel,
     Swing,
-}
-
-/// The parcel being divided, relative to `origin`.
-struct Parcel {
-    id: EntityId,
-    name: String,
-    layer: LayerId,
-    origin: DVec3,
-    polygon: Vec<DVec2>,
-    /// Straight edges: (polygon edge index, original segment number).
-    edges: Vec<(usize, usize)>,
-    /// Polygon indices of the original corners.
-    corners: Vec<usize>,
 }
 
 pub struct SubdivideWindow {
@@ -68,39 +53,10 @@ pub enum SubdivideAction {
 impl SubdivideWindow {
     /// Loads a closed polyline as the parcel; `false` if it is not closed.
     pub fn load(&mut self, id: EntityId, line: &Polyline) -> bool {
-        if !line.closed || line.vertices.len() < 3 {
+        let Some(parcel) = Parcel::load(id, line) else {
             return false;
-        }
-        let origin = line.vertices[0];
-        let mut polygon = Vec::new();
-        let mut edges = Vec::new();
-        let mut corners = Vec::new();
-        for (seg, (a, b, bulge)) in line.segments().enumerate() {
-            corners.push(polygon.len());
-            match Arc::from_bulge(a, b, bulge) {
-                Some(arc) => {
-                    let pts = arc.tessellate(ARC_TOLERANCE);
-                    polygon.extend(pts[..pts.len() - 1].iter().map(|p| (*p - origin).truncate()));
-                }
-                None => {
-                    edges.push((polygon.len(), seg));
-                    polygon.push((a - origin).truncate());
-                }
-            }
-        }
-        self.parcel = Some(Parcel {
-            id,
-            name: if line.name.is_empty() {
-                "Parcel".into()
-            } else {
-                line.name.clone()
-            },
-            layer: line.layer,
-            origin,
-            polygon,
-            edges,
-            corners,
-        });
+        };
+        self.parcel = Some(parcel);
         self.edge = 0;
         self.hinge_corner = Some(0);
         self.solution = 0;
@@ -110,11 +66,7 @@ impl SubdivideWindow {
 
     fn hinge(&self, doc: &Document, parcel: &Parcel) -> Result<DVec2, String> {
         match self.hinge_corner {
-            Some(i) => parcel
-                .corners
-                .get(i)
-                .map(|k| parcel.polygon[*k])
-                .ok_or_else(|| "Choose a corner".to_string()),
+            Some(i) => parcel.corner(i).ok_or_else(|| "Choose a corner".to_string()),
             None => {
                 let t = self.hinge_text.trim();
                 if t.is_empty() {
@@ -130,7 +82,7 @@ impl SubdivideWindow {
                         DVec3::new(c.easting, c.northing, 0.0)
                     }
                 };
-                Ok((p - parcel.origin).truncate())
+                Ok(parcel.local(p))
             }
         }
     }
@@ -148,23 +100,11 @@ impl SubdivideWindow {
             .map_err(|_| format!("Area: '{}' is not a number", self.area.trim()))?
             * unit
             * unit;
-        match self.method {
-            Method::Parallel => {
-                let (edge, _) = *parcel
-                    .edges
-                    .get(self.edge)
-                    .ok_or("The parcel has no straight edges")?;
-                parallel(&parcel.polygon, edge, area)
-                    .map(|c| vec![(None, c)])
-                    .map_err(|e| e.to_string())
-            }
-            Method::Swing => {
-                let hinge = self.hinge(doc, parcel)?;
-                swing(&parcel.polygon, hinge, area)
-                    .map(|v| v.into_iter().map(|(b, c)| (Some(b), c)).collect())
-                    .map_err(|e| e.to_string())
-            }
-        }
+        let method = match self.method {
+            Method::Parallel => Cutting::Parallel(self.edge),
+            Method::Swing => Cutting::Swing(self.hinge(doc, parcel)?),
+        };
+        cuts(parcel, method, area)
     }
 
     pub fn show(
@@ -216,7 +156,7 @@ impl SubdivideWindow {
                     );
                     return;
                 };
-                let total = survey_core::subdivide::signed_area(&parcel.polygon).abs();
+                let total = parcel.area();
                 ui.label(
                     RichText::new(format!("Parcel area {}", conv.format_area(total)))
                         .color(theme.text_secondary),
@@ -239,7 +179,7 @@ impl SubdivideWindow {
                         match self.method {
                             Method::Parallel => {
                                 ui.label("Edge");
-                                let label = |i: usize| edge_label(&conv, parcel, i);
+                                let label = |i: usize| parcel.edge_label(&conv, i);
                                 egui::ComboBox::from_id_salt("subdivide_edge")
                                     .width(300.0)
                                     .selected_text(label(self.edge))
@@ -326,19 +266,21 @@ impl SubdivideWindow {
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             if ui.button("Draw cut line").clicked() {
-                                action = Some(self.draw(doc, parcel, cut, false));
+                                let (cs, summary) = draw(doc, parcel, cut, false);
+                                action = Some(SubdivideAction::Draw(Box::new(cs), summary));
                             }
                             if ui
                                 .button("Draw both parcels")
                                 .on_hover_text("Adds the two new parcels as closed polylines")
                                 .clicked()
                             {
-                                action = Some(self.draw(doc, parcel, cut, true));
+                                let (cs, summary) = draw(doc, parcel, cut, true);
+                                action = Some(SubdivideAction::Draw(Box::new(cs), summary));
                             }
                             if ui.button("Add to reports").clicked() {
                                 action = Some(SubdivideAction::Report(
                                     format!("Subdivision {}", parcel.name),
-                                    report(&conv, parcel, total, bearing.or(cut_brg), cut),
+                                    report(&conv, parcel, bearing.or(cut_brg), cut),
                                 ));
                             }
                         });
@@ -354,89 +296,4 @@ impl SubdivideWindow {
         self.open = open;
         action
     }
-
-    fn draw(&self, doc: &Document, parcel: &Parcel, cut: &Cut, parcels: bool) -> SubdivideAction {
-        let to_world = |p: DVec2| parcel.origin + p.extend(0.0);
-        let mut cs = ChangeSet::new(format!("Subdivide {}", parcel.name));
-        for (a, b) in &cut.segments {
-            cs.push_insert_entity(Entity::Polyline(Polyline {
-                name: format!("{} cut", parcel.name),
-                vertices: vec![to_world(*a), to_world(*b)],
-                bulges: Vec::new(),
-                closed: false,
-                code: String::new(),
-                layer: doc.current_layer(),
-                heights_known: true,
-            }));
-        }
-        if parcels {
-            for (suffix, ring) in [("A", &cut.part), ("B", &cut.remainder)] {
-                cs.push_insert_entity(Entity::Polyline(Polyline {
-                    name: format!("{} {suffix}", parcel.name),
-                    vertices: ring.iter().map(|p| to_world(*p)).collect(),
-                    bulges: Vec::new(),
-                    closed: true,
-                    code: String::new(),
-                    layer: parcel.layer,
-                    heights_known: true,
-                }));
-            }
-        }
-        let what = if parcels {
-            "cut line and parcels"
-        } else {
-            "cut line"
-        };
-        SubdivideAction::Draw(
-            Box::new(cs),
-            format!("Subdivide {}: drew the {what}", parcel.name),
-        )
-    }
-}
-
-fn edge_label(conv: &Conventions, parcel: &Parcel, i: usize) -> String {
-    let Some((k, seg)) = parcel.edges.get(i) else {
-        return "—".into();
-    };
-    let a = parcel.polygon[*k];
-    let b = parcel.polygon[(*k + 1) % parcel.polygon.len()];
-    let d = b - a;
-    let brg = Bearing::from_delta(d.x, d.y)
-        .map(|b| conv.format_bearing(b))
-        .unwrap_or_default();
-    format!("Edge {}  {brg}  {}", seg + 1, conv.format_length(d.length()))
-}
-
-/// Bearing and total length of the cut line.
-fn cut_line(cut: &Cut) -> (Option<Bearing>, f64) {
-    let len = cut.segments.iter().map(|(a, b)| a.distance(*b)).sum();
-    let brg = cut.segments.first().and_then(|(a, b)| {
-        let d = *b - *a;
-        Bearing::from_delta(d.x, d.y)
-    });
-    (brg, len)
-}
-
-fn report(conv: &Conventions, parcel: &Parcel, total: f64, bearing: Option<Bearing>, cut: &Cut) -> String {
-    let mut s = format!("SUBDIVISION  {}\n\n", parcel.name);
-    s.push_str(&format!("Parcel area     {}\n", conv.format_area(total)));
-    s.push_str(&format!("Area cut off    {}\n", conv.format_area(cut.part_area)));
-    s.push_str(&format!(
-        "Remainder       {}\n\n",
-        conv.format_area(cut.remainder_area)
-    ));
-    if let Some(b) = bearing {
-        s.push_str(&format!("Cut bearing     {}\n", conv.format_bearing(b)));
-    }
-    for (i, (a, b)) in cut.segments.iter().enumerate() {
-        let (pa, pb) = (parcel.origin + a.extend(0.0), parcel.origin + b.extend(0.0));
-        s.push_str(&format!(
-            "Cut {}  from {}\n       to   {}\n       length {}\n",
-            i + 1,
-            conv.format_coord(pa, false),
-            conv.format_coord(pb, false),
-            conv.format_length_with_unit(a.distance(*b))
-        ));
-    }
-    s
 }

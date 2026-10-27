@@ -79,14 +79,14 @@ impl Session {
         let from_raw: Vec<&str> = points
             .iter()
             .map(|(_, n)| n.as_str())
-            .filter(|n| doc.field_data().iter().any(|f| f.reduced.iter().any(|r| r == n)))
+            .filter(|n| from_raw_data(doc, n))
             .collect();
         if !from_raw.is_empty() {
             return Err(format!(
-                "{} of these points come from raw data ({}…): rename their shots in the raw data editor, \
+                "{} of these points come from raw data ({}): rename their shots in the raw data editor, \
                  so reducing again keeps the new names",
                 from_raw.len(),
-                from_raw[..from_raw.len().min(5)].join(", ")
+                some_names(&from_raw)
             ));
         }
         let mut renames: Vec<(EntityId, String, String)> = Vec::new();
@@ -175,6 +175,7 @@ impl Session {
             conv.format_length(dz)
         ));
         let (mut moved, mut skipped) = (0, 0);
+        let mut from_raw = Vec::new();
         for id in ids {
             if !doc.is_entity_editable(id) {
                 skipped += 1;
@@ -182,6 +183,9 @@ impl Session {
             }
             match doc.entity(id) {
                 Some(Entity::Point(p)) if p.height_known => {
+                    if from_raw_data(doc, &p.name) {
+                        from_raw.push(p.name.as_str());
+                    }
                     let mut q = p.clone();
                     q.position.z += dz;
                     cs.push_update_entity(id, Entity::Point(q));
@@ -211,8 +215,33 @@ impl Session {
                 " ({skipped} without heights or locked left as they are)"
             ));
         }
+        let warning = (!from_raw.is_empty()).then(|| {
+            format!(
+                "{} of these points come from raw data ({}): reducing it again puts their heights back; \
+                 correct the target or instrument height in the raw data editor to keep the change",
+                from_raw.len(),
+                some_names(&from_raw)
+            )
+        });
         self.execute(Box::new(cs));
         self.log.result(summary.clone());
+        if let Some(w) = warning {
+            self.log.warn(w.clone());
+            summary = format!("{summary}. Warning: {w}");
+        }
         Ok(summary)
     }
+}
+
+/// Whether a raw data reduction placed the point named `name`.
+fn from_raw_data(doc: &survey_model::Document, name: &str) -> bool {
+    doc.field_data()
+        .iter()
+        .any(|f| f.reduced.iter().any(|r| r == name))
+}
+
+/// Up to five names, with … when there are more.
+fn some_names(names: &[&str]) -> String {
+    let more = if names.len() > 5 { "…" } else { "" };
+    format!("{}{more}", names[..names.len().min(5)].join(", "))
 }

@@ -1,14 +1,14 @@
 //! Resection (free station): fix an instrument station from directions and/or
 //! distances observed to known points.
 
-use std::fmt::Write as _;
-
 use egui::RichText;
 use egui_cad::chrome::{IconButton, segmented};
 use egui_cad::{CadTheme, fonts, icons};
-use survey_core::resection::{Resection, Sighting, Weights, resect};
+use survey_core::resection::{Resection, Sighting, Weights};
 use survey_core::{Angle, Conventions};
-use survey_model::{ChangeSet, Command, Document, Entity, SurveyPoint};
+use survey_model::{Command, Document};
+
+use crate::compute::resection::{Observed, report, sightings, solve, station_command};
 
 #[derive(Clone, Default)]
 struct Row {
@@ -50,48 +50,27 @@ impl ResectionWindow {
     fn sightings(&self, doc: &Document) -> Result<Vec<(String, Sighting)>, String> {
         let conv = doc.conventions();
         let blank = |s: &str| s.trim().is_empty();
-        let mut out = Vec::new();
+        let mut observed = Vec::new();
         for (i, r) in self.rows.iter().enumerate() {
             if blank(&r.target) && blank(&r.direction) && blank(&r.distance) {
                 continue;
             }
             let n = i + 1;
-            let name = r.target.trim();
-            let (_, p) = doc
-                .find_point_by_name(name)
-                .ok_or_else(|| format!("Row {n}: no point named '{name}'"))?;
-            let direction = if blank(&r.direction) {
-                None
-            } else {
-                Some(
-                    conv.parse_angle(&r.direction)
-                        .map_err(|e| format!("Row {n} direction: {e}"))?,
-                )
-            };
-            let distance = if blank(&r.distance) {
-                None
-            } else {
-                Some(
-                    conv.parse_length(&r.distance)
-                        .map_err(|e| format!("Row {n} distance: {e}"))?,
-                )
-            };
-            if direction.is_none() && distance.is_none() {
-                return Err(format!("Row {n}: enter a direction, a distance or both"));
-            }
-            out.push((
-                name.to_string(),
-                Sighting {
-                    target: p.position.truncate(),
-                    direction,
-                    distance,
-                },
-            ));
+            let direction = (!blank(&r.direction))
+                .then(|| conv.parse_angle(&r.direction))
+                .transpose()
+                .map_err(|e| format!("Row {n} direction: {e}"))?;
+            let distance = (!blank(&r.distance))
+                .then(|| conv.parse_length(&r.distance))
+                .transpose()
+                .map_err(|e| format!("Row {n} distance: {e}"))?;
+            observed.push(Observed {
+                point: r.target.trim().to_string(),
+                direction,
+                distance,
+            });
         }
-        if out.is_empty() {
-            return Err("Enter the known points sighted, with their directions and/or distances.".into());
-        }
-        Ok(out)
+        sightings(doc, &observed)
     }
 
     fn weights(&self) -> Weights {
@@ -117,12 +96,9 @@ impl ResectionWindow {
                     self.form(ui, &theme, doc);
                     ui.add_space(6.0);
                     ui.separator();
-                    let result = self.sightings(doc).and_then(|s| {
-                        let only: Vec<Sighting> = s.iter().map(|(_, x)| *x).collect();
-                        resect(&only, self.weights())
-                            .map(|r| (s, r))
-                            .map_err(|e| e.to_string())
-                    });
+                    let result = self
+                        .sightings(doc)
+                        .and_then(|s| solve(&s, self.weights()).map(|r| (s, r)));
                     match result {
                         Ok((sightings, solutions)) => {
                             if solutions.len() > 1 {
@@ -145,24 +121,10 @@ impl ResectionWindow {
                                 let create = ui
                                     .add_enabled(!exists, egui::Button::new(format!("Create station {name}")))
                                     .on_disabled_hover_text("A point with this name already exists");
-                                if create.clicked() {
-                                    let point = SurveyPoint {
-                                        name: name.clone(),
-                                        position: r.position.extend(0.0),
-                                        height_known: false,
-                                        code: "STN".into(),
-                                        description: "Resection".into(),
-                                        layer: doc.current_layer(),
-                                    };
-                                    let cs = ChangeSet::new(format!("Resection station {name}"))
-                                        .insert_entity(Entity::Point(point));
-                                    action = Some(ResectionAction::Create(
-                                        Box::new(cs),
-                                        format!(
-                                            "Resection: station {name} at {}",
-                                            conv.format_coord(r.position.extend(0.0), false)
-                                        ),
-                                    ));
+                                if create.clicked()
+                                    && let Ok((cs, summary)) = station_command(doc, &name, r, None)
+                                {
+                                    action = Some(ResectionAction::Create(Box::new(cs), summary));
                                 }
                                 if ui.button("Add to reports").clicked() {
                                     action = Some(ResectionAction::Report(
@@ -328,51 +290,4 @@ fn results(
                 }
             });
     }
-}
-
-fn report(conv: &Conventions, station: &str, sightings: &[(String, Sighting)], r: &Resection) -> String {
-    let mut s = String::new();
-    let _ = writeln!(s, "RESECTION  station {station}");
-    let _ = writeln!(s);
-    let _ = writeln!(
-        s,
-        "{:<12} {:>16} {:>12} {:>10} {:>10}",
-        "Known point", "Direction", "Distance", "v dir", "v dist"
-    );
-    for ((name, sg), (vd, vs)) in sightings.iter().zip(&r.residuals) {
-        let _ = writeln!(
-            s,
-            "{:<12} {:>16} {:>12} {:>10} {:>10}",
-            name,
-            sg.direction.map(|a| conv.format_angle(a)).unwrap_or_default(),
-            sg.distance.map(|d| conv.format_length(d)).unwrap_or_default(),
-            vd.filter(|_| r.redundancy > 0)
-                .map(|a| format!("{:+.1}\"", a.degrees() * 3600.0))
-                .unwrap_or_default(),
-            vs.filter(|_| r.redundancy > 0)
-                .map(|d| format!("{:+.1}mm", d * 1000.0))
-                .unwrap_or_default(),
-        );
-    }
-    let _ = writeln!(s);
-    let _ = writeln!(
-        s,
-        "Station         {}",
-        conv.format_coord(r.position.extend(0.0), false)
-    );
-    if let Some(o) = r.orientation {
-        let _ = writeln!(s, "Orientation     {}", conv.format_angle(o));
-    }
-    let _ = writeln!(s, "Redundancy      {}", r.redundancy);
-    if let (Some(sd), Some(s0)) = (r.sigma, r.sigma0) {
-        let (ea, nb) = conv.horizontal_labels();
-        let _ = writeln!(
-            s,
-            "Std. deviation  {ea} {}  {nb} {}",
-            conv.format_length_with_unit(sd.x),
-            conv.format_length_with_unit(sd.y)
-        );
-        let _ = writeln!(s, "Sigma0          {s0:.2}");
-    }
-    s
 }

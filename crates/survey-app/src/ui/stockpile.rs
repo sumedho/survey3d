@@ -1,14 +1,13 @@
 //! Stockpile volumes: a surface above its base inside a toe polygon, with
 //! tonnage from a density.
 
-use std::fmt::Write as _;
-
 use egui::RichText;
 use egui_cad::chrome::segmented;
 use egui_cad::{CadTheme, fonts};
-use survey_core::volume::{Stockpile, StockpileBase, stockpile};
-use survey_model::surface::outline;
+use survey_core::volume::StockpileBase;
 use survey_model::{Document, EntityId, SurfaceId};
+
+use crate::compute::volumes::{format_volume, stockpile_volume};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Base {
@@ -25,7 +24,8 @@ pub struct StockpileWindow {
     level: String,
     density: String,
     name: String,
-    result: Option<Result<Stockpile, String>>,
+    /// The result and its report.
+    result: Option<Result<(survey_core::volume::Stockpile, String), String>>,
 }
 
 impl Default for StockpileWindow {
@@ -90,10 +90,12 @@ impl StockpileWindow {
                     .spacing([12.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("Name");
-                        ui.add_sized(
-                            [180.0, 22.0],
-                            egui::TextEdit::singleline(&mut self.name).hint_text("e.g. ROM stockpile 3"),
-                        );
+                        changed |= ui
+                            .add_sized(
+                                [180.0, 22.0],
+                                egui::TextEdit::singleline(&mut self.name).hint_text("e.g. ROM stockpile 3"),
+                            )
+                            .changed();
                         ui.end_row();
                         ui.label("Surface");
                         let text = self
@@ -150,12 +152,14 @@ impl StockpileWindow {
                         ui.end_row();
                         ui.label("Density");
                         ui.horizontal(|ui| {
-                            ui.add_sized(
-                                [70.0, 22.0],
-                                egui::TextEdit::singleline(&mut self.density)
-                                    .hint_text("t/m³")
-                                    .font(fonts::mono(12.0)),
-                            );
+                            changed |= ui
+                                .add_sized(
+                                    [70.0, 22.0],
+                                    egui::TextEdit::singleline(&mut self.density)
+                                        .hint_text("t/m³")
+                                        .font(fonts::mono(12.0)),
+                                )
+                                .changed();
                             ui.label(RichText::new("t/m³ (optional, for tonnes)").small());
                         });
                         ui.end_row();
@@ -175,9 +179,8 @@ impl StockpileWindow {
                 }
                 ui.separator();
                 match &self.result {
-                    Some(Ok(s)) => {
-                        let mpu = conv.linear_unit.metres_per_unit();
-                        let vol = |v: f64| format!("{:.3} {}³", v / mpu.powi(3), conv.linear_unit.suffix());
+                    Some(Ok((s, text))) => {
+                        let vol = |v: f64| format_volume(&conv, v);
                         let r = &s.result;
                         egui::Grid::new("stockpile_result")
                             .num_columns(2)
@@ -216,7 +219,7 @@ impl StockpileWindow {
                                 ui.end_row();
                             });
                         if ui.button("Add to reports").clicked() {
-                            report = Some(self.report(doc, s));
+                            report = Some((format!("Stockpile {}", self.title()), text.clone()));
                         }
                     }
                     Some(Err(e)) => {
@@ -229,15 +232,17 @@ impl StockpileWindow {
         report
     }
 
-    fn compute(&self, doc: &Document) -> Result<Stockpile, String> {
-        let s = self
-            .surface
-            .and_then(|id| doc.surface(id))
-            .ok_or("Choose the surface")?;
-        let toe = self
-            .toe
-            .and_then(|id| outline(doc, id))
-            .ok_or("Select the closed toe polyline")?;
+    fn title(&self) -> &str {
+        if self.name.trim().is_empty() {
+            "Stockpile"
+        } else {
+            self.name.trim()
+        }
+    }
+
+    fn compute(&self, doc: &Document) -> Result<(survey_core::volume::Stockpile, String), String> {
+        let surface = self.surface.ok_or("Choose the surface")?;
+        let toe = self.toe.ok_or("Select the closed toe polyline")?;
         let base = match self.base {
             Base::Toe => StockpileBase::Toe,
             Base::LowestToe => StockpileBase::LowestToe,
@@ -247,47 +252,6 @@ impl StockpileWindow {
                     .map_err(|e| format!("Base level: {e}"))?,
             ),
         };
-        stockpile(&s.tin, &toe, base).map_err(|e| e.to_string())
-    }
-
-    fn report(&self, doc: &Document, s: &Stockpile) -> (String, String) {
-        let conv = doc.conventions();
-        let mpu = conv.linear_unit.metres_per_unit();
-        let vol = |v: f64| format!("{:.3} {}³", v / mpu.powi(3), conv.linear_unit.suffix());
-        let name = if self.name.trim().is_empty() {
-            "Stockpile".to_string()
-        } else {
-            self.name.trim().to_string()
-        };
-        let surface = self
-            .surface
-            .and_then(|id| doc.surface(id))
-            .map_or(String::new(), |s| s.name.clone());
-        let base = match self.base {
-            Base::Toe => "triangulated toe".to_string(),
-            Base::LowestToe => format!("lowest toe {}", conv.format_length(s.base_min)),
-            Base::Level => format!("level {}", self.level.trim()),
-        };
-        let r = &s.result;
-        let mut t = String::new();
-        let _ = writeln!(t, "STOCKPILE  {name}");
-        let _ = writeln!(t, "Surface      {surface}");
-        let _ = writeln!(t, "Base         {base}");
-        let _ = writeln!(t);
-        let _ = writeln!(t, "Volume       {}", vol(r.net()));
-        if let Some(d) = self.density() {
-            let _ = writeln!(t, "Density      {d} t/m³");
-            let _ = writeln!(t, "Tonnes       {:.1} t", r.net() * d);
-        }
-        let _ = writeln!(t, "Above base   {}", vol(r.fill));
-        let _ = writeln!(t, "Below base   {}", vol(r.cut));
-        let _ = writeln!(t, "Plan area    {}", conv.format_area(r.area));
-        let _ = writeln!(
-            t,
-            "Toe heights  {} to {}",
-            conv.format_length(s.base_min),
-            conv.format_length(s.base_max)
-        );
-        (format!("Stockpile {name}"), t)
+        stockpile_volume(doc, surface, toe, base, self.density(), self.title())
     }
 }

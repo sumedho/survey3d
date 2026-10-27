@@ -191,10 +191,26 @@ impl Tool for RadiateTool {
                 ToolOutcome::Continue
             }
             ToolEvent::Text(text) => {
-                if self.station.is_some() && self.backsight.is_none() {
-                    match ctx.conventions().parse_bearing(text) {
-                        Ok(b) => self.backsight = Some(b),
-                        Err(e) => ctx.log.error(e.to_string()),
+                if let (Some(st), None) = (self.station, self.backsight) {
+                    // A point named like a number ("2") is the backsight point,
+                    // not a bearing of 2°.
+                    let bearing = match ctx.doc.find_point_by_name(text.trim()) {
+                        Some((_, p)) => {
+                            let d = p.position - st.position;
+                            Bearing::from_delta(d.x, d.y)
+                                .ok_or_else(|| "The backsight must be away from the station".to_string())
+                        }
+                        None => ctx.conventions().parse_bearing(text).map_err(|e| e.to_string()),
+                    };
+                    match bearing {
+                        Ok(b) => {
+                            self.backsight = Some(b);
+                            ctx.log.info(format!(
+                                "Backsight bearing {}",
+                                ctx.conventions().format_bearing(b)
+                            ));
+                        }
+                        Err(e) => ctx.log.error(e),
                     }
                 } else if self.backsight.is_some() && text.trim() == "t" {
                     self.traverse = !self.traverse;

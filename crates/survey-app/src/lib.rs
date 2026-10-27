@@ -9,6 +9,7 @@ pub mod calibration;
 #[cfg(not(target_arch = "wasm32"))]
 mod cloud_stream;
 mod cloud_view;
+pub mod compute;
 pub mod curves;
 mod dimension;
 pub use dimension::dimension_text;

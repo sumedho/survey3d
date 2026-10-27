@@ -138,6 +138,14 @@ impl Server {
             "add_text" => self.add_text(args),
             "add_dimension" => self.add_dimension(args),
             "trim_extend" => self.trim_extend(args),
+            "compute_volumes" => self.compute_volumes(args),
+            "stockpile_volume" => self.stockpile_volume(args),
+            "adjust_network" => self.adjust_network(args),
+            "adjust_traverse" => self.adjust_traverse(args),
+            "figure_closure" => self.figure_closure(args),
+            "resection" => self.resection(args),
+            "sections" => self.sections(args),
+            "subdivide" => self.subdivide(args),
             "edit_entities" => self.edit_entities(args),
             "create_surface" => self.create_surface(args),
             "set_surface" => self.set_surface(args),
@@ -156,6 +164,13 @@ impl Server {
 
     fn doc(&self) -> &Document {
         &self.session.project.doc
+    }
+
+    /// Forgets earlier command-line output and reports (other tools return
+    /// their results directly), so the next drain has only what follows.
+    fn clear_output(&mut self) {
+        self.session.log = CommandLineState::default();
+        self.session.take_events();
     }
 
     /// The command-line output since it was last cleared, and any reports.
@@ -282,6 +297,12 @@ impl Server {
     fn open_project(&mut self, args: &Value) -> Outcome {
         self.check_unsaved(args)?;
         let path = PathBuf::from(required_str(args, "path")?);
+        let current = self.session.project.store.file_path();
+        if !self.read_only && current.is_some_and(|c| same_file(c, &path)) {
+            // Reopening (reverting to) our own file: let go of its lock first.
+            let blank = Project::new(&self.settings).map_err(|e| e.to_string())?;
+            self.session.replace_project(blank);
+        }
         let project = open(&path, &self.settings, self.read_only)?;
         self.session.replace_project(project);
         Ok(ToolResult::json(&self.project_info()))
@@ -335,7 +356,7 @@ impl Server {
             .iter()
             .map(|l| l.as_str().ok_or("lines: each line is a string"))
             .collect::<Result<_, _>>()?;
-        self.session.log = CommandLineState::default();
+        self.clear_output();
         for line in lines {
             self.session.run(line);
         }
@@ -514,10 +535,14 @@ impl Server {
             }
         };
         let values = match kind {
-            "sheet" => self.set_records::<SheetRecord>(items),
-            "parcel" => self.set_records::<ParcelRecord>(items),
-            "alignment" => self.set_records::<AlignmentRecord>(items),
-            "traverse" => self.set_records::<TraverseRecord>(items),
+            "sheet" => {
+                // A new sheet frames the whole drawing unless told otherwise.
+                let base = serde_json::to_value(self.session.new_sheet()).map_err(|e| e.to_string())?;
+                self.set_records::<SheetRecord>(items, Some(base))
+            }
+            "parcel" => self.set_records::<ParcelRecord>(items, None),
+            "alignment" => self.set_records::<AlignmentRecord>(items, None),
+            "traverse" => self.set_records::<TraverseRecord>(items, None),
             other => Err(format!("kind: records of kind '{other}' cannot be set")),
         }?;
         Ok(ToolResult::json(&match batch {
@@ -527,8 +552,13 @@ impl Server {
     }
 
     /// Creates records (no id) or merges fields into existing ones, all as one
-    /// undo step; returns them with their ids.
-    fn set_records<T>(&mut self, items: Vec<(Option<RecordId>, Value)>) -> Result<Vec<Value>, String>
+    /// undo step; returns them with their ids. New records start from `base`
+    /// when given.
+    fn set_records<T>(
+        &mut self,
+        items: Vec<(Option<RecordId>, Value)>,
+        base: Option<Value>,
+    ) -> Result<Vec<Value>, String>
     where
         T: Record + Serialize + DeserializeOwned + PartialEq,
     {
@@ -565,8 +595,15 @@ impl Server {
                     ids.push(Some(id));
                 }
                 None => {
+                    let value = match base.clone() {
+                        Some(mut value) => {
+                            merge(&mut value, patch);
+                            value
+                        }
+                        None => patch,
+                    };
                     let record: T =
-                        serde_json::from_value(patch).map_err(|e| format!("{}record: {e}", at(i)))?;
+                        serde_json::from_value(value).map_err(|e| format!("{}record: {e}", at(i)))?;
                     names.push(record.name().to_string());
                     cs = cs.insert_record(record);
                     ids.push(None);
@@ -647,7 +684,7 @@ impl Server {
             }
             .to_string(),
         };
-        self.session.log = CommandLineState::default();
+        self.clear_output();
         match format.as_str() {
             "csv" => {
                 let layout = CsvLayout::from_letters(str_arg(args, "layout").unwrap_or("PENZC"));
@@ -686,7 +723,7 @@ impl Server {
             ));
         }
         ensure_folder(&path)?;
-        self.session.log = CommandLineState::default();
+        self.clear_output();
         let bytes: Vec<u8> = match required_str(args, "format")? {
             "dxf" => self.session.dxf(self.sheet(args, false)?.as_ref()).0.into_bytes(),
             "landxml" => {
@@ -1155,6 +1192,7 @@ impl Filter {
 
 mod calibration;
 mod cogo;
+mod compute;
 mod drawing;
 mod field;
 mod settings;

@@ -7,13 +7,12 @@
 use egui::RichText;
 use egui_cad::chrome::{IconButton, segmented, switch_row};
 use egui_cad::{CadTheme, fonts, icons};
-use glam::DVec3;
 use survey_core::accuracy::Tolerances;
-use survey_core::closure::{
-    Course, CourseArc, Figure, Solution, Unknown, courses_from_polyline, figure, report, solve,
-};
+use survey_core::closure::{Course, Solution, Unknown, courses_from_polyline, figure, report, solve};
 use survey_core::{Bearing, Conventions};
-use survey_model::{ChangeSet, Command, Document, Entity, Polyline};
+use survey_model::{Command, Document, Entity, Polyline};
+
+use crate::compute::closure::{CourseInput, courses, draw, start_point};
 
 #[derive(Clone, Default)]
 struct Row {
@@ -107,7 +106,7 @@ impl ClosureWindow {
 
     fn courses(&self, conv: &Conventions) -> Result<Vec<Course>, String> {
         let blank = |s: &str| s.trim().is_empty();
-        let mut out = Vec::with_capacity(self.rows.len());
+        let mut inputs = Vec::with_capacity(self.rows.len());
         for (i, r) in self.rows.iter().enumerate() {
             let n = i + 1;
             let length = |label: &str, text: &str| -> Result<Option<f64>, String> {
@@ -118,78 +117,28 @@ impl ClosureWindow {
                     .map(Some)
                     .map_err(|e| format!("Course {n} {label}: {e}"))
             };
-            let bearing = if blank(&r.bearing) {
-                None
-            } else {
-                Some(
-                    conv.parse_bearing(&r.bearing)
-                        .map_err(|e| format!("Course {n} bearing: {e}"))?,
-                )
-            };
-            let mut distance = length("distance", &r.distance)?;
-            let arc = if r.arc {
-                let radius =
-                    length("radius", &r.radius)?.ok_or(format!("Course {n}: enter the arc's radius"))?;
-                let arc_length = length("arc length", &r.arc_length)?;
-                if distance.is_none()
-                    && let Some(l) = arc_length
-                {
-                    distance = Some(
-                        Course::chord_from_arc_length(radius, l)
-                            .ok_or(format!("Course {n}: the arc length does not fit the radius"))?,
-                    );
-                }
-                Some(CourseArc {
-                    radius,
-                    right: r.right,
-                    large: arc_length.is_some_and(|l| l > std::f64::consts::PI * radius),
-                })
+            let bearing = (!blank(&r.bearing))
+                .then(|| conv.parse_bearing(&r.bearing))
+                .transpose()
+                .map_err(|e| format!("Course {n} bearing: {e}"))?;
+            let radius = if r.arc {
+                Some(length("radius", &r.radius)?.ok_or(format!("Course {n}: enter the arc's radius"))?)
             } else {
                 None
             };
-            out.push(Course {
+            inputs.push(CourseInput {
                 bearing,
-                distance,
-                arc,
+                distance: length("distance", &r.distance)?,
+                radius,
+                arc_length: if r.arc {
+                    length("arc length", &r.arc_length)?
+                } else {
+                    None
+                },
+                right: r.right,
             });
         }
-        Ok(out)
-    }
-
-    /// Start of the figure: a point name or typed coordinates.
-    fn start(&self, doc: &Document) -> Option<DVec3> {
-        let text = self.start.trim();
-        if text.is_empty() {
-            return None;
-        }
-        if let Some((_, p)) = doc.find_point_by_name(text) {
-            return Some(p.position);
-        }
-        let c = doc.conventions().parse_coord(text).ok()?;
-        Some(DVec3::new(c.easting, c.northing, c.height.unwrap_or(0.0)))
-    }
-
-    fn draw(&self, doc: &Document, start: DVec3, fig: &Figure) -> (ChangeSet, String) {
-        let mut vertices: Vec<DVec3> = fig.vertices.iter().map(|v| start + v.extend(0.0)).collect();
-        let closes = fig.precision().is_none();
-        if closes {
-            vertices.pop();
-        }
-        let name = if self.title.trim().is_empty() {
-            "Closure".to_string()
-        } else {
-            self.title.trim().to_string()
-        };
-        let cs = ChangeSet::new(format!("Draw figure {name}")).insert_entity(Entity::Polyline(Polyline {
-            name: name.clone(),
-            vertices,
-            bulges: fig.bulges.clone(),
-            closed: closes && self.closed_polyline,
-            code: String::new(),
-            layer: doc.current_layer(),
-            heights_known: true,
-        }));
-        (cs, format!("Closure: drew {name}"))
+        courses(&inputs)
     }
 
     pub fn show(
@@ -358,18 +307,18 @@ impl ClosureWindow {
         );
         line(ui, "Area", conv.format_area(fig.area), theme.text);
         ui.add_space(6.0);
-        let start = self.start(doc);
+        let start = start_point(doc, &self.start);
         ui.horizontal(|ui| {
             if !sol.solved.is_empty() && ui.button("Fill in solved values").clicked() {
                 self.fill(conv, sol);
             }
-            let draw = ui
+            let draw_button = ui
                 .add_enabled(start.is_some(), egui::Button::new("Draw figure"))
                 .on_disabled_hover_text("Enter a start point to draw the figure");
-            if draw.clicked()
+            if draw_button.clicked()
                 && let Some(start) = start
             {
-                let (cs, summary) = self.draw(doc, start, &fig);
+                let (cs, summary) = draw(doc, start, &fig, &self.title, self.closed_polyline);
                 *action = Some(ClosureAction::Draw(Box::new(cs), summary));
             }
             if ui.button("Add to reports").clicked() {

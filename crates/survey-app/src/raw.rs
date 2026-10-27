@@ -95,8 +95,10 @@ pub fn reduce_command(doc: &Document, id: RecordId, mut data: FieldData, label: 
                 } else {
                     layer_for(&mut cmd, &p.code).unwrap_or(LayerRef::Existing(old.layer))
                 };
+                // Rounding noise (a recomputation after a save, say) is not a change.
+                let same = (p.position - old.position).abs().max_element() < 1e-9;
                 let point = SurveyPoint {
-                    position: p.position,
+                    position: if same { old.position } else { p.position },
                     height_known: p.height_known,
                     code: p.code.clone(),
                     ..old.clone()

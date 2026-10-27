@@ -378,6 +378,19 @@ fn radiate_traverse_moves_the_setup() {
     assert!(has_point_at(&s, 10.0, 10.0), "{:?}", point_positions(&s));
 }
 
+#[test]
+fn radiate_backsight_by_a_numbered_point() {
+    let mut s = session();
+    for line in ["pt", "0,0", "0,10", ""] {
+        s.run(line);
+    }
+    // "2" is point 2 (due north), not a bearing of 2°.
+    for line in ["rad", "1", "2", "90 10"] {
+        s.run(line);
+    }
+    assert!(has_point_at(&s, 10.0, 0.0), "{:?}", point_positions(&s));
+}
+
 /// Each command name starts one thing: a tool, or a session command.
 #[test]
 fn command_names_are_unique() {

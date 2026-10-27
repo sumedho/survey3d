@@ -17,6 +17,18 @@ use crate::interchange::{DxfExportOptions, dxf_export, dxf_import};
 use crate::settings::LabelSettings;
 use crate::ui::sheets::{SheetsWindow, ViewInfo};
 
+/// For a north-up sheet: the part of its map frame clear of the title block,
+/// as (its centre's offset from the sheet centre, its size), in metres.
+fn clear_of_title(sheet: &SheetRecord) -> (DVec2, DVec2) {
+    let lay = crate::plan::layout(sheet);
+    let (f, t) = (lay.frame, lay.title);
+    // An inset title block sits in the frame's bottom; a strip is already outside it.
+    let bottom = if lay.strip { f.min[1] } else { t.max[1] };
+    let k = sheet.mm_per_metre();
+    let offset = DVec2::new(0.0, (bottom - f.min[1]) * 0.5) / k;
+    (offset, DVec2::new(f.max[0] - f.min[0], f.max[1] - bottom) / k)
+}
+
 fn stem(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(s, _)| s)
 }
@@ -563,15 +575,34 @@ impl Session {
         } else {
             (b.min.truncate(), b.max.truncate())
         };
+        let centre = (min + max) * 0.5;
         let view = ViewInfo {
-            centre: (min + max) * 0.5,
+            centre,
             up_bearing: 0.0,
-            // The sheet takes 90% of this, and fits the drawing in 90% of its frame.
-            extent: (max - min).max(DVec2::splat(1.0)) / 0.9,
+            extent: (max - min).max(DVec2::splat(1.0)),
             bounds: Some((min, max)),
         };
         let mut sheet = SheetsWindow::sheet_from_view(doc, &view, doc.sheets().len() + 1);
         sheet.name = "Overview".into();
+        // Fit the drawing in 90% of the frame above the title block, not under it.
+        let size = view.extent;
+        for scale in survey_model::sheet::STANDARD_SCALES {
+            sheet.scale = scale;
+            let (_, clear) = clear_of_title(&sheet);
+            if size.x <= clear.x * 0.9 && size.y <= clear.y * 0.9 {
+                break;
+            }
+        }
+        let (offset, _) = clear_of_title(&sheet);
+        sheet.centre = (centre - offset).to_array();
+        sheet
+    }
+
+    /// A new sheet as `set_record` would make it when no centre or scale is
+    /// given: framing the whole drawing, named as the next sheet.
+    pub fn new_sheet(&self) -> SheetRecord {
+        let mut sheet = self.overview_sheet();
+        sheet.name = format!("Sheet {}", self.project.doc.sheets().len() + 1);
         sheet
     }
 

@@ -6,15 +6,13 @@ use std::fmt::Write as _;
 use egui::{Color32, RichText, Stroke, pos2, vec2};
 use egui_cad::chrome::segmented;
 use egui_cad::{CadTheme, fonts};
-use glam::DVec2;
 use survey_core::Conventions;
-use survey_core::arc::polyline_metrics;
-use survey_core::cogo::point_at_station;
-use survey_core::tin::{TinIndex, profile};
+use survey_core::tin::TinIndex;
 use survey_model::{Document, Entity, EntityId, Polyline, SurfaceId};
 
-/// Chord tolerance for arcs in the alignment (metres).
-const ARC_TOLERANCE: f64 = 0.01;
+use crate::compute::sections::{
+    cross_line, height_at, indexes, length, long_line, report, sections, stations,
+};
 
 const PALETTE: [Color32; 6] = [
     Color32::from_rgb(251, 191, 36),
@@ -31,12 +29,11 @@ enum Mode {
     Cross,
 }
 
-/// One surface's section: runs of (distance, height).
+/// One surface's section, as drawn.
 #[derive(Clone)]
 struct Series {
-    name: String,
     color: Color32,
-    runs: Vec<Vec<(f64, f64)>>,
+    section: crate::compute::sections::Series,
 }
 
 pub struct SectionsWindow {
@@ -86,18 +83,6 @@ pub enum SectionsAction {
     Report(String, String),
 }
 
-fn plan_points(l: &Polyline) -> Vec<DVec2> {
-    let mut pts: Vec<DVec2> = Vec::new();
-    for part in l.tessellate(ARC_TOLERANCE) {
-        for p in part {
-            if pts.last().is_none_or(|q| q.distance(p.truncate()) > 1e-9) {
-                pts.push(p.truncate());
-            }
-        }
-    }
-    pts
-}
-
 impl SectionsWindow {
     pub fn open_with(&mut self, alignment: Option<EntityId>) {
         self.open = true;
@@ -115,14 +100,7 @@ impl SectionsWindow {
     }
 
     fn stations(&self, length: f64) -> Vec<f64> {
-        let step = self.interval.max(0.01);
-        let mut out: Vec<f64> = (0..=((length / step).floor() as usize))
-            .map(|k| k as f64 * step)
-            .collect();
-        if out.last().is_some_and(|c| length - c > 1e-6) {
-            out.push(length);
-        }
-        out
+        stations(length, self.interval)
     }
 
     fn series(&mut self, doc: &Document) -> &[Series] {
@@ -142,45 +120,26 @@ impl SectionsWindow {
             return self.cache.as_ref().map(|(_, s)| s.as_slice()).unwrap_or(&[]);
         }
         if self.indexes.0 != doc.surfaces_revision() {
-            self.indexes = (
-                doc.surfaces_revision(),
-                doc.surfaces().map(|(sid, s)| (sid, s.tin.index())).collect(),
-            );
+            self.indexes = (doc.surfaces_revision(), indexes(doc));
         }
         let mut out = Vec::new();
         if let Some(l) = self.alignment(doc) {
-            let line: Vec<DVec2> = match self.mode {
-                Mode::Long => plan_points(l),
+            let (line, shift) = match self.mode {
+                Mode::Long => (long_line(l), 0.0),
                 Mode::Cross => {
-                    let (length, _, _) = polyline_metrics(&l.vertices, &l.bulges, l.closed);
-                    let stations = self.stations(length);
+                    let stations = self.stations(length(l));
                     let ch = stations[self.station.min(stations.len() - 1)];
-                    let a = point_at_station(&l.vertices, &l.bulges, l.closed, ch, -self.left);
-                    let b = point_at_station(&l.vertices, &l.bulges, l.closed, ch, self.right);
-                    match (a, b) {
-                        (Some(a), Some(b)) => vec![a.truncate(), b.truncate()],
-                        _ => Vec::new(),
-                    }
+                    (cross_line(l, ch, self.left, self.right), -self.left)
                 }
             };
-            let shift = if self.mode == Mode::Cross { -self.left } else { 0.0 };
-            for (k, (sid, index)) in self.indexes.1.iter().enumerate() {
-                let Some(s) = doc.surface(*sid) else {
-                    continue;
-                };
-                if !s.style.visible {
-                    continue;
-                }
-                let runs: Vec<Vec<(f64, f64)>> = profile(&s.tin, index, &line)
-                    .into_iter()
-                    .map(|r| r.into_iter().map(|(d, z)| (d + shift, z)).collect())
-                    .collect();
-                out.push(Series {
-                    name: s.name.clone(),
+            out = sections(doc, &self.indexes.1, &line, shift)
+                .into_iter()
+                .enumerate()
+                .map(|(k, section)| Series {
                     color: PALETTE[k % PALETTE.len()],
-                    runs,
-                });
-            }
+                    section,
+                })
+                .collect();
         }
         self.cache = Some((key, out));
         self.cache.as_ref().map(|(_, s)| s.as_slice()).unwrap_or(&[])
@@ -229,8 +188,7 @@ impl SectionsWindow {
                     );
                     return;
                 };
-                let (length, _, _) = polyline_metrics(&l.vertices, &l.bulges, l.closed);
-                let stations = self.stations(length);
+                let stations = self.stations(length(l));
                 ui.horizontal(|ui| {
                     if self.mode == Mode::Cross {
                         ui.label("Every");
@@ -268,7 +226,7 @@ impl SectionsWindow {
                 let exaggeration = self.exaggeration;
                 let series = self.series(doc).to_vec();
                 let series = series.as_slice();
-                if series.iter().all(|s| s.runs.is_empty()) {
+                if series.iter().all(|s| s.section.runs.is_empty()) {
                     ui.label(RichText::new("No visible surface under this line.").color(theme.text_secondary));
                     return;
                 }
@@ -276,7 +234,7 @@ impl SectionsWindow {
                 ui.horizontal(|ui| {
                     for s in series {
                         ui.label(RichText::new("━").color(s.color));
-                        ui.label(&s.name);
+                        ui.label(&s.section.name);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Add to reports").clicked() {
@@ -284,7 +242,8 @@ impl SectionsWindow {
                                 Mode::Long => "Long section".to_string(),
                                 Mode::Cross => format!("Cross section Ch {}", conv.format_chainage(stations[self.station.min(stations.len() - 1)])),
                             };
-                            action = Some(SectionsAction::Report(title.clone(), report(&conv, &title, series, mode)));
+                            let only: Vec<_> = series.iter().map(|s| s.section.clone()).collect();
+                            action = Some(SectionsAction::Report(title.clone(), report(&conv, &title, &only, mode == Mode::Cross)));
                         }
                     });
                 });
@@ -305,13 +264,6 @@ fn nice_step(range: f64) -> f64 {
         .unwrap_or(10.0 * p)
 }
 
-fn height_at(run: &[(f64, f64)], x: f64) -> Option<f64> {
-    run.windows(2).find_map(|w| {
-        let ((x0, z0), (x1, z1)) = (w[0], w[1]);
-        (x >= x0 && x <= x1 && x1 > x0).then(|| z0 + (z1 - z0) * (x - x0) / (x1 - x0))
-    })
-}
-
 fn plot(
     ui: &mut egui::Ui,
     theme: &CadTheme,
@@ -326,7 +278,7 @@ fn plot(
     painter.rect_filled(rect, theme.radius, theme.viewport_bg);
     let plot = rect.shrink2(vec2(56.0, 18.0)).translate(vec2(20.0, -6.0));
 
-    let pts = series.iter().flat_map(|s| s.runs.iter().flatten());
+    let pts = series.iter().flat_map(|s| s.section.runs.iter().flatten());
     let (mut x0, mut x1, mut z0, mut z1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
     for (x, z) in pts {
         x0 = x0.min(*x);
@@ -412,7 +364,7 @@ fn plot(
 
     let clip = painter.with_clip_rect(plot);
     for s in series {
-        for run in &s.runs {
+        for run in &s.section.runs {
             let pts: Vec<egui::Pos2> = run.iter().map(|(x, z)| to_screen(*x, *z)).collect();
             clip.add(egui::Shape::line(pts, Stroke::new(1.8, s.color)));
         }
@@ -430,8 +382,8 @@ fn plot(
             Mode::Cross => format!("Offset {}", conv.format_length(x)),
         };
         for s in series {
-            if let Some(z) = s.runs.iter().find_map(|r| height_at(r, x)) {
-                let _ = write!(text, "\n{}: {}", s.name, conv.format_length(z));
+            if let Some(z) = s.section.runs.iter().find_map(|r| height_at(r, x)) {
+                let _ = write!(text, "\n{}: {}", s.section.name, conv.format_length(z));
                 clip.circle_filled(to_screen(x, z), 3.0, s.color);
             }
         }
@@ -444,29 +396,4 @@ fn plot(
         painter.rect_filled(bg, theme.radius, theme.overlay);
         painter.galley(pos, galley, theme.text);
     }
-}
-
-fn report(conv: &Conventions, title: &str, series: &[Series], mode: Mode) -> String {
-    let mut s = String::new();
-    let _ = writeln!(s, "{}", title.to_uppercase());
-    let x = match mode {
-        Mode::Long => "Chainage",
-        Mode::Cross => "Offset",
-    };
-    for ser in series {
-        let _ = writeln!(s);
-        let _ = writeln!(s, "{}", ser.name);
-        let _ = writeln!(s, "{x:>12} {:>12}", "Height");
-        for run in &ser.runs {
-            for (d, z) in run {
-                let d = match mode {
-                    Mode::Long => conv.format_chainage(*d),
-                    Mode::Cross => conv.format_length(*d),
-                };
-                let _ = writeln!(s, "{d:>12} {:>12}", conv.format_length(*z));
-            }
-            let _ = writeln!(s, "{:>12}", "—");
-        }
-    }
-    s
 }
