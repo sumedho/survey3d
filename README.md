@@ -18,6 +18,28 @@ cargo test --workspace
 The web build compiles SQLite to wasm with clang. On macOS install an LLVM with the wasm32 target
 (`brew install llvm`); the script picks it up automatically.
 
+## Releases
+
+Downloads are on the [Releases](https://github.com/sumedho/survey3d/releases) page:
+
+| Platform | Installer | Plain archive (both programs) |
+|---|---|---|
+| macOS (Apple silicon, Intel) | `.dmg` | `.tar.gz` |
+| Windows | `-setup.exe` (per-user, no admin) | `.zip` |
+| Linux x86_64 | `.AppImage`, `.deb` | `.tar.gz` |
+
+Each includes `survey3d-mcp` beside `survey3d`. The builds are not code-signed yet: on macOS, after
+the first launch is blocked, allow it in System Settings → Privacy & Security → Open Anyway; on
+Windows, SmartScreen's "unknown publisher" warning needs More info → Run anyway. With the AppImage,
+point MCP clients at the `survey3d-mcp` from the `.tar.gz` (the AppImage's own copy moves each run).
+
+To cut a release, bump `version` in the workspace `Cargo.toml`, commit, then tag and push:
+`git tag v0.2.0 && git push origin v0.2.0`. `.github/workflows/release.yml` builds every platform and
+opens a draft release with the files and their SHA-256 sums; check it and publish. Running the
+workflow by hand from the Actions tab builds the same files as artifacts, without a release. Locally,
+`cargo install cargo-packager --locked`, then `cargo build --release -p survey-app -p survey-mcp &&
+cargo packager --release` (packaging settings are in `crates/survey-app/Cargo.toml`).
+
 ## Workspace
 
 | Crate | Purpose |

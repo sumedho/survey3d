@@ -50,3 +50,36 @@ web-sys = { workspace = true, features = [
 
 [dev-dependencies]
 image.workspace = true
+
+# The icon in survey3d.exe.
+[build-dependencies]
+winresource = "0.1"
+
+# Installers and bundles for releases, built by cargo-packager
+# (`cargo install cargo-packager --locked`) after the release binaries, as in
+# .github/workflows/release.yml: `cargo packager --release --formats dmg`.
+# survey3d-mcp ships beside survey3d, where the agent-link settings look for it.
+# Paths are relative to this crate.
+[package.metadata.packager]
+product-name = "survey3d"
+identifier = "io.github.sumedho.survey3d"
+long-description = "Surveying CAD for cadastral, construction and mining work: COGO, traverses, surfaces, point clouds, plan sheets, and an MCP server so agents can drive it."
+homepage = "https://github.com/sumedho/survey3d"
+authors = ["sumedho"]
+publisher = "sumedho"
+copyright = "Copyright (c) survey3d contributors"
+license-file = "../../LICENSE"
+category = "GraphicsAndDesign"
+icons = ["../../assets/icon/icon.png", "../../assets/icon/icon.icns", "../../assets/icon/icon.ico"]
+binaries = [{ path = "survey3d", main = true }, { path = "survey3d-mcp" }]
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+
+[package.metadata.packager.nsis]
+# A per-user install: no administrator rights needed.
+installer-mode = "currentUser"
+installer-icon = "../../assets/icon/icon.ico"
+
+[package.metadata.packager.deb]
+section = "science"

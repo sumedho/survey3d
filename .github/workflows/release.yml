@@ -1,0 +1,131 @@
+name: Release
+
+# Pushing a version tag (v0.2.0, matching the workspace version) builds
+# survey3d and survey3d-mcp for Linux, Windows and macOS (Apple silicon and
+# Intel), packages them, and opens a draft GitHub Release with them attached:
+# publish it from the Releases page once checked. Run by hand from the Actions
+# tab to build the same packages as workflow artifacts without a release.
+#
+# Builds are unsigned for now: macOS asks to confirm opening the app (System
+# Settings → Privacy & Security → Open Anyway) and Windows SmartScreen shows
+# "unknown publisher" (More info → Run anyway).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  PACKAGER_VERSION: 0.11.8
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported Ubuntu, so the binaries run on older glibc.
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, label: linux-x86_64, formats: "deb,appimage" }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, label: windows-x86_64, formats: nsis }
+          - { os: macos-14, target: aarch64-apple-darwin, label: macos-arm64, formats: dmg }
+          - { os: macos-14, target: x86_64-apple-darwin, label: macos-x86_64, formats: dmg }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: System libraries (Linux)
+        if: runner.os == 'Linux'
+        # gtk/xkbcommon for eframe and rfd; libfuse2 runs the AppImage tools.
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libfuse2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Version
+        id: version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "survey-app"))')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF_NAME#v}" != "$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the workspace version $version (Cargo.toml)"
+            exit 1
+          fi
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p survey-app -p survey-mcp
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version "$PACKAGER_VERSION"
+
+      - name: Package
+        env:
+          CI: "true"
+        run: cargo packager --release --target ${{ matrix.target }} --formats ${{ matrix.formats }}
+
+      - name: Collect
+        run: |
+          name="survey3d-${{ steps.version.outputs.version }}-${{ matrix.label }}"
+          out="target/${{ matrix.target }}/release"
+          mkdir -p upload "$name"
+          # Plain archive of both programs, side by side (also what to point an
+          # MCP client's `survey3d-mcp --attach` at).
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cp "$out/survey3d.exe" "$out/survey3d-mcp.exe" README.md LICENSE "$name/"
+            7z a "upload/$name.zip" "$name" > /dev/null
+          else
+            cp "$out/survey3d" "$out/survey3d-mcp" README.md LICENSE "$name/"
+            tar -czf "upload/$name.tar.gz" "$name"
+          fi
+          # Installers and bundles, renamed to say which platform they are for.
+          shopt -s nullglob
+          for f in "$out"/*.dmg "$out"/*.deb "$out"/*.AppImage "$out"/*-setup.exe; do
+            ext="${f##*.}"
+            case "$f" in
+              *-setup.exe) cp "$f" "upload/$name-setup.exe" ;;
+              *) cp "$f" "upload/$name.$ext" ;;
+            esac
+          done
+          ls -la upload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: survey3d-${{ matrix.label }}
+          path: upload/*
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: upload
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd upload && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" upload/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "survey3d $GITHUB_REF_NAME" \
+            --generate-notes

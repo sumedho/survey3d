@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b3a4a"/>
+      <stop offset="1" stop-color="#16202b"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#bg)"/>
+  <!-- contours -->
+  <g fill="none" stroke="#5f7d96" stroke-width="14" stroke-linecap="round" opacity="0.55">
+    <path d="M150 700 C 300 610, 420 720, 560 640 S 800 560, 880 600"/>
+    <path d="M150 560 C 290 470, 430 580, 570 500 S 790 420, 880 450"/>
+    <path d="M150 420 C 280 340, 440 440, 580 370 S 780 290, 880 310"/>
+  </g>
+  <!-- traverse -->
+  <polyline points="230,770 400,330 690,420 800,230" fill="none" stroke="#e8eef3" stroke-width="30" stroke-linejoin="round" stroke-linecap="round"/>
+  <g fill="#16202b" stroke="#e8eef3" stroke-width="22">
+    <circle cx="400" cy="330" r="34"/>
+    <circle cx="690" cy="420" r="34"/>
+  </g>
+  <!-- survey marks: start triangle, end target -->
+  <polygon points="230,700 290,805 170,805" fill="#4fa3e0"/>
+  <circle cx="800" cy="230" r="62" fill="none" stroke="#4fa3e0" stroke-width="22"/>
+  <circle cx="800" cy="230" r="20" fill="#4fa3e0"/>
+</svg>
