@@ -131,6 +131,8 @@ pub struct ViewportFrame {
     pub background: [f32; 4],
     /// Out-of-core point clouds (drawn on native targets only).
     pub clouds: Option<Arc<CloudFrame>>,
+    /// Georeferenced image tiles, drawn under everything else.
+    pub images: Option<Arc<crate::images::ImageFrame>>,
 }
 
 /// The egui paint callback for a viewport. Create with [`egui_wgpu::Callback::new_paint_callback`].
@@ -171,6 +173,7 @@ struct Resources {
     views: HashMap<u64, ViewResources>,
     #[cfg(not(target_arch = "wasm32"))]
     clouds: crate::clouds::CloudResources,
+    images: crate::images::ImageResources,
 }
 
 struct GpuChunk {
@@ -335,6 +338,7 @@ impl Resources {
             views: HashMap::new(),
             #[cfg(not(target_arch = "wasm32"))]
             clouds: crate::clouds::CloudResources::new(device, color_format, samples),
+            images: crate::images::ImageResources::new(device, color_format, samples),
         }
     }
 
@@ -870,8 +874,10 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
             symbols,
             #[cfg(not(target_arch = "wasm32"))]
             clouds,
+            images,
             ..
         } = res;
+        images.prepare(device, queue, self.view_id, camera, frame.images.as_deref());
         let Some(view) = views.get_mut(&self.view_id) else {
             return Vec::new();
         };
@@ -965,6 +971,8 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
 
         #[cfg(not(target_arch = "wasm32"))]
         view.clouds.composite(clouds, &mut pass);
+        // Imagery lies under the grid and the drawing.
+        images.draw(&mut pass, self.view_id);
         if grid.is_some() {
             pass.set_pipeline(&pipelines.grid);
             pass.set_bind_group(0, &view.uniform_bind_group, &[0]);

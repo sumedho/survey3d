@@ -239,10 +239,33 @@ impl SurveyApp {
         self.legend.show(ctx, &self.session.project.doc);
         let view = self.view_info();
         let labels = self.plan_labels();
-        match self
-            .sheets_window
-            .show(ctx, &self.session.project.doc, &view, labels)
-        {
+        // Imagery in the preview, at a screen resolution.
+        #[cfg(not(target_arch = "wasm32"))]
+        let (images_ready, image_layer) = {
+            let doc = &self.session.project.doc;
+            let imagery = &self.session.imagery;
+            let ready = doc
+                .images()
+                .iter()
+                .filter(|r| imagery.cache(&r.path).is_some())
+                .count();
+            let layer = move |t: &crate::plan::SheetTransform, f: &crate::plan::Rect| {
+                crate::imagery::sheet_images(doc, imagery, t, f, 60.0)
+            };
+            (ready, layer)
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let images: Option<crate::plan::ImageLayer<'_>> = Some(&image_layer);
+        #[cfg(target_arch = "wasm32")]
+        let (images, images_ready) = (None, 0);
+        match self.sheets_window.show(
+            ctx,
+            &self.session.project.doc,
+            &view,
+            labels,
+            images,
+            images_ready,
+        ) {
             Some(SheetsAction::Add(sheet)) => {
                 if let Some(id) = self.session.add_record(sheet) {
                     self.sheets_window.current = Some(id);
@@ -346,6 +369,8 @@ impl SurveyApp {
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        self.images_dialog(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         if self.copc_window.open {
             self.copc_window.project_wkt = self.session.project.doc.meta().coord_system.wkt();
@@ -568,5 +593,75 @@ impl SurveyApp {
             }
         }
         found.discard();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SurveyApp {
+    fn images_dialog(&mut self, ctx: &egui::Context) {
+        use crate::ui::images::ImagesAction;
+        let pick = || {
+            rfd::FileDialog::new()
+                .add_filter("Images (GeoTIFF, JPEG, PNG)", &survey_io::imagery::EXTENSIONS)
+                .pick_file()
+        };
+        let Some(action) = self.images_window.show(ctx, &self.session) else {
+            return;
+        };
+        match action {
+            ImagesAction::Add => {
+                if let Some(path) = pick() {
+                    match self.session.import_image(&path) {
+                        Ok((id, summary)) => {
+                            self.toasts.success(summary);
+                            self.zoom_to_image(id);
+                        }
+                        Err(e) => self.session.log.error(e),
+                    }
+                }
+            }
+            ImagesAction::Update(id, rec) => self.session.update_record(id, rec),
+            ImagesAction::Refit(id, rec, label) => {
+                if let Err(e) = self.session.refit_image(id, rec, label) {
+                    self.session.log.error(e);
+                }
+            }
+            ImagesAction::Remove(id) => self.session.delete_record::<survey_model::ImageRecord>(id),
+            ImagesAction::ZoomTo(id) => self.zoom_to_image(id),
+            ImagesAction::PickControl(name) => {
+                self.session.run("imgcp");
+                if self.session.project.doc.images().len() > 1 {
+                    self.session.run(&name);
+                }
+            }
+            ImagesAction::SaveWorldFile(id) => match self.session.save_world_file(id) {
+                Ok(path) => self.toasts.success(format!("Saved {}", path.display())),
+                Err(e) => self.session.log.error(e),
+            },
+            ImagesAction::Relink(id) => {
+                if let Some(path) = pick()
+                    && let Err(e) = self.session.relink_image(id, &path)
+                {
+                    self.session.log.error(e);
+                }
+            }
+            ImagesAction::Report(id) => {
+                if let Ok(rec) = self.session.image(id) {
+                    let text = crate::session::control_report(&self.session.project.doc, rec);
+                    self.reports.add(format!("Image {}", rec.name), text);
+                }
+            }
+        }
+    }
+
+    fn zoom_to_image(&mut self, id: survey_model::RecordId) {
+        if let Ok(rec) = self.session.image(id) {
+            let mut b = survey_core::Aabb3::EMPTY;
+            for c in rec.corners() {
+                b.extend(c.extend(rec.elevation));
+            }
+            self.viewport.pivot = None;
+            self.viewport.camera.zoom_to_bounds(&b);
+        }
     }
 }

@@ -874,3 +874,128 @@ fn building_by_right_angles() {
         "{text}"
     );
 }
+
+/// Images: a PNG with a world file is placed by it; one without is placed
+/// roughly, then by control points picked with `imgcp`.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn images_placed_by_world_files_and_control_points() {
+    let dir = std::env::temp_dir().join(format!("survey3d-images-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let png = |name: &str| {
+        let path = dir.join(name);
+        image::RgbaImage::from_pixel(400, 300, image::Rgba([10, 200, 30, 255]))
+            .save(&path)
+            .expect("png");
+        path
+    };
+    let placed = png("placed.png");
+    std::fs::write(dir.join("placed.pgw"), "0.5\n0\n0\n-0.5\n1000.25\n2149.75\n").expect("pgw");
+    let loose = png("loose.png");
+
+    let mut s = session();
+    for line in ["pt", "1000,2000,5", "1300,2100,5", ""] {
+        s.run(line);
+    }
+    let (id, summary) = s.import_image(&placed).expect("import");
+    assert!(summary.contains("placed by placed.pgw"), "{summary}");
+    let rec = s.image(id).expect("record").clone();
+    assert_eq!(rec.placement, survey_model::Placement::File);
+    assert!((rec.transform.apply(glam::DVec2::ZERO) - glam::DVec2::new(1000.0, 2150.0)).length() < 1e-9);
+    assert_eq!(rec.elevation, 5.0, "at the drawing's lowest height");
+    assert!(s.import_image(&placed).is_err(), "added twice");
+
+    let (lid, summary) = s.import_image(&loose).expect("import");
+    assert!(summary.contains("not placed"), "{summary}");
+    // Pick image corners where the rough placement shows them, then where they belong.
+    let at = |s: &Session, px: [f64; 2]| {
+        let p = s
+            .image(lid)
+            .expect("loose")
+            .transform
+            .apply(glam::DVec2::from(px));
+        format!("{},{}", p.x, p.y)
+    };
+    s.run("imgcp");
+    s.run("loose");
+    let first = at(&s, [0.0, 0.0]);
+    s.run(&first);
+    s.run("2000,3000");
+    // One point: the image moves onto it.
+    let r = s.image(lid).expect("loose").clone();
+    assert!((r.transform.apply(glam::DVec2::ZERO) - glam::DVec2::new(2000.0, 3000.0)).length() < 1e-9);
+    let second = at(&s, [400.0, 300.0]);
+    s.run(&second);
+    s.run("2040,2970");
+    let r = s.image(lid).expect("loose").clone();
+    assert_eq!(r.placement, survey_model::Placement::ControlPoints);
+    assert!(
+        (r.transform.pixel_size() - 0.1).abs() < 1e-9,
+        "{}",
+        r.transform.pixel_size()
+    );
+    assert!(
+        (r.transform.apply(glam::DVec2::new(400.0, 300.0)) - glam::DVec2::new(2040.0, 2970.0)).length()
+            < 1e-6
+    );
+    // Off the image is refused; u drops the last pair; f switches to affine (needs 3).
+    s.run("5000,5000");
+    assert!(log_text(&s).iter().any(|l| l.contains("off the image")));
+    s.run("f");
+    assert_eq!(
+        s.image(lid).expect("loose").fit,
+        survey_core::georef::FitKind::Affine
+    );
+    s.run("u");
+    assert_eq!(s.image(lid).expect("loose").control_points.len(), 1);
+    // Back to one point: the rough placement shifted onto it, not the fit.
+    let r = s.image(lid).expect("loose").clone();
+    assert!((r.transform.apply(glam::DVec2::ZERO) - glam::DVec2::new(2000.0, 3000.0)).length() < 1e-9);
+    assert_eq!(r.placement, survey_model::Placement::Rough);
+    s.run("u");
+    let r = s.image(lid).expect("loose").clone();
+    assert_eq!(
+        Some((r.transform, r.placement)),
+        r.original,
+        "no points: where it started"
+    );
+    s.undo();
+    s.run("");
+    // Each step undoes.
+    s.undo();
+    s.undo();
+    assert_eq!(s.image(lid).expect("loose").control_points.len(), 2);
+    // Relink refuses another image already in the project, another kind of
+    // file, and a file that places itself elsewhere.
+    let e = s.relink_image(lid, &placed).expect_err("in use");
+    assert!(e.contains("already in the project"), "{e}");
+    image::RgbImage::from_pixel(400, 300, image::Rgb([1, 2, 3]))
+        .save(dir.join("other.jpg"))
+        .expect("jpg");
+    let e = s.relink_image(id, &dir.join("other.jpg")).expect_err("kind");
+    assert!(e.contains("not the same image"), "{e}");
+    let elsewhere = png("elsewhere.png");
+    std::fs::write(dir.join("elsewhere.pgw"), "0.5\n0\n0\n-0.5\n1500.25\n2149.75\n").expect("pgw");
+    let e = s.relink_image(id, &elsewhere).expect_err("placement");
+    assert!(e.contains("places itself 500.00 m from"), "{e}");
+    // A world file is written beside it.
+    let wf = s.save_world_file(lid).expect("world file");
+    assert_eq!(wf, dir.join("loose.pgw"));
+    let back = survey_io::imagery::inspect(&loose).expect("inspect");
+    assert!((back.transform.expect("placed").pixel_size() - 0.1).abs() < 1e-9);
+    // The plan sheet carries both images.
+    s.imagery.wait(&s.project.doc);
+    let plot = s.plot(&s.overview_sheet());
+    let images = plot
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            survey_io::plot::Item::Clip { items, .. } => Some(items),
+            _ => None,
+        })
+        .flatten()
+        .filter(|i| matches!(i, survey_io::plot::Item::Image { .. }))
+        .count();
+    assert_eq!(images, 2);
+}

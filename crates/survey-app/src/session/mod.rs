@@ -8,6 +8,10 @@
 
 mod edit;
 mod geoid;
+#[cfg(not(target_arch = "wasm32"))]
+mod images;
+#[cfg(not(target_arch = "wasm32"))]
+pub use images::control_report;
 
 pub use edit::layer_change;
 pub use geoid::{GEOID_HELP, geoid_files};
@@ -140,6 +144,9 @@ pub struct Session {
     /// Folder the project's geoid model is read from.
     geoid_dir: Option<std::path::PathBuf>,
     geoid: geoid::GeoidState,
+    /// Image tile caches (desktop).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub imagery: crate::imagery::Imagery,
 }
 
 impl Session {
@@ -163,6 +170,8 @@ impl Session {
             events: Vec::new(),
             geoid_dir: None,
             geoid: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            imagery: Default::default(),
         }
     }
 
@@ -176,6 +185,8 @@ impl Session {
         self.active_surface = None;
         self.set_tool(SELECT_TOOL_ID);
         self.sync_geoid();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.sync_imagery();
     }
 
     /// Events since the last call, oldest first.
@@ -208,8 +219,10 @@ impl Session {
         p.history.execute(command, &mut p.doc);
         let doc = &p.doc;
         p.selection.retain(|id| doc.contains(id));
-        // The coordinate system may have changed its geoid model.
+        // The coordinate system may have changed its geoid model, and images come and go.
         self.sync_geoid();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.sync_imagery();
         let p = &mut self.project;
         let now = p.history.dropped() - dropped;
         // Step-count trimming is routine; say so when memory forced it.
@@ -243,6 +256,8 @@ impl Session {
         let doc = &p.doc;
         p.selection.retain(|id| doc.contains(id));
         self.sync_geoid();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.sync_imagery();
     }
 
     pub fn redo(&mut self) {
@@ -254,6 +269,8 @@ impl Session {
         let doc = &p.doc;
         p.selection.retain(|id| doc.contains(id));
         self.sync_geoid();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.sync_imagery();
     }
 
     // ------------------------------------------------------------------ tools

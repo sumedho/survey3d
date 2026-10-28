@@ -165,6 +165,12 @@ impl SheetTransform {
         ]
     }
 
+    /// Paper millimetres per world metre.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn mm_per_metre(self) -> f64 {
+        self.k
+    }
+
     pub fn to_world(self, p: [f64; 2]) -> DVec2 {
         let (dx, dy) = (p[0] - self.paper[0], p[1] - self.paper[1]);
         self.centre + DVec2::new(dx * self.cos + dy * self.sin, -dx * self.sin + dy * self.cos) / self.k
@@ -1546,7 +1552,22 @@ fn circle_ring(c: [f64; 2], r: f64) -> Vec<[f64; 2]> {
 
 /// Builds the plot for a sheet. `labels` are the global point label settings
 /// (feature codes may override them).
+/// Rasters drawn under the map (imagery): from the sheet's transform and
+/// frame, the image items.
+pub type ImageLayer<'a> = &'a dyn Fn(&SheetTransform, &Rect) -> Vec<Item>;
+
+#[cfg(test)]
 pub fn build_plot(doc: &Document, sheet: &SheetRecord, labels: LabelSet) -> Plot {
+    build_plot_with(doc, sheet, labels, None)
+}
+
+/// As [`build_plot`], with imagery under the map.
+pub fn build_plot_with(
+    doc: &Document,
+    sheet: &SheetRecord,
+    labels: LabelSet,
+    images: Option<ImageLayer<'_>>,
+) -> Plot {
     let lay = layout(sheet);
     let t = SheetTransform::new(sheet, &lay.frame);
     let title = if sheet.title.title.trim().is_empty() {
@@ -1709,7 +1730,7 @@ pub fn build_plot(doc: &Document, sheet: &SheetRecord, labels: LabelSet) -> Plot
         tolerance: PAPER_TOLERANCE / t.k,
     };
 
-    let mut map = Vec::new();
+    let mut map: Vec<Item> = images.map(|layer| layer(&t, &lay.frame)).unwrap_or_default();
     let mut contour_labels = Vec::new();
     if content.contours {
         b.contours(&mut map, &mut contour_labels);

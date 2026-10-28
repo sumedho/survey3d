@@ -63,7 +63,23 @@ impl SurveyApp {
             conv.axis_labels.northing.as_str(),
             conv.axis_labels.height.as_str(),
         ];
+        #[cfg(not(target_arch = "wasm32"))]
+        let images = {
+            let (frame, loading) = self.tile_streamer.frame(
+                &self.session.project.doc,
+                &self.session.imagery,
+                &self.viewport.camera,
+            );
+            if loading {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(30));
+            }
+            frame
+        };
+        #[cfg(target_arch = "wasm32")]
+        let images = None;
         let out = Viewport::new(&mut self.viewport, scene)
+            .images(images)
             .overlay_scene(surfaces)
             .overlay_scene(clouds)
             .overlay_scene(selection)

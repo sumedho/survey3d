@@ -46,7 +46,9 @@ quick-xml = "0.42"
 sha2 = "0.11"
 miniz_oxide = "0.8"
 # Geoid grids in PROJ GeoTIFF form.
-tiff = { version = "0.11", default-features = false, features = ["deflate", "lzw"] }
+tiff = { version = "0.11", default-features = false, features = ["deflate", "lzw", "jpeg"] }
+# Orthophoto tiles (JPEG and PNG) and JPEG/PNG imagery.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 web-time = "1.1"
 log = "0.4"
 # Independent COPC reader, used only by survey-io's tests to check the files
@@ -61,7 +63,7 @@ laz = "0.12"
 fs4 = "1.1"
 rusqlite = { version = "0.40.2", features = ["serialize", "backup"] }
 # SVG to PNG for the MCP server's renders (bundled font, no system fonts).
-resvg = { version = "0.48.1", default-features = false, features = ["text"] }
+resvg = { version = "0.48.1", default-features = false, features = ["text", "raster-images"] }
 
 # Platform
 rfd = "0.17"

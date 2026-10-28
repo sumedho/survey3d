@@ -10,6 +10,7 @@
 
 pub mod camera;
 pub mod clouds;
+pub mod images;
 pub mod renderer;
 pub mod scene;
 
@@ -18,5 +19,6 @@ pub use egui_wgpu;
 
 pub use camera::{Camera, Frustum, Projection, Ray};
 pub use clouds::{CloudColoring, CloudFrame, CloudLayer, CloudNode};
+pub use images::{ImageFrame, ImagePixels, ImageQuad};
 pub use renderer::{GridSettings, ViewportCallback, ViewportFrame, install};
 pub use scene::{Scene, SceneBuilder};

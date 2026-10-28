@@ -11,6 +11,8 @@ pub mod clouds;
 pub mod copc;
 pub mod csv_import;
 pub mod feature_codes;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod images;
 pub mod legend;
 pub mod network;
 pub mod parcels;

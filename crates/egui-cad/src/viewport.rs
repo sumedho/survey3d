@@ -233,6 +233,8 @@ pub struct Viewport<'a> {
     /// Out-of-core point clouds, drawn node by node.
     clouds: Option<Arc<CloudFrame>>,
     cloud_bounds: Aabb3,
+    /// Georeferenced image tiles for this frame.
+    images: Option<Arc<cad_render::ImageFrame>>,
     grid: Option<GridSettings>,
     nav: NavigationSettings,
     anchor: Option<DVec3>,
@@ -251,6 +253,7 @@ impl<'a> Viewport<'a> {
             overlays: Vec::new(),
             clouds: None,
             cloud_bounds: Aabb3::EMPTY,
+            images: None,
             grid: Some(GridSettings::default()),
             nav: NavigationSettings::default(),
             anchor: None,
@@ -271,6 +274,12 @@ impl<'a> Viewport<'a> {
     pub fn clouds(mut self, clouds: Option<Arc<CloudFrame>>, bounds: Aabb3) -> Self {
         self.clouds = clouds;
         self.cloud_bounds = bounds;
+        self
+    }
+
+    /// Georeferenced image tiles drawn under the drawing.
+    pub fn images(mut self, images: Option<Arc<cad_render::ImageFrame>>) -> Self {
+        self.images = images;
         self
     }
 
@@ -413,6 +422,7 @@ impl<'a> Viewport<'a> {
                         grid,
                         background: CadTheme::rgba_f32(theme.viewport_bg),
                         clouds: self.clouds.clone(),
+                        images: self.images.clone(),
                     },
                     request_frame: Some({
                         let ctx = ui.ctx().clone();

@@ -404,6 +404,7 @@ impl ProjectStore {
             alignments: list(self, RecordKind::Alignment)?,
             field_data: list(self, RecordKind::FieldData)?,
             sheets: list(self, RecordKind::Sheet)?,
+            images: list(self, RecordKind::Image)?,
         })
     }
 
@@ -798,6 +799,7 @@ fn write_records(tx: &Transaction<'_>, records: &Records, kind: RecordKind) -> R
         RecordKind::Alignment => serde_json::to_string(&records.alignments),
         RecordKind::FieldData => serde_json::to_string(&records.field_data),
         RecordKind::Sheet => serde_json::to_string(&records.sheets),
+        RecordKind::Image => serde_json::to_string(&records.images),
     }?;
     tx.execute(
         "INSERT INTO project_meta (key, value) VALUES (?1, ?2)

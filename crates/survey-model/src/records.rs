@@ -13,6 +13,7 @@ use survey_core::network::FieldData;
 use survey_core::traverse::TraverseRecord;
 
 use crate::alignment::AlignmentRecord;
+use crate::image::ImageRecord;
 use crate::parcel::ParcelRecord;
 use crate::sheet::SheetRecord;
 
@@ -29,15 +30,17 @@ pub enum RecordKind {
     Alignment,
     FieldData,
     Sheet,
+    Image,
 }
 
 impl RecordKind {
-    pub const ALL: [RecordKind; 5] = [
+    pub const ALL: [RecordKind; 6] = [
         RecordKind::Traverse,
         RecordKind::Parcel,
         RecordKind::Alignment,
         RecordKind::FieldData,
         RecordKind::Sheet,
+        RecordKind::Image,
     ];
 
     /// Storage key (also the collection name in scripts).
@@ -48,6 +51,7 @@ impl RecordKind {
             RecordKind::Alignment => "alignments",
             RecordKind::FieldData => "field_data",
             RecordKind::Sheet => "sheets",
+            RecordKind::Image => "images",
         }
     }
 
@@ -58,6 +62,7 @@ impl RecordKind {
             RecordKind::Alignment => "alignment",
             RecordKind::FieldData => "field data",
             RecordKind::Sheet => "sheet",
+            RecordKind::Image => "image",
         }
     }
 }
@@ -96,6 +101,7 @@ pub enum AnyRecord {
     // Observations can be large: the audit trail gets a summary.
     FieldData(#[serde(serialize_with = "field_data_summary")] Box<FieldData>),
     Sheet(SheetRecord),
+    Image(ImageRecord),
 }
 
 fn field_data_summary<S: Serializer>(f: &FieldData, s: S) -> Result<S::Ok, S::Error> {
@@ -123,6 +129,7 @@ impl AnyRecord {
             AnyRecord::Alignment(_) => RecordKind::Alignment,
             AnyRecord::FieldData(_) => RecordKind::FieldData,
             AnyRecord::Sheet(_) => RecordKind::Sheet,
+            AnyRecord::Image(_) => RecordKind::Image,
         }
     }
 
@@ -133,6 +140,7 @@ impl AnyRecord {
             AnyRecord::Alignment(r) => &r.name,
             AnyRecord::FieldData(r) => &r.name,
             AnyRecord::Sheet(r) => &r.name,
+            AnyRecord::Image(r) => &r.name,
         }
     }
 }
@@ -187,6 +195,7 @@ record!(ParcelRecord, Parcel, parcels, AnyRecord::Parcel, AnyRecord::Parcel(r) =
 record!(AlignmentRecord, Alignment, alignments, AnyRecord::Alignment, AnyRecord::Alignment(r) => r);
 record!(FieldData, FieldData, field_data, |r| AnyRecord::FieldData(Box::new(r)), AnyRecord::FieldData(r) => *r);
 record!(SheetRecord, Sheet, sheets, AnyRecord::Sheet, AnyRecord::Sheet(r) => r);
+record!(ImageRecord, Image, images, AnyRecord::Image, AnyRecord::Image(r) => r);
 
 /// All record collections, each in the user's order.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -196,6 +205,7 @@ pub struct Records {
     pub alignments: Vec<Keyed<AlignmentRecord>>,
     pub field_data: Vec<Keyed<FieldData>>,
     pub sheets: Vec<Keyed<SheetRecord>>,
+    pub images: Vec<Keyed<ImageRecord>>,
 }
 
 impl Records {
@@ -213,6 +223,7 @@ impl Records {
             .max(max(&self.alignments))
             .max(max(&self.field_data))
             .max(max(&self.sheets))
+            .max(max(&self.images))
     }
 
     /// Gives every record without an id (from files saved before ids) the next
@@ -234,6 +245,7 @@ impl Records {
             (RecordKind::Alignment, assign(&mut self.alignments, next)),
             (RecordKind::FieldData, assign(&mut self.field_data, next)),
             (RecordKind::Sheet, assign(&mut self.sheets, next)),
+            (RecordKind::Image, assign(&mut self.images, next)),
         ] {
             if any {
                 kinds.insert(kind);
@@ -280,6 +292,7 @@ impl Records {
             RecordKind::Alignment => set::<AlignmentRecord>(self, id, value, at),
             RecordKind::FieldData => set::<FieldData>(self, id, value, at),
             RecordKind::Sheet => set::<SheetRecord>(self, id, value, at),
+            RecordKind::Image => set::<ImageRecord>(self, id, value, at),
         }
     }
 }

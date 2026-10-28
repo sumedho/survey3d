@@ -24,6 +24,9 @@ tiff.workspace = true
 las.workspace = true
 laz.workspace = true
 fs4.workspace = true
+# Imagery: tile caches and image decoding.
+rusqlite = { workspace = true, features = ["bundled"] }
+image.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # An independent COPC reader, to check what the writer produces.

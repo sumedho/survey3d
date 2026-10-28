@@ -25,6 +25,8 @@ struct State {
 struct Writer {
     out: String,
     state: State,
+    /// Rasters drawn (`/Im1`… in order): width, height, RGBA.
+    images: Vec<(u32, u32, std::sync::Arc<Vec<u8>>)>,
 }
 
 fn rgb(c: Rgb) -> String {
@@ -178,6 +180,24 @@ impl Writer {
                     self.paint(pen.as_ref(), *fill);
                 }
                 Item::Text(t) => self.text(t),
+                Item::Image {
+                    min,
+                    max,
+                    width,
+                    height,
+                    rgba,
+                } => {
+                    self.images.push((*width, *height, rgba.clone()));
+                    let _ = writeln!(
+                        self.out,
+                        "q {} 0 0 {} {} {} cm /Im{} Do Q",
+                        num(max[0] - min[0]),
+                        num(max[1] - min[1]),
+                        num(min[0]),
+                        num(min[1]),
+                        self.images.len()
+                    );
+                }
                 Item::Clip { rings, items } => {
                     self.out.push_str("q\n");
                     for r in rings {
@@ -218,6 +238,7 @@ pub fn write_pdf(plot: &Plot) -> Vec<u8> {
     let mut w = Writer {
         out: String::new(),
         state: State::default(),
+        images: Vec::new(),
     };
     let _ = writeln!(w.out, "{} 0 0 {} 0 0 cm", num(PT_PER_MM), num(PT_PER_MM));
     w.out.push_str("1 J 1 j\n");
@@ -235,11 +256,20 @@ pub fn write_pdf(plot: &Plot) -> Vec<u8> {
     };
     object(&mut out, b"<< /Type /Catalog /Pages 2 0 R >>");
     object(&mut out, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    // Each raster is two objects after the fonts: its colour and its alpha (soft mask).
+    let xobjects: String = (0..w.images.len())
+        .map(|i| format!(" /Im{} {} 0 R", i + 1, 7 + 2 * i))
+        .collect();
+    let xobjects = if xobjects.is_empty() {
+        String::new()
+    } else {
+        format!(" /XObject <<{xobjects} >>")
+    };
     object(
         &mut out,
         format!(
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {pw} {ph}] \
-             /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>"
+             /Resources << /Font << /F1 5 0 R /F2 6 0 R >>{xobjects} >> /Contents 4 0 R >>"
         )
         .as_bytes(),
     );
@@ -252,6 +282,43 @@ pub fn write_pdf(plot: &Plot) -> Vec<u8> {
             &mut out,
             format!("<< /Type /Font /Subtype /Type1 /BaseFont /{name} /Encoding /WinAnsiEncoding >>")
                 .as_bytes(),
+        );
+    }
+    for (i, (width, height, rgba)) in w.images.iter().enumerate() {
+        let rgb: Vec<u8> = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2]])
+            .collect();
+        let alpha: Vec<u8> = rgba.as_chunks::<4>().0.iter().map(|p| p[3]).collect();
+        let stream = |dict: String, data: &[u8]| {
+            let z = miniz_oxide::deflate::compress_to_vec_zlib(data, 6);
+            let mut b = format!("{dict} /Length {} /Filter /FlateDecode >>\nstream\n", z.len()).into_bytes();
+            b.extend_from_slice(&z);
+            b.extend_from_slice(b"\nendstream");
+            b
+        };
+        object(
+            &mut out,
+            &stream(
+                format!(
+                    "<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceRGB \
+                     /BitsPerComponent 8 /SMask {} 0 R",
+                    8 + 2 * i
+                ),
+                &rgb,
+            ),
+        );
+        object(
+            &mut out,
+            &stream(
+                format!(
+                    "<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceGray \
+                     /BitsPerComponent 8"
+                ),
+                &alpha,
+            ),
         );
     }
     let mut info = b"<< /Title ".to_vec();

@@ -153,6 +153,7 @@ impl Server {
             "convert_heights" => self.convert_heights(args),
             "setout" => self.setout(args),
             "alignment" => self.alignment(args),
+            "image" => self.image(args),
             "edit_entities" => self.edit_entities(args),
             "create_surface" => self.create_surface(args),
             "set_surface" => self.set_surface(args),
@@ -261,6 +262,7 @@ impl Server {
                 "sheet": doc.sheets().iter().map(|s| json!({ "id": s.id.0, "name": s.name, "scale": s.scale_label() })).collect::<Vec<_>>(),
                 "parcel": records(doc.parcels().iter().map(|r| (r.id, r.name.as_str())).collect()),
                 "alignment": records(doc.alignments().iter().map(|r| (r.id, r.name.as_str())).collect()),
+                "image": records(doc.images().iter().map(|r| (r.id, r.name.as_str())).collect()),
                 "traverse": records(doc.traverses().iter().map(|r| (r.id, r.name.as_str())).collect()),
                 "field_data": records(doc.field_data().iter().map(|r| (r.id, r.name.as_str())).collect()),
             },
@@ -663,6 +665,7 @@ impl Server {
             "alignment" => delete::<AlignmentRecord>(s, id),
             "traverse" => delete::<TraverseRecord>(s, id),
             "field_data" => delete::<survey_core::network::FieldData>(s, id),
+            "image" => delete::<survey_model::ImageRecord>(s, id),
             other => Err(format!("kind: unknown record kind '{other}'")),
         }?;
         Ok(ToolResult::text(message))
@@ -772,6 +775,7 @@ impl Server {
                 return Ok(ToolResult::text(format!("{summary}. Wrote {}", path.display())));
             }
             format @ ("pdf" | "svg") => {
+                self.session.imagery.wait(&self.session.project.doc);
                 let sheet = self.sheet(args, true)?.ok_or("No sheet")?;
                 let plot = self.session.plot(&sheet);
                 if format == "pdf" {
@@ -800,6 +804,8 @@ impl Server {
     }
 
     fn render(&mut self, args: &Value) -> Outcome {
+        // Imagery still building its tiles is waited for.
+        self.session.imagery.wait(&self.session.project.doc);
         let sheet = self.sheet(args, true)?.ok_or("No sheet")?;
         let width = args
             .get("width")
@@ -883,6 +889,7 @@ impl Server {
             "alignment" => records::<AlignmentRecord>(doc, &filter),
             "traverse" => records::<TraverseRecord>(doc, &filter),
             "field_data" => records::<survey_core::network::FieldData>(doc, &filter),
+            "image" => records::<survey_model::ImageRecord>(doc, &filter),
             "audit" => self.audit_rows()?,
             other => return Err(format!("kind: unknown kind '{other}'")),
         };
@@ -1227,6 +1234,7 @@ mod compute;
 mod drawing;
 mod field;
 mod geodesy;
+mod images;
 mod settings;
 mod surfaces;
 #[cfg(test)]

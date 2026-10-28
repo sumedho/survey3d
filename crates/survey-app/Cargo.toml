@@ -45,3 +45,6 @@ web-sys = { workspace = true, features = [
     "Navigator", "StorageManager", "File", "FileSystemDirectoryHandle", "FileSystemFileHandle",
     "FileSystemGetFileOptions", "FileSystemWritableFileStream", "WritableStream",
 ] }
+
+[dev-dependencies]
+image.workspace = true

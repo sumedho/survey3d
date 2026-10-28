@@ -221,8 +221,14 @@ sectioned at full resolution.
 Every comparable package draws imagery under the survey, and drone jobs deliver an orthophoto alongside the
 cloud.
 
-- [ ] **Georeferenced orthophotos** (GeoTIFF, including cloud-optimised GeoTIFF) streamed under the drawing
-  and on plan sheets.
+- [x] **Georeferenced orthophotos** (GeoTIFF, including cloud-optimised GeoTIFF) streamed under the drawing
+  and on plan sheets. Done (desktop): GeoTIFF of any size (tiled or stripped, BigTIFF, LZW/Deflate/JPEG, alpha
+  or no-data) and JPEG/PNG with a world file; a 256 px tile pyramid cache is built once (on disk beside the
+  image or in the data folder; in memory under 8k × 8k) and the viewport streams the tiles a view needs,
+  coarser ones standing in. Images without placement are fitted to control points (`imgcp`; Helmert 2+ or
+  affine 3+, residuals, check points, world file out). Plan sheets and PDF/SVG resample them to the frame
+  (200 dpi). The project keeps a reference and the placement, with relink. MCP: `image`. Not read: ECW and
+  JPEG 2000 (convert with GDAL); no reprojection (a different EPSG is warned about).
 - [ ] **Web basemaps** (XYZ or WMTS tiles) for context, off by default for privacy and offline work.
 - [ ] **Shapefile** import and export for GIS clients.
 - [ ] **DWG** import and export, the format most clients and councils ask for (DXF is supported today).

@@ -20,6 +20,7 @@ pub mod error;
 pub mod field_to_finish;
 pub mod geoid;
 pub mod geom;
+pub mod georef;
 pub mod network;
 pub mod offset;
 pub mod point_input;

@@ -14,6 +14,7 @@ pub mod entity;
 pub mod ground;
 pub mod history;
 pub mod ids;
+pub mod image;
 pub mod layer;
 pub mod parcel;
 pub mod records;
@@ -32,6 +33,7 @@ pub use entity::{
 };
 pub use history::{AuditAction, AuditRecord, History, UNDO_MEMORY_LIMIT};
 pub use ids::{EntityId, LayerId, PointCloudId, SurfaceId};
+pub use image::{ImageRecord, Placement};
 pub use layer::{Color, DEFAULT_LINE_WEIGHT, Layer};
 pub use parcel::ParcelRecord;
 pub use records::{AnyRecord, Keyed, Record, RecordId, RecordKind, Records};

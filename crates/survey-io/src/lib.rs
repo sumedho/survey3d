@@ -12,6 +12,8 @@ pub mod copc_write;
 pub mod csv_points;
 pub mod dxf;
 pub mod geoid;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod imagery;
 pub mod landxml;
 pub mod plot;
 pub mod pointcloud;

@@ -567,13 +567,40 @@ impl Session {
             height: l.heights,
             description: false,
         };
-        crate::plan::build_plot(&self.project.doc, sheet, labels)
+        self.plot_with(sheet, labels, 200.0)
+    }
+
+    /// A plan sheet with these point labels, imagery resampled at `dpi`.
+    pub fn plot_with(&self, sheet: &SheetRecord, labels: LabelSet, dpi: f64) -> Plot {
+        let doc = &self.project.doc;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let images = |t: &crate::plan::SheetTransform, f: &crate::plan::Rect| {
+                crate::imagery::sheet_images(doc, &self.imagery, t, f, dpi)
+            };
+            crate::plan::build_plot_with(doc, sheet, labels, Some(&images))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = dpi;
+            crate::plan::build_plot_with(doc, sheet, labels, None)
+        }
     }
 
     /// A north-up A3 sheet framing the whole drawing at a standard scale.
     pub fn overview_sheet(&self) -> SheetRecord {
         let doc = &self.project.doc;
-        let b = doc.bounds();
+        // The drawing and any images shown under it.
+        let b = doc
+            .images()
+            .iter()
+            .filter(|r| r.visible)
+            .fold(doc.bounds(), |mut b, r| {
+                for c in r.corners() {
+                    b.extend(c.extend(r.elevation));
+                }
+                b
+            });
         let (min, max) = if b.is_empty() {
             (DVec2::splat(-50.0), DVec2::splat(50.0))
         } else {

@@ -1844,3 +1844,155 @@ fn alignments_with_spirals_curves_and_buildings() {
     );
     assert!(out.contains("enclose no area"), "{out}");
 }
+
+#[test]
+fn images_add_place_and_plot() {
+    let mut s = Server::new_for_tests();
+    let dir = temp_dir("images");
+    let png = |name: &str, colour: [u8; 3]| {
+        let path = dir.join(name);
+        image::RgbaImage::from_pixel(600, 400, image::Rgba([colour[0], colour[1], colour[2], 255]))
+            .save(&path)
+            .expect("png");
+        path
+    };
+    let placed = png("ortho.png", [20, 150, 40]);
+    std::fs::write(dir.join("ortho.pgw"), "0.25\n0\n0\n-0.25\n5000.125\n7099.875\n").expect("pgw");
+    let loose = png("scan.png", [200, 60, 30]);
+    ok(
+        &mut s,
+        "add_points",
+        json!({ "points": [
+        { "name": "P1", "e": 5010.0, "n": 7090.0 },
+        { "name": "P2", "e": 5300.0, "n": 7000.0 },
+    ] }),
+    );
+
+    let a = ok_json(&mut s, "image", json!({ "action": "add", "path": placed }));
+    assert_eq!(a["placement"], "file", "{a}");
+    assert_eq!(a["status"], "ready");
+    assert_eq!(a["corners"][0], json!([5000.0, 7100.0]));
+    assert_eq!(a["pixel_size"], 0.25);
+    let b = ok_json(&mut s, "image", json!({ "action": "add", "path": loose }));
+    assert_eq!(b["placement"], "not_placed", "{b}");
+
+    // Place the scan by two corners, given where they are on it now and where they belong.
+    let corner = |c: &Value, i: usize| json!([c["corners"][i][0], c["corners"][i][1]]);
+    let fit = ok_json(
+        &mut s,
+        "image",
+        json!({ "action": "control_points", "image": "scan", "add": [
+            { "at": corner(&b, 0), "world": [5200.0, 7100.0] },
+            { "pixel": [600, 400], "world": "P2" },
+        ] }),
+    );
+    assert_eq!(fit["placement"], "control_points", "{fit}");
+    assert_eq!(fit["rms"], 0.0);
+    // A 3:2 image's diagonal onto a square's turns it: atan(2/3) − 45° = 11°18'36" clockwise.
+    assert_eq!(fit["rotation"], "11°18'36\" clockwise", "{fit}");
+    // A third, wrong by 0.4 m, shows in its residual; disabled, the fit is exact again.
+    let fit = ok_json(
+        &mut s,
+        "image",
+        json!({ "action": "control_points", "image": "scan", "add": [{ "pixel": [600, 0], "world": [5300.4, 7100.0] }] }),
+    );
+    let r3 = fit["control_points"][2]["residual"].as_f64().expect("residual");
+    assert!(r3 > 0.2, "{fit}");
+    let fit = ok_json(
+        &mut s,
+        "image",
+        json!({ "action": "control_points", "image": "scan", "disable": [3] }),
+    );
+    assert_eq!(fit["rms"], 0.0, "{fit}");
+    // Numbers in one call refer to the list as shown: enable 3, disable 4 and remove 3 together.
+    let both = ok_json(
+        &mut s,
+        "image",
+        json!({ "action": "control_points", "image": "scan", "add": [{ "pixel": [0, 400], "world": [5200.0, 7000.0] }] }),
+    );
+    assert_eq!(both["control_points"].as_array().expect("points").len(), 4);
+    let both = ok_json(
+        &mut s,
+        "image",
+        json!({ "action": "control_points", "image": "scan", "enable": [3], "disable": [4], "remove": [3] }),
+    );
+    let pts = both["control_points"].as_array().expect("points");
+    assert_eq!(pts.len(), 3, "{both}");
+    assert_eq!(pts[2]["enabled"], false, "the old point 4, disabled: {both}");
+    // Unequal pixels: Helmert misfits and the summary suggests affine.
+    let squash = png("squash.png", [90, 90, 90]);
+    ok(&mut s, "image", json!({ "action": "add", "path": squash }));
+    let h = ok_json(
+        &mut s,
+        "image",
+        json!({ "action": "control_points", "image": "squash", "add": [
+            { "pixel": [0, 0], "world": [6000.0, 8000.0] },
+            { "pixel": [600, 0], "world": [6060.0, 8000.0] },
+            { "pixel": [600, 400], "world": [6060.0, 7920.0] },
+            { "pixel": [0, 400], "world": [6000.0, 7920.0] },
+        ] }),
+    );
+    assert!(
+        h["summary"]
+            .as_str()
+            .expect("summary")
+            .contains("An affine fit gives RMS 0.000 m"),
+        "{h}"
+    );
+    let a = ok_json(
+        &mut s,
+        "image",
+        json!({ "action": "control_points", "image": "squash", "fit": "affine" }),
+    );
+    assert_eq!(a["rms"], 0.0, "{a}");
+    let id = a["id"].as_i64().expect("id");
+    ok(&mut s, "delete_record", json!({ "kind": "image", "id": id }));
+    let (text, error) = call(
+        &mut s,
+        "image",
+        json!({ "action": "control_points", "image": "scan", "add": [{ "pixel": [900, 0], "world": [0, 0] }] }),
+    );
+    assert!(error && text.contains("off the image"), "{text}");
+
+    // Settings, world file, plots.
+    let set = ok_json(
+        &mut s,
+        "image",
+        json!({ "action": "set", "image": "ortho", "opacity": 0.6, "elevation": 12.5 }),
+    );
+    assert_eq!(
+        (
+            set["opacity"].as_f64().map(|v| (v * 10.0).round()),
+            set["elevation"].as_f64()
+        ),
+        (Some(6.0), Some(12.5))
+    );
+    let wf = ok(
+        &mut s,
+        "image",
+        json!({ "action": "save_world_file", "image": "scan" }),
+    );
+    assert!(wf.contains("scan.pgw") && dir.join("scan.pgw").exists(), "{wf}");
+    let svg = dir.join("plan.svg");
+    ok(&mut s, "export_file", json!({ "format": "svg", "path": svg }));
+    let text = std::fs::read_to_string(&svg).expect("svg");
+    assert_eq!(text.matches("<image").count(), 2);
+    let pdf = dir.join("plan.pdf");
+    ok(&mut s, "export_file", json!({ "format": "pdf", "path": pdf }));
+    let bytes = std::fs::read(&pdf).expect("pdf");
+    let images = bytes.windows(15).filter(|w| *w == b"/Subtype /Image").count();
+    assert_eq!(images, 4, "two images, each with its soft mask");
+    let (text, error) = call(&mut s, "render", json!({ "width": 400 }));
+    assert!(!error, "{text}");
+    let info = ok_json(&mut s, "project_info", json!({}));
+    assert_eq!(info["records"]["image"].as_array().expect("images").len(), 2);
+    let id = info["records"]["image"][1]["id"].as_i64().expect("id");
+    ok(&mut s, "delete_record", json!({ "kind": "image", "id": id }));
+    let (text, error) = call(
+        &mut s,
+        "image",
+        json!({ "action": "add", "path": dir.join("nope.ecw") }),
+    );
+    assert!(error && text.contains("ECW"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

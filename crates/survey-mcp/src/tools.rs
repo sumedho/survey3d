@@ -106,7 +106,7 @@ pub fn definitions() -> Vec<Value> {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["points", "polylines", "texts", "dimensions", "layers", "feature_codes", "surfaces", "clouds", "sheet", "parcel", "alignment", "traverse", "field_data", "selection", "audit"]
+                        "enum": ["points", "polylines", "texts", "dimensions", "layers", "feature_codes", "surfaces", "clouds", "sheet", "parcel", "alignment", "traverse", "field_data", "image", "selection", "audit"]
                     },
                     "filter": filter_schema(),
                     "offset": { "type": "integer", "minimum": 0, "default": 0 },
@@ -445,6 +445,30 @@ pub fn definitions() -> Vec<Value> {
                 },
                 "additionalProperties": false
             }
+        }),
+        json!({
+            "name": "image",
+            "title": "Orthophotos and images",
+            "description": "Georeferenced images drawn under the drawing (viewport, render, plan sheets and PDF/SVG). action add: path to a GeoTIFF (placed by its own tags; any size — a tile cache is built, waited for here), or a JPEG/PNG (placed by a world file beside it: .jgw/.pgw/.wld); without either the image is placed roughly over the drawing as not_placed. The result has its size, pixel size, placement, EPSG, corners and status; a warning when its EPSG differs from the project's (no reprojection: use gdalwarp). ECW/JPEG 2000 are not read (convert with gdal_translate). show: the image (image: name or id, optional when there is one) with its control points and residuals. set: visible, opacity (0–1), elevation (height in 3D views), name. control_points: add [{pixel: [column, row] or at: [e, n] (where that feature is on the image as drawn now — find it with render), world: [e, n] or a point name}], remove/enable/disable (point numbers from 1), fit helmert (2+ points, keeps the image's shape; the default) or affine (3+); refits and returns RMS and each point's residual — switch off (disable) a point with a large residual and refit. One point only moves the image onto it. save_world_file: writes the placement beside the image (.tfw/.jgw/.pgw). relink: path where the file is now. Remove an image with delete_record kind image.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["add", "show", "set", "control_points", "save_world_file", "relink"], "default": "show" },
+                    "image": { "type": ["integer", "string"] },
+                    "path": { "type": "string" },
+                    "visible": { "type": "boolean" },
+                    "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "elevation": { "type": "number" },
+                    "name": { "type": "string" },
+                    "add": { "type": "array", "items": { "type": "object" } },
+                    "remove": { "type": "array", "items": { "type": "integer" } },
+                    "enable": { "type": "array", "items": { "type": "integer" } },
+                    "disable": { "type": "array", "items": { "type": "integer" } },
+                    "fit": { "type": "string", "enum": ["helmert", "affine"] }
+                },
+                "additionalProperties": false
+            },
+            "annotations": { "destructiveHint": false }
         }),
         json!({
             "name": "alignment",
@@ -845,7 +869,7 @@ pub fn definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "kind": { "type": "string", "enum": ["sheet", "parcel", "alignment", "traverse", "field_data"] },
+                    "kind": { "type": "string", "enum": ["sheet", "parcel", "alignment", "traverse", "field_data", "image"] },
                     "id": { "type": "integer" }
                 },
                 "required": ["kind", "id"],

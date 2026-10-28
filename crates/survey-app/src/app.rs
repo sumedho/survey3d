@@ -288,6 +288,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::ARROWS_IN,
     ),
     cmd(
+        "images",
+        "Images: georeferenced orthophotos under the drawing (add, control points, opacity)",
+        "File",
+        icons::MAP_TRIFOLD,
+    ),
+    cmd(
         "geoid",
         "Geoid separation N at the selected points (geoid ortho / geoid ellip convert their heights)",
         "Survey",
@@ -477,6 +483,10 @@ pub struct SurveyApp {
     copc_window: crate::ui::copc::CopcWindow,
     #[cfg(not(target_arch = "wasm32"))]
     cloud_streamer: crate::cloud_stream::CloudStreamer,
+    #[cfg(not(target_arch = "wasm32"))]
+    images_window: crate::ui::images::ImagesWindow,
+    #[cfg(not(target_arch = "wasm32"))]
+    tile_streamer: crate::imagery::TileStreamer,
     about_open: bool,
     confirm_discard: Option<Discard>,
     allowed_to_close: bool,
@@ -639,6 +649,10 @@ impl SurveyApp {
             copc_window: crate::ui::copc::CopcWindow::default(),
             #[cfg(not(target_arch = "wasm32"))]
             cloud_streamer: crate::cloud_stream::CloudStreamer::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            images_window: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            tile_streamer: Default::default(),
             about_open: false,
             confirm_discard: None,
             allowed_to_close: false,
@@ -769,6 +783,12 @@ impl SurveyApp {
             .clouds()
             .filter(|(_, c)| c.style.visible)
             .fold(b, |b, (_, c)| b.union(&c.full_bounds()));
+        let b = doc.images().iter().filter(|r| r.visible).fold(b, |mut b, r| {
+            for c in r.corners() {
+                b.extend(c.extend(r.elevation));
+            }
+            b
+        });
         if b.is_empty() {
             self.viewport.camera.target = DVec3::ZERO;
             self.viewport.camera.distance = 100.0;
@@ -962,6 +982,8 @@ impl SurveyApp {
             "cloudin" | "importcloud" | "las" => self.platform.pick_file(ctx, FileKind::PointCloud),
             #[cfg(not(target_arch = "wasm32"))]
             "copc" | "copcin" => self.copc_window.open(),
+            #[cfg(not(target_arch = "wasm32"))]
+            "images" | "image" | "orthophoto" => self.images_window.open = true,
             "rawin" | "gsi" | "jobxml" | "rw5" => self.platform.pick_file(ctx, FileKind::RawData),
             "gpkg" | "geopackage" => self.export_geopackage(),
             "landxmlin" | "importxml" => self.platform.pick_file(ctx, FileKind::LandXml),
@@ -1153,7 +1175,7 @@ impl SurveyApp {
 
     /// Exports a plan sheet as PDF or SVG.
     pub(crate) fn export_sheet(&mut self, sheet: &survey_model::SheetRecord, format: PlotFormat) {
-        let plot = crate::plan::build_plot(&self.session.project.doc, sheet, self.plan_labels());
+        let plot = self.session.plot_with(sheet, self.plan_labels(), 200.0);
         let (kind, bytes, what) = match format {
             PlotFormat::Pdf => (FileKind::Pdf, survey_io::plot::write_pdf(&plot), "PDF"),
             PlotFormat::Svg => (
@@ -1622,6 +1644,14 @@ impl eframe::App for SurveyApp {
             .set_user(self.settings.user_name.clone());
         self.handle_file_events();
         self.session.set_geoid_dir(self.settings.geoid_dir.clone());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.session.imagery.set_cache_dir(self.settings.data_dir.clone());
+            self.session.sync_imagery();
+            if self.session.imagery.busy() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+        }
         #[cfg(target_arch = "wasm32")]
         self.autosave(&ctx);
         #[cfg(not(target_arch = "wasm32"))]

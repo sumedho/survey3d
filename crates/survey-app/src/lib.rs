@@ -14,6 +14,8 @@ pub mod curves;
 mod dimension;
 pub use dimension::dimension_text;
 mod field_to_finish;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod imagery;
 pub mod import_command;
 mod interchange;
 mod listing;

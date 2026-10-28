@@ -10,7 +10,7 @@ use survey_io::plot::{CAP_HEIGHT, Item, Plot, Rgb};
 use survey_model::sheet::{BoundaryTables, GridMarks, LegendPosition, Paper, STANDARD_SCALES, SheetRecord};
 use survey_model::{Document, Keyed, RecordId};
 
-use crate::plan::{build_plot, frame_size_world};
+use crate::plan::frame_size_world;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlotFormat {
@@ -145,6 +145,8 @@ impl SheetsWindow {
         doc: &Document,
         view: &ViewInfo,
         labels: LabelSet,
+        images: Option<crate::plan::ImageLayer<'_>>,
+        images_ready: usize,
     ) -> Option<SheetsAction> {
         if !self.open {
             return None;
@@ -254,13 +256,18 @@ impl SheetsWindow {
                         },
                     );
                     ui.separator();
-                    let key = (doc.revision(), draft.clone(), labels);
+                    // Images finishing their tiles also refresh the preview.
+                    let key = (
+                        doc.revision() + images_ready as u64 * 1_000_003,
+                        draft.clone(),
+                        labels,
+                    );
                     let stale = self
                         .preview
                         .as_ref()
                         .is_none_or(|(r, s, l, _)| (*r, s, *l) != (key.0, &key.1, key.2));
                     if stale {
-                        let plot = build_plot(doc, draft, labels);
+                        let plot = crate::plan::build_plot_with(doc, draft, labels, images);
                         self.preview = Some((key.0, key.1, key.2, plot));
                     }
                     if let Some((_, _, _, plot)) = &self.preview {
@@ -603,6 +610,35 @@ fn paint_items(painter: &egui::Painter, items: &[Item], to: &dyn Fn([f64; 2]) ->
                 // Galley top-left = origin − baseline along the rotated "down".
                 let pos = origin - vec2(-sin, cos) * baseline;
                 painter.add(egui::epaint::TextShape::new(pos, galley, color(t.color)).with_angle(angle));
+            }
+            Item::Image {
+                min,
+                max,
+                width,
+                height,
+                rgba,
+            } => {
+                // One texture per raster, kept while the plot is.
+                let ctx = painter.ctx();
+                let id = egui::Id::unique(("plot_image", std::sync::Arc::as_ptr(rgba) as usize));
+                let texture = ctx
+                    .data_mut(|d| d.get_temp::<egui::TextureHandle>(id))
+                    .unwrap_or_else(|| {
+                        let image = egui::ColorImage::from_rgba_unmultiplied(
+                            [*width as usize, *height as usize],
+                            rgba,
+                        );
+                        let t = ctx.load_texture("plot_image", image, egui::TextureOptions::LINEAR);
+                        ctx.data_mut(|d| d.insert_temp(id, t.clone()));
+                        t
+                    });
+                let r = egui::Rect::from_two_pos(to(*min), to(*max));
+                painter.image(
+                    texture.id(),
+                    r,
+                    egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
             }
             Item::Clip { rings, items } => {
                 let Some(outer) = rings.first() else { continue };

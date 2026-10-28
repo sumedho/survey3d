@@ -15,6 +15,7 @@ mod construct;
 mod curve;
 mod dim;
 pub mod grips;
+mod image_control;
 mod inverse;
 mod modify;
 mod offset;
@@ -500,6 +501,16 @@ impl DomainModule for CoreModule {
             group: ToolGroup::Cogo,
             description: "Building outline from two corners and taped wall lengths turning at right angles",
             create: || Box::<building::BuildingTool>::default(),
+        });
+        tools.register(ToolDescriptor {
+            id: image_control::ID,
+            name: "Image control points",
+            commands: &["imgcp", "imagecp"],
+            icon: icons::MAP_TRIFOLD,
+            palette: false,
+            group: ToolGroup::Cogo,
+            description: "Place an image by control points: a feature on the image, then its true position",
+            create: || Box::<image_control::ImageControlTool>::default(),
         });
         tools.register(ToolDescriptor {
             id: inverse::ID,

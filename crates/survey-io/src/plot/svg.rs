@@ -127,6 +127,23 @@ impl Writer {
                     }
                     let _ = writeln!(self.out, "<text {attrs}>{}</text>", escape(&t.text));
                 }
+                Item::Image {
+                    min,
+                    max,
+                    width,
+                    height,
+                    rgba,
+                } => {
+                    let data = super::base64(&super::png(rgba, *width, *height));
+                    let _ = writeln!(
+                        self.out,
+                        "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"data:image/png;base64,{data}\"/>",
+                        num(min[0]),
+                        num(self.y(max[1])),
+                        num(max[0] - min[0]),
+                        num(max[1] - min[1]),
+                    );
+                }
                 Item::Clip { rings, items } => {
                     self.next_clip += 1;
                     let id = format!("clip{}", self.next_clip);

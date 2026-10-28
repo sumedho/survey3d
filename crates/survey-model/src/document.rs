@@ -198,6 +198,10 @@ impl Document {
         &self.records.sheets
     }
 
+    pub fn images(&self) -> &[Keyed<crate::image::ImageRecord>] {
+        &self.records.images
+    }
+
     pub fn conventions(&self) -> &Conventions {
         &self.meta.conventions
     }

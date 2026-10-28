@@ -138,6 +138,7 @@ const SURVEY_MENU: &[MenuEntry] = &[
     Item("Projection calculator…", "projcalc"),
     Item("Geoid separation at selection", "geoid"),
     Item("Site calibration…", "sitecal"),
+    Item("Image control points", "imgcp"),
     Separator,
     Item("Feature codes…", "codes"),
     Item("Process linework", "linework"),
@@ -284,6 +285,14 @@ impl SurveyApp {
                 );
                 #[cfg(not(target_arch = "wasm32"))]
                 item(ui, "Point clouds (COPC)…", None, Action::Run("copc"), &mut action);
+                #[cfg(not(target_arch = "wasm32"))]
+                item(
+                    ui,
+                    "Images (orthophotos)…",
+                    None,
+                    Action::Run("images"),
+                    &mut action,
+                );
                 item(
                     ui,
                     "Import raw data (GSI, JobXML, RW5)…",

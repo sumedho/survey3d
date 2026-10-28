@@ -175,6 +175,15 @@ pub enum Item {
         rings: Vec<Vec<[f64; 2]>>,
         items: Vec<Item>,
     },
+    /// A raster (straight RGBA, rows from the top) filling the paper
+    /// rectangle `min`–`max`.
+    Image {
+        min: [f64; 2],
+        max: [f64; 2],
+        width: u32,
+        height: u32,
+        rgba: std::sync::Arc<Vec<u8>>,
+    },
 }
 
 impl Item {
@@ -244,6 +253,69 @@ impl Plot {
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
+}
+
+/// A minimal PNG (8-bit RGBA, one zlib stream) for embedding rasters.
+pub(crate) fn png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+    fn crc32(data: &[u8]) -> u32 {
+        let mut c = 0xffff_ffffu32;
+        for b in data {
+            c ^= u32::from(*b);
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    0xedb8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    }
+    let chunk = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let mut body = kind.to_vec();
+        body.extend_from_slice(data);
+        out.extend_from_slice(&body);
+        out.extend_from_slice(&crc32(&body).to_be_bytes());
+    };
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut header = Vec::new();
+    header.extend_from_slice(&width.to_be_bytes());
+    header.extend_from_slice(&height.to_be_bytes());
+    header.extend_from_slice(&[8, 6, 0, 0, 0]);
+    chunk(&mut out, b"IHDR", &header);
+    let row = width as usize * 4;
+    let mut raw = Vec::with_capacity((row + 1) * height as usize);
+    for r in rgba.chunks_exact(row) {
+        raw.push(0); // no filter
+        raw.extend_from_slice(r);
+    }
+    chunk(
+        &mut out,
+        b"IDAT",
+        &miniz_oxide::deflate::compress_to_vec_zlib(&raw, 6),
+    );
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+/// Standard base64 (for data URIs).
+pub(crate) fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n = (u32::from(c[0]) << 16)
+            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*c.get(2).unwrap_or(&0));
+        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            s.push(if i <= c.len() {
+                char::from(T[(n >> shift & 63) as usize])
+            } else {
+                '='
+            });
+        }
+    }
+    s
 }
 
 /// A number for a file: at most three decimals (a micrometre), no trailing zeros.
