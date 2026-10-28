@@ -149,6 +149,7 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::ARROWS_LEFT_RIGHT,
     ),
     cmd("points", "Points table", "View", icons::TABLE),
+    cmd("closeall", "Close all tool windows", "View", icons::X),
     with_key(cmd("ze", "Zoom extents", "View", icons::FRAME_CORNERS), "Home"),
     cmd("plan", "Plan view (2D lock)", "View", icons::MAP_TRIFOLD),
     cmd("3d", "Free 3D view", "View", icons::CUBE),
@@ -574,6 +575,7 @@ impl SurveyApp {
 
         let project = Project::new(&settings).expect("in-memory SQLite is available");
         let mut session = Session::new(project);
+        session.in_window = true;
         let mut completions: Vec<Completion> = session
             .tools
             .tools()
@@ -708,6 +710,13 @@ impl SurveyApp {
                 Event::Open(Panel::FeatureCodes) => self.codes_window.open(),
                 Event::Open(Panel::RawData { name }) => self.raw_window.open_on(&name),
                 Event::SelectCloud(id) => self.cloud_panel.active = Some(id),
+                Event::Command(text) => {
+                    if !self.run_app_command(ctx, &text) {
+                        self.session
+                            .log
+                            .error(format!("Unknown command '{text}' — type 'help'"));
+                    }
+                }
             }
         }
     }
@@ -916,6 +925,7 @@ impl SurveyApp {
         }
         match text.to_ascii_lowercase().as_str() {
             "ze" | "zoomextents" | "extents" => self.zoom_extents(),
+            "closeall" | "closewindows" => self.close_windows(),
             "plan" | "2d" => {
                 if !self.viewport.plan_locked {
                     self.toggle_plan();
@@ -1070,6 +1080,44 @@ impl SurveyApp {
     fn replace_project(&mut self, project: Project) {
         self.session.replace_project(project);
         self.reset_views();
+    }
+
+    /// Closes every tool window (not the panels or the command line).
+    fn close_windows(&mut self) {
+        for open in [
+            &mut self.surface_window.open,
+            &mut self.volumes_window.open,
+            &mut self.sections_window.open,
+            &mut self.parcels_window.open,
+            &mut self.alignments_window.open,
+            &mut self.stakeout_window.open,
+            &mut self.stake_export_window.open,
+            &mut self.asbuilt_window.open,
+            &mut self.raw_window.open,
+            &mut self.stockpile_window.open,
+            &mut self.projection_window.open,
+            &mut self.network_window.open,
+            &mut self.settings_window.open,
+            &mut self.audit_window.open,
+            &mut self.traverse_window.open,
+            &mut self.closure_window.open,
+            &mut self.calculator.open,
+            &mut self.legend.open,
+            &mut self.sheets_window.open,
+            &mut self.subdivide_window.open,
+            &mut self.resection_window.open,
+            &mut self.calibration_window.open,
+            &mut self.codes_window.open,
+            &mut self.reports.open,
+            &mut self.points_window.open,
+        ] {
+            *open = false;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.copc_window.open = false;
+            self.images_window.open = false;
+        }
     }
 
     /// Views and caches back to a fresh state for the project now open.

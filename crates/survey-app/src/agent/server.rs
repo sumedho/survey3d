@@ -7,7 +7,7 @@ use crate::import_command::ImportEntities;
 use crate::session::Event;
 use crate::settings::AppSettings;
 use crate::{Project, Session};
-use egui_cad::command_line::{CommandLineState, LogKind};
+use egui_cad::command_line::{CommandLineState, LogKind, LogLine};
 use glam::DVec3;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -44,6 +44,15 @@ impl ToolResult {
             content: vec![Content::Text(text.into())],
             is_error: false,
         }
+    }
+
+    /// The text report in a JSON result's `report` field, if any.
+    fn report(&self) -> Option<String> {
+        let Some(Content::Text(text)) = self.content.first() else {
+            return None;
+        };
+        let value: Value = serde_json::from_str(text).ok()?;
+        value.get("report")?.as_str().map(str::to_string)
     }
 
     fn json(value: &Value) -> Self {
@@ -90,6 +99,8 @@ pub struct Server {
     session: Session,
     settings: AppSettings,
     read_only: bool,
+    /// See [`Self::take_transcript`].
+    transcript: Vec<LogLine>,
 }
 
 impl Server {
@@ -109,6 +120,7 @@ impl Server {
             session,
             settings,
             read_only: options.read_only,
+            transcript: Vec::new(),
         })
     }
 
@@ -126,7 +138,14 @@ impl Server {
             session,
             settings,
             read_only: false,
+            transcript: Vec::new(),
         })
+    }
+
+    /// The command-line lines the agent's commands wrote to the session on
+    /// screen since last taken, for the window's own command line.
+    pub fn take_transcript(&mut self) -> Vec<LogLine> {
+        std::mem::take(&mut self.transcript)
     }
 
     /// The session the server works on (swapped with the app's for a call).
@@ -189,6 +208,25 @@ impl Server {
             "save_project" => self.save_project(args),
             _ => Err(format!("Unknown tool: {name}")),
         };
+        if let Ok(result) = &outcome
+            && self.session.in_window
+            && let Some(report) = result.report()
+        {
+            // Whoever is watching the window sees the agent's reports too.
+            let title = match name {
+                "compute_volumes" => "Volumes".to_string(),
+                "setout" => "Stake-out".to_string(),
+                _ => {
+                    let words = name.replace('_', " ");
+                    let mut chars = words.chars();
+                    chars
+                        .next()
+                        .map(|c| c.to_uppercase().chain(chars).collect())
+                        .unwrap_or_default()
+                }
+            };
+            self.session.show_report(title, report);
+        }
         outcome.unwrap_or_else(ToolResult::error)
     }
 
@@ -217,12 +255,32 @@ impl Server {
             text.push_str(&line.text);
             text.push('\n');
         }
+        if self.session.in_window {
+            self.transcript.extend(self.session.log.lines().cloned());
+        }
         self.session.log = CommandLineState::default();
+        let mut window = Vec::new();
         for event in self.session.take_events() {
-            if let Event::Report { title, text: report } = event {
-                text.push_str(&format!("\n--- Report: {title} ---\n{report}\n"));
+            match event {
+                Event::Report { title, text: report } => {
+                    text.push_str(&format!("\n--- Report: {title} ---\n{report}\n"));
+                    if self.session.in_window {
+                        window.push(Event::Report { title, text: report });
+                    }
+                }
+                Event::Command(command) if self.session.in_window => {
+                    text.push_str(&format!(
+                        "'{command}' passed to the window (view, file and panel commands)\n"
+                    ));
+                    window.push(Event::Command(command));
+                }
+                // Reports, zooming to new content and panels are for the
+                // window on screen too.
+                other if self.session.in_window => window.push(other),
+                _ => {}
             }
         }
+        self.session.requeue_events(window);
         text
     }
 

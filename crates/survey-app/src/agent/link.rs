@@ -472,7 +472,13 @@ pub fn serve_on(session: &mut Session, server: &mut Server, message: Value) -> (
         })
         .map(first_line)
         .unwrap_or_default();
-    if let Some(t) = &tool {
+    // Commands the agent typed show as typed, with their output; other
+    // tools as one line.
+    let transcript = server.take_transcript();
+    for line in &transcript {
+        session.log.log(line.kind, line.text.clone());
+    }
+    if let Some(t) = tool.as_ref().filter(|_| transcript.is_empty()) {
         let line = format!("agent › {t}: {summary}");
         if error {
             session.log.warn(line);
@@ -781,5 +787,91 @@ mod tests {
         let new = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"new_project","arguments":{"discard_changes":true}}});
         let (_, served) = serve_on(&mut session, &mut server, new);
         assert!(served.replaced_project, "{served:?}");
+    }
+
+    #[test]
+    fn window_commands_and_view_events_reach_the_window() {
+        use crate::session::Event;
+        let mut session = Session::new(Project::new(&AppSettings::default()).expect("project"));
+        session.in_window = true;
+        let mut server = Server::new(Options {
+            project: None,
+            read_only: false,
+            user: "tester".into(),
+        })
+        .expect("server");
+        let call = |name: &str, arguments: Value| json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}});
+        serve_on(
+            &mut session,
+            &mut server,
+            call(
+                "add_points",
+                json!({"points":[{"name":"A","e":0,"n":0},{"name":"B","e":30,"n":40}]}),
+            ),
+        );
+        let (reply, _) = serve_on(
+            &mut session,
+            &mut server,
+            call(
+                "run_commands",
+                json!({"lines":["ze", "bogus", "inverse", "A", "B"]}),
+            ),
+        );
+        let text = reply
+            .as_ref()
+            .and_then(|r| r.pointer("/result/content/0/text"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        assert!(text.contains("'ze' passed to the window"), "{text}");
+        assert!(
+            text.contains("50.000"),
+            "the agent still gets the inverse: {text}"
+        );
+        let shown: Vec<String> = session.log.lines().map(|l| l.text.clone()).collect();
+        assert!(
+            shown.iter().any(|l| l.ends_with("inverse")) && shown.iter().any(|l| l.contains("50.000")),
+            "the window's command line shows what the agent typed and its output: {shown:?}"
+        );
+        assert!(
+            !shown.iter().any(|l| l.contains("passed to the window")),
+            "{shown:?}"
+        );
+        let events = session.take_events();
+        assert!(
+            events.iter().any(|e| matches!(e, Event::Command(c) if c == "ze")),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Command(c) if c == "bogus")),
+            "the window reports it"
+        );
+        serve_on(
+            &mut session,
+            &mut server,
+            call(
+                "setout",
+                json!({"station":"A","backsight":"B","points":["B"],"report":true}),
+            ),
+        );
+        let events = session.take_events();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Report { title, .. } if title == "Stake-out")),
+            "the agent's reports show in the window: {events:?}"
+        );
+
+        // Headless, nothing is passed on and unknown commands are errors.
+        let mut headless = Session::new(Project::new(&AppSettings::default()).expect("project"));
+        let (reply, _) = serve_on(
+            &mut headless,
+            &mut server,
+            call("run_commands", json!({"lines":["ze"]})),
+        );
+        assert!(reply.is_some_and(|r| r.to_string().contains("Unknown command")));
+        assert!(headless.take_events().is_empty());
     }
 }

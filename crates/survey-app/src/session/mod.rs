@@ -44,6 +44,9 @@ pub enum Event {
     Open(Panel),
     /// A point cloud to make current in the clouds panel.
     SelectCloud(PointCloudId),
+    /// A command for the application window (view, file, its panels) that an
+    /// agent typed: [`Session::run`] in a window passes these on.
+    Command(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +152,9 @@ pub struct Session {
     pub imagery: crate::imagery::Imagery,
     /// Counts project replacements (new or opened), so views can tell.
     generation: u64,
+    /// The session on screen: agents' window commands and view events go to
+    /// the window rather than being dropped.
+    pub in_window: bool,
 }
 
 impl Session {
@@ -175,6 +181,7 @@ impl Session {
             #[cfg(not(target_arch = "wasm32"))]
             imagery: Default::default(),
             generation: 0,
+            in_window: false,
         }
     }
 
@@ -203,6 +210,11 @@ impl Session {
         std::mem::take(&mut self.events)
     }
 
+    /// Puts back events taken but not handled, for the window to handle.
+    pub fn requeue_events(&mut self, events: Vec<Event>) {
+        self.events.extend(events);
+    }
+
     fn emit(&mut self, event: Event) {
         self.events.push(event);
     }
@@ -211,6 +223,11 @@ impl Session {
     fn success(&mut self, text: String) {
         self.log.result(text.clone());
         self.emit(Event::Toast(Toast::Success, text));
+    }
+
+    /// Asks for a text report to be shown (the Reports window).
+    pub fn show_report(&mut self, title: impl Into<String>, text: impl Into<String>) {
+        self.report(title, text);
     }
 
     fn report(&mut self, title: impl Into<String>, text: impl Into<String>) {
@@ -341,7 +358,13 @@ impl Session {
     /// (tool names, point names, coordinates, tool options, session commands).
     pub fn run(&mut self, text: &str) {
         if !self.submit(text) && !self.run_command(text.trim()) {
-            self.submit_unhandled(text.trim());
+            let text = text.trim();
+            let idle = self.active_tool.id() == SELECT_TOOL_ID && !self.active_tool.wants_point();
+            if self.in_window && idle && !text.is_empty() {
+                self.emit(Event::Command(text.to_string()));
+            } else {
+                self.submit_unhandled(text);
+            }
         }
     }
 

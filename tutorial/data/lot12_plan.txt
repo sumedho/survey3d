@@ -1,0 +1,7 @@
+Lot 12 on Deposited Plan 41275 (fictional) - Banksia Street
+Bearings MGA2020 zone 50, distances in metres. Clockwise from the south-west corner.
+
+SW -> NW       359°47'30"     40.235      bd input: 359.4730 40.235
+NW -> NE        89°46'50"     20.125      bd input: 89.4650 20.125
+NE -> SE       179°48'30"     40.240      bd input: 179.4830 40.240
+SE -> SW       269°47'30"     20.115      bd input: 269.4730 20.115
