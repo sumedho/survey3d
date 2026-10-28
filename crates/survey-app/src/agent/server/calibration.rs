@@ -1,8 +1,8 @@
 //! Site calibration: fit GNSS-measured points to local control, preview the
 //! residuals, and apply it.
 
+use crate::calibration::{SiteFit, Target, apply, compute, format_rotation, outside_control};
 use serde_json::{Value, json};
-use survey_app::calibration::{SiteFit, Target, apply, compute, format_rotation, outside_control};
 use survey_core::calibration::{PairSetup, SiteCalibration, VerticalMethod};
 use survey_model::{ChangeSet, Entity};
 

@@ -1,9 +1,9 @@
 //! Coordinates and set-out: grid ↔ geographic conversion with the geoid,
 //! heights between the ellipsoid and the geoid, and set-out from a station.
 
+use crate::compute::projection::{self, Converted, HeightKind};
+use crate::compute::setout;
 use serde_json::{Value, json};
-use survey_app::compute::projection::{self, Converted, HeightKind};
-use survey_app::compute::setout;
 use survey_core::{Angle, Conventions};
 use survey_model::{ChangeSet, Document, Entity, EntityId, SurveyPoint};
 

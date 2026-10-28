@@ -3,26 +3,26 @@
 //!
 //! ```text
 //! survey3d-mcp [--project FILE.s3d] [--read-only] [--user NAME]
+//! survey3d-mcp --attach
 //! ```
-//! Speaks the Model Context Protocol on stdin/stdout.
-
-mod base64;
-mod protocol;
-mod render;
-mod server;
-mod tools;
+//! Speaks the Model Context Protocol on stdin/stdout: on a project of its own
+//! (headless), or with `--attach` relayed to the survey3d window that is
+//! open, so the drawing changes on screen as the agent works.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use server::{Options, Server};
+use survey_app::agent::{Options, Server, link, protocol};
 
 const USAGE: &str = "Usage: survey3d-mcp [--project FILE.s3d] [--read-only] [--user NAME]
+       survey3d-mcp --attach
 
 Model Context Protocol server for survey3d, on stdin/stdout.
   --project FILE  open this project at start (otherwise a new, empty one)
   --read-only     never write the project file (edits stay in memory)
-  --user NAME     name recorded in the audit trail (default: $USER)";
+  --user NAME     name recorded in the audit trail (default: $USER)
+  --attach        drive the survey3d window that is open instead (its agent
+                  link must be on: Settings > General > Agent link)";
 
 fn parse_args() -> Result<Options, String> {
     let mut options = Options {
@@ -40,6 +40,7 @@ fn parse_args() -> Result<Options, String> {
             }
             "--read-only" => options.read_only = true,
             "--user" => options.user = args.next().ok_or("--user needs a name")?,
+            "--attach" => return Err("--attach takes no other arguments".into()),
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown argument '{other}'")),
         }
@@ -48,6 +49,17 @@ fn parse_args() -> Result<Options, String> {
 }
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--attach") && std::env::args().count() == 2 {
+        let stdin = std::io::stdin();
+        let stdout = std::io::stdout();
+        return match link::relay(stdin.lock(), stdout.lock(), None) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("survey3d-mcp: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let options = match parse_args() {
         Ok(o) => o,
         Err(e) => {

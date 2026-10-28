@@ -125,13 +125,13 @@ impl Server {
         let id = match &existing {
             Some(old) => {
                 if *old != layer {
-                    let cs = survey_app::session::layer_change(self.doc(), layer.clone())?;
+                    let cs = crate::session::layer_change(self.doc(), layer.clone())?;
                     self.session.execute(Box::new(cs));
                 }
                 old.id
             }
             None => {
-                let cs = survey_app::session::layer_change(self.doc(), layer.clone())?;
+                let cs = crate::session::layer_change(self.doc(), layer.clone())?;
                 self.session.execute(Box::new(cs));
                 self.doc()
                     .layer_by_name(layer.name.trim())
@@ -241,7 +241,7 @@ impl Server {
             "coordinate_system_detail": meta.coord_system,
             "geoid": self.session.geoid_status(),
             "geoid_dir": self.session.geoid_dir().map(|d| d.display().to_string()),
-            "geoid_files": self.session.geoid_dir().map(survey_app::session::geoid_files),
+            "geoid_files": self.session.geoid_dir().map(crate::session::geoid_files),
             "distances": super::ground_json(self.doc()),
         })))
     }

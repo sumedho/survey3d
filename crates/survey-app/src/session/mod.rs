@@ -147,6 +147,8 @@ pub struct Session {
     /// Image tile caches (desktop).
     #[cfg(not(target_arch = "wasm32"))]
     pub imagery: crate::imagery::Imagery,
+    /// Counts project replacements (new or opened), so views can tell.
+    generation: u64,
 }
 
 impl Session {
@@ -172,6 +174,7 @@ impl Session {
             geoid: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             imagery: Default::default(),
+            generation: 0,
         }
     }
 
@@ -181,12 +184,18 @@ impl Session {
 
     /// Switches to another project (the caller resets its views).
     pub fn replace_project(&mut self, project: Project) {
+        self.generation += 1;
         self.project = project;
         self.active_surface = None;
         self.set_tool(SELECT_TOOL_ID);
         self.sync_geoid();
         #[cfg(not(target_arch = "wasm32"))]
         self.sync_imagery();
+    }
+
+    /// Changes each time the project is replaced (new or opened).
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Events since the last call, oldest first.

@@ -3,9 +3,9 @@
 
 use std::path::PathBuf;
 
+use crate::imagery::ImageStatus;
 use glam::DVec2;
 use serde_json::{Value, json};
-use survey_app::imagery::ImageStatus;
 use survey_core::georef::{FitKind, fit};
 use survey_model::{ImageRecord, Placement, RecordId};
 

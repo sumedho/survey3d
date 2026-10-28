@@ -22,6 +22,8 @@ impl SurveyApp {
             self.snap_toggles(ui);
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                #[cfg(not(target_arch = "wasm32"))]
+                self.agent_chip(ui, &theme);
                 if self.session.project.is_dirty() {
                     ui.label(RichText::new("● unsaved").small().color(theme.warning));
                 }

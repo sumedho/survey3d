@@ -15,15 +15,4 @@ path = "src/main.rs"
 
 [dependencies]
 survey-app.workspace = true
-survey-core.workspace = true
-survey-model.workspace = true
-survey-io.workspace = true
-survey-store.workspace = true
-egui-cad.workspace = true
-glam.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-resvg.workspace = true
-
-[dev-dependencies]
-image.workspace = true

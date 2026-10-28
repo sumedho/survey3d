@@ -1,8 +1,8 @@
 //! Field data: raw data files (show, reduce, correct, report) and as-built
 //! comparison against the design.
 
+use crate::asbuilt::{Against, compare, labels};
 use serde_json::{Value, json};
-use survey_app::asbuilt::{Against, compare, labels};
 use survey_core::network::{FieldData, RawEdit};
 use survey_model::{Document, Entity, EntityId};
 
@@ -78,7 +78,7 @@ impl Server {
         let shot = index(args, "shot")?;
         match action {
             "show" => {
-                let f = survey_app::raw::find(self.doc(), file)?;
+                let f = crate::raw::find(self.doc(), file)?;
                 let setups: Vec<Value> = match setup {
                     Some(i) if i < f.setups.len() => vec![setup_json(f, i, true)],
                     Some(i) => {
@@ -104,8 +104,8 @@ impl Server {
             "reduce" => {
                 let summary = self.session.reduce_raw(file)?;
                 let doc = self.doc();
-                let f = survey_app::raw::find(doc, file)?;
-                let r = survey_app::raw::reduce_command(doc, f.id, f.record.clone(), String::new()).reduction;
+                let f = crate::raw::find(doc, file)?;
+                let r = crate::raw::reduce_command(doc, f.id, f.record.clone(), String::new()).reduction;
                 Ok(ToolResult::json(&json!({
                     "summary": summary,
                     "points": f.reduced.len(),
@@ -170,7 +170,7 @@ impl Server {
                 let (title, text) = self
                     .session
                     .raw_report(file)
-                    .ok_or_else(|| survey_app::raw::find(self.doc(), file).err().unwrap_or_default())?;
+                    .ok_or_else(|| crate::raw::find(self.doc(), file).err().unwrap_or_default())?;
                 Ok(ToolResult::text(format!("{title}\n\n{text}")))
             }
             other => Err(format!(
@@ -248,7 +248,7 @@ impl Server {
             "not_compared": c.unmatched.iter().map(|(n, why)| json!({ "shot": n, "why": why })).collect::<Vec<_>>(),
         });
         if args.get("report").and_then(Value::as_bool).unwrap_or(false) {
-            out["report"] = json!(survey_app::asbuilt::report(doc, &c));
+            out["report"] = json!(crate::asbuilt::report(doc, &c));
         }
         if args.get("label").and_then(Value::as_bool).unwrap_or(false) {
             let layer = str_arg(args, "layer").unwrap_or("AS-BUILT").to_string();

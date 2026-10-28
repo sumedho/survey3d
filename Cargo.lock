@@ -3538,6 +3538,7 @@ dependencies = [
  "image",
  "js-sys",
  "log",
+ "resvg",
  "rfd",
  "serde",
  "serde_json",
@@ -3585,17 +3586,8 @@ dependencies = [
 name = "survey-mcp"
 version = "0.1.0"
 dependencies = [
- "egui-cad",
- "glam",
- "image",
- "resvg",
- "serde",
  "serde_json",
  "survey-app",
- "survey-core",
- "survey-io",
- "survey-model",
- "survey-store",
 ]
 
 [[package]]

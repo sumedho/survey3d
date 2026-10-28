@@ -142,6 +142,26 @@ Other clients take the usual entry: `{"command": "/path/to/survey3d-mcp", "args"
 Options: `--project FILE` (otherwise a new project), `--read-only` (never writes the project file; edits
 stay in memory), `--user NAME` (audit trail; default `$USER`).
 
+### Driving the open window (agent link)
+
+To watch an agent work, let it drive the survey3d window you have open: Settings → General → **Agent
+link (MCP)** → *Let agents drive this window* (or the `agent` command). The app then serves MCP on
+`http://127.0.0.1:3850/mcp` (port in the same settings). Each change appears as it is made, is one undoable
+step, and is recorded in the audit trail as yours via the agent. A status-bar chip shows the link and
+what the agent last did; a tool you are in the middle of is cancelled when the agent edits, not when it
+only looks. Linux, macOS and Windows alike.
+
+* **Claude Code** (HTTP): *Copy Claude Code command* in the settings gives
+  `claude mcp add --transport http survey3d http://127.0.0.1:3850/mcp --header "Authorization: Bearer <token>"`.
+* **Clients that start a program** (such as Claude Desktop): `survey3d-mcp --attach` relays stdio to the
+  window — *Copy stdio config* gives `{"mcpServers": {"survey3d": {"command": "…/survey3d-mcp", "args": ["--attach"]}}}`.
+  When the window is not open, the agent is told to open it and turn the link on.
+
+The link listens on 127.0.0.1 only, refuses requests whose Host or Origin is not local (against DNS
+rebinding from web pages) and requires a bearer token. The token and port are kept in a per-user file
+only you can read (`agent-link.json` in `%APPDATA%\survey3d`, `~/Library/Application Support/survey3d` or
+`~/.config/survey3d`), so a client set up once keeps working. It is off by default.
+
 | Tool | What it does |
 |---|---|
 | `project_info` | File, conventions, counts, layers, surfaces, clouds, records, selection, active tool and prompt, undo/redo |

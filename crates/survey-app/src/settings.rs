@@ -40,6 +40,9 @@ pub struct AppSettings {
     /// Folder of downloaded geoid models; projects name the file they use
     /// (native only).
     pub geoid_dir: Option<std::path::PathBuf>,
+    /// Let agents drive this window over MCP on a local port (desktop).
+    pub agent_link: bool,
+    pub agent_port: u16,
 }
 
 /// A domain module that adds its own menu.
@@ -147,6 +150,8 @@ impl Default for AppSettings {
             data_dir: None,
             cloud_edl: true,
             geoid_dir: None,
+            agent_link: false,
+            agent_port: 3850,
         }
     }
 }

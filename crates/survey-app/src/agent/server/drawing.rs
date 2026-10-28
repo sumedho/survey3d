@@ -1,8 +1,8 @@
 //! Text, and changing objects already in the drawing.
 
+use crate::import_command::ImportEntities;
 use glam::DVec3;
 use serde_json::{Value, json};
-use survey_app::import_command::ImportEntities;
 use survey_model::{Dimension, DimensionKind, Document, Entity, EntityId, TextAlign, TextNote};
 
 use super::{Filter, Kind, Outcome, Server, ToolResult, next_entity_id, str_arg};
@@ -335,11 +335,11 @@ impl Server {
             }
             let layer = match &layer_name {
                 Some(name) => cmd.layer_named(self.doc(), Some(name)),
-                None => survey_app::import_command::LayerRef::Existing(entity.layer()),
+                None => crate::import_command::LayerRef::Existing(entity.layer()),
             };
             let moves_layer = match layer {
-                survey_app::import_command::LayerRef::Existing(l) => l != before.layer(),
-                survey_app::import_command::LayerRef::New(_) => true,
+                crate::import_command::LayerRef::Existing(l) => l != before.layer(),
+                crate::import_command::LayerRef::New(_) => true,
             };
             if entity != before || moves_layer {
                 cmd.update(id, layer, entity);
@@ -378,8 +378,8 @@ impl Server {
         };
         let at = position(doc, args.get("at"), "at")?.truncate();
         let (cs, summary) = match str_arg(args, "action").unwrap_or("trim") {
-            "trim" => survey_app::trim_extend::trim_command(doc, target, &boundaries, at)?,
-            "extend" => survey_app::trim_extend::extend_command(doc, target, &boundaries, at)?,
+            "trim" => crate::trim_extend::trim_command(doc, target, &boundaries, at)?,
+            "extend" => crate::trim_extend::extend_command(doc, target, &boundaries, at)?,
             other => return Err(format!("action: '{other}' is not trim or extend")),
         };
         let first_new = next_entity_id(doc);

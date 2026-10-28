@@ -5,9 +5,9 @@
 
 use std::collections::BTreeSet;
 
+use crate::compute::{closure, network, resection, sections, subdivide, traverse, volumes};
 use glam::DVec3;
 use serde_json::{Value, json};
-use survey_app::compute::{closure, network, resection, sections, subdivide, traverse, volumes};
 use survey_core::adjustment::Observation;
 use survey_core::closure::{Unknown, courses_from_polyline, figure, solve};
 use survey_core::resection::Weights;

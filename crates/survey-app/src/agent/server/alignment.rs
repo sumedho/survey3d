@@ -2,8 +2,8 @@
 //! transitions), points at chainages and offsets, the chainage and offset of
 //! points, set-out points, and the centreline drawn with its transitions.
 
+use crate::compute::alignment::{centreline, element_report, geometry, offset_label};
 use serde_json::{Value, json};
-use survey_app::compute::alignment::{centreline, element_report, geometry, offset_label};
 use survey_core::alignment::{ElementKind, Geometry};
 use survey_core::{Angle, Conventions};
 use survey_model::{AlignmentRecord, ChangeSet, Entity, RecordId, SurveyPoint};

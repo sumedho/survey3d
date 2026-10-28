@@ -3,15 +3,15 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::import_command::ImportEntities;
+use crate::session::Event;
+use crate::settings::AppSettings;
+use crate::{Project, Session};
 use egui_cad::command_line::{CommandLineState, LogKind};
 use glam::DVec3;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
-use survey_app::import_command::ImportEntities;
-use survey_app::session::Event;
-use survey_app::settings::AppSettings;
-use survey_app::{Project, Session};
 use survey_core::Conventions;
 use survey_core::arc::polyline_metrics;
 use survey_core::traverse::TraverseRecord;
@@ -22,7 +22,7 @@ use survey_model::{
 };
 use survey_store::ProjectStore;
 
-use crate::render::svg_to_png;
+use crate::agent::render::svg_to_png;
 
 const DEFAULT_LIMIT: usize = 200;
 const MAX_LIMIT: usize = 5000;
@@ -66,7 +66,7 @@ impl ToolResult {
                 Content::Text(text) => json!({ "type": "text", "text": text }),
                 Content::Png(bytes) => json!({
                     "type": "image",
-                    "data": crate::base64::encode(bytes),
+                    "data": crate::agent::base64::encode(bytes),
                     "mimeType": "image/png",
                 }),
             })
@@ -110,6 +110,28 @@ impl Server {
             settings,
             read_only: options.read_only,
         })
+    }
+
+    /// A server for the desktop app's agent link: it works on the app's
+    /// session, lent for each call (see [`super::link::serve_on`]); until
+    /// then it holds an empty one. `settings` are the app's (new projects
+    /// take its conventions); edits are recorded as the user's, via the agent.
+    pub fn for_app(settings: &AppSettings) -> Result<Self, String> {
+        let settings = AppSettings {
+            user_name: format!("{} (agent via MCP)", settings.user_name),
+            ..settings.clone()
+        };
+        let session = Session::new(Project::new(&settings).map_err(|e| e.to_string())?);
+        Ok(Self {
+            session,
+            settings,
+            read_only: false,
+        })
+    }
+
+    /// The session the server works on (swapped with the app's for a call).
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
     }
 
     #[cfg(test)]
@@ -1062,7 +1084,7 @@ fn entity_row(doc: &Document, id: EntityId, e: &Entity) -> Value {
                 "to": [d.to.x, d.to.y],
                 "line": [[a.x, a.y], [b.x, b.y]],
                 "length": d.measured(),
-                "shows": survey_app::dimension_text(d, doc.conventions()),
+                "shows": crate::dimension_text(d, doc.conventions()),
                 "text": d.text,
                 "layer": layer_name(doc, d.layer),
             })

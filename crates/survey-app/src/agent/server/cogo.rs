@@ -1,7 +1,7 @@
 //! COGO calculations that add nothing to the drawing.
 
+use crate::curves::{compound_text, reverse_text, segment_area, spiral_curve_text};
 use serde_json::{Value, json};
-use survey_app::curves::{compound_text, reverse_text, segment_area, spiral_curve_text};
 use survey_core::curve_sets::{
     CompoundInput, ReverseInput, SpiralCurveInput, solve_compound, solve_reverse, solve_spiral_curve,
 };

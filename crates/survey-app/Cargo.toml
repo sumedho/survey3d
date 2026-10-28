@@ -36,6 +36,8 @@ rfd.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger.workspace = true
+# The agent interface: plan sheets rendered to PNG for agents.
+resvg.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures.workspace = true

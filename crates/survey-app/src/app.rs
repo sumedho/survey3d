@@ -2,6 +2,8 @@
 //! The interface is drawn by the submodules: [`menus`], [`panels`], [`viewport`],
 //! [`overlays`] and [`dialogs`].
 
+#[cfg(not(target_arch = "wasm32"))]
+mod agent;
 mod dialogs;
 mod menus;
 mod overlays;
@@ -288,6 +290,12 @@ const APP_COMMANDS: &[AppCommand] = &[
         icons::ARROWS_IN,
     ),
     cmd(
+        "agent",
+        "Agent link: let an MCP client (such as Claude) drive this window",
+        "File",
+        icons::GLOBE,
+    ),
+    cmd(
         "images",
         "Images: georeferenced orthophotos under the drawing (add, control points, opacity)",
         "File",
@@ -487,6 +495,9 @@ pub struct SurveyApp {
     images_window: crate::ui::images::ImagesWindow,
     #[cfg(not(target_arch = "wasm32"))]
     tile_streamer: crate::imagery::TileStreamer,
+    /// Agents driving this window over the local MCP link.
+    #[cfg(not(target_arch = "wasm32"))]
+    agent: agent::AgentState,
     about_open: bool,
     confirm_discard: Option<Discard>,
     allowed_to_close: bool,
@@ -653,6 +664,8 @@ impl SurveyApp {
             images_window: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             tile_streamer: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            agent: Default::default(),
             about_open: false,
             confirm_discard: None,
             allowed_to_close: false,
@@ -984,6 +997,7 @@ impl SurveyApp {
             "copc" | "copcin" => self.copc_window.open(),
             #[cfg(not(target_arch = "wasm32"))]
             "images" | "image" | "orthophoto" => self.images_window.open = true,
+            "agent" | "mcp" => self.settings_window.open_at_general(),
             "rawin" | "gsi" | "jobxml" | "rw5" => self.platform.pick_file(ctx, FileKind::RawData),
             "gpkg" | "geopackage" => self.export_geopackage(),
             "landxmlin" | "importxml" => self.platform.pick_file(ctx, FileKind::LandXml),
@@ -1054,9 +1068,14 @@ impl SurveyApp {
     }
 
     fn replace_project(&mut self, project: Project) {
+        self.session.replace_project(project);
+        self.reset_views();
+    }
+
+    /// Views and caches back to a fresh state for the project now open.
+    fn reset_views(&mut self) {
         self.viewport.pivot = None;
         self.picking_pivot = false;
-        self.session.replace_project(project);
         self.scene_cache.invalidate();
         self.selection_cache.invalidate();
         self.surface_cache.invalidate();
@@ -1646,6 +1665,7 @@ impl eframe::App for SurveyApp {
         self.session.set_geoid_dir(self.settings.geoid_dir.clone());
         #[cfg(not(target_arch = "wasm32"))]
         {
+            self.run_agent(&ctx);
             self.session.imagery.set_cache_dir(self.settings.data_dir.clone());
             self.session.sync_imagery();
             if self.session.imagery.busy() {

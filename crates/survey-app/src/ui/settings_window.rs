@@ -55,6 +55,11 @@ impl SettingsWindow {
         self.tab = Some(Tab::Accuracy);
     }
 
+    pub fn open_at_general(&mut self) {
+        self.open = true;
+        self.tab = Some(Tab::General);
+    }
+
     pub fn open_at_conventions(&mut self) {
         self.open = true;
         self.tab = Some(Tab::Conventions);
@@ -65,6 +70,7 @@ impl SettingsWindow {
         ctx: &egui::Context,
         settings: &mut AppSettings,
         session: &Session,
+        agent: &AgentLinkStatus,
     ) -> Option<Box<dyn Command>> {
         let doc = &session.project.doc;
         if !self.open {
@@ -97,7 +103,10 @@ impl SettingsWindow {
                 });
                 ui.separator();
                 match *tab {
-                    Tab::General => general(ui, settings),
+                    Tab::General => {
+                        general(ui, settings);
+                        agent_link(ui, settings, agent);
+                    }
                     Tab::Drafting => drafting(ui, settings),
                     Tab::Display => display(ui, settings),
                     Tab::Conventions => {
@@ -215,6 +224,78 @@ fn general(ui: &mut egui::Ui, settings: &mut AppSettings) {
         ui.text_edit_singleline(&mut settings.user_name)
             .on_hover_text("Recorded with every edit in the project audit trail");
     });
+}
+
+/// What the settings show of the agent link.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub struct AgentLinkStatus {
+    /// The address while it is on.
+    pub url: Option<String>,
+    pub token: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Agents (an MCP client such as Claude) driving this window.
+fn agent_link(ui: &mut egui::Ui, settings: &mut AppSettings, status: &AgentLinkStatus) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (ui, settings, status);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        ui.add_space(8.0);
+        section_header(ui, "Agent link (MCP)");
+        switch_row(ui, &mut settings.agent_link, "Let agents drive this window");
+        ui.horizontal(|ui| {
+            ui.label("Port");
+            ui.add(egui::DragValue::new(&mut settings.agent_port).range(1024..=65535));
+            match (&status.url, &status.error) {
+                (Some(url), _) => {
+                    ui.label(RichText::new(format!("listening at {url}")).small());
+                }
+                (None, Some(e)) => {
+                    ui.label(RichText::new(e).small().color(CadTheme::current(ui.ctx()).error));
+                }
+                _ => {}
+            }
+        });
+        ui.label(
+            RichText::new(
+                "An agent then works on the project on screen: its changes appear as it makes them, each one \
+                 undoable and recorded in the audit trail as yours via the agent. Only programs on this computer \
+                 that hold the link's token can connect.",
+            )
+            .small()
+            .weak(),
+        );
+        if let (Some(url), Some(token)) = (&status.url, &status.token) {
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Copy Claude Code command")
+                    .on_hover_text("claude mcp add … over HTTP, with the token")
+                    .clicked()
+                {
+                    ui.ctx().copy_text(format!(
+                        "claude mcp add --transport http survey3d {url} --header \"Authorization: Bearer {token}\""
+                    ));
+                }
+                if ui
+                    .button("Copy stdio config")
+                    .on_hover_text("For clients that start a program (such as Claude Desktop): survey3d-mcp --attach")
+                    .clicked()
+                {
+                    let exe = std::env::current_exe()
+                        .ok()
+                        .map(|p| p.with_file_name(if cfg!(windows) { "survey3d-mcp.exe" } else { "survey3d-mcp" }))
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "survey3d-mcp".into());
+                    let config = serde_json::json!({ "mcpServers": { "survey3d": { "command": exe, "args": ["--attach"] } } });
+                    ui.ctx().copy_text(serde_json::to_string_pretty(&config).unwrap_or_default());
+                }
+            });
+        }
+    }
 }
 
 /// How things look: theme, grid and point labels.

@@ -3,6 +3,8 @@
 //! The application ([`SurveyApp`]) is a user interface over a [`Session`], which
 //! can also be driven without one (scripts, tests, agents).
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod agent;
 mod app;
 pub mod asbuilt;
 pub mod calibration;

@@ -109,7 +109,18 @@ impl SurveyApp {
             }
         }
 
-        if let Some(cmd) = self.settings_window.show(ctx, &mut self.settings, &self.session) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let agent = crate::ui::settings_window::AgentLinkStatus {
+            url: self.agent.url(),
+            token: self.agent.token().map(str::to_string),
+            error: self.agent.error().map(str::to_string),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let agent = crate::ui::settings_window::AgentLinkStatus::default();
+        if let Some(cmd) = self
+            .settings_window
+            .show(ctx, &mut self.settings, &self.session, &agent)
+        {
             self.session.execute(cmd);
         }
         if std::mem::take(&mut self.settings_window.retry_geoid) {

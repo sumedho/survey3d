@@ -5,8 +5,8 @@ use std::io::{BufRead, Write};
 
 use serde_json::{Value, json};
 
-use crate::server::Server;
-use crate::tools;
+use crate::agent::server::Server;
+use crate::agent::tools;
 
 /// Protocol revisions this server speaks, newest first.
 const VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -70,7 +70,7 @@ pub fn serve(input: impl BufRead, mut output: impl Write, server: &mut Server) -
 }
 
 /// One message: the reply to a request, or `None` for a notification or response.
-fn handle(message: Value, server: &mut Server) -> Option<Value> {
+pub fn handle(message: Value, server: &mut Server) -> Option<Value> {
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         // A response to something we sent (we send nothing) or garbage.
         return message
